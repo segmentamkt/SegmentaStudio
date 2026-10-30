@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://segmenta.studio/schemas/workspace.json",
+  "title": "Segmenta Studio Workspace",
+  "type": "object",
+  "required": ["name","version","layout","registries"],
+  "properties": {"name":{"type":"string"},"version":{"type":"string"},"layout":{"type":"object"},"compatibility":{"type":"object"},"registries":{"type":"object"}},
+  "additionalProperties": true
+}
