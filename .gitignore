@@ -1,0 +1,53 @@
+# Datos locales: base SQLite, videos importados, proyectos y exportaciones
+/data/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Registros de ejecución
+logs/
+
+# Builds generados (incluye la .app empaquetada)
+dist/
+.next/
+out/
+
+# Dependencias y herramientas instaladas localmente (CLI de Gemini, binario agy)
+node_modules/
+.tools/
+.kiko-tools/
+
+# Caché de análisis y miniaturas
+.kiko-analysis/
+
+# App en la nube: tiene su propio repositorio git
+cloud/kiko-video-director/
+
+# Remotion: renders, intermedios, clips y audio generado (la música deriva de Apple Loops y no se redistribuye)
+remotion/out/
+remotion/trabajo/
+remotion/public/clips/
+remotion/public/audio/
+remotion/public/recursos/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Estado de herramientas de Cloudflare / vinext
+.wrangler/
+.vinext/
+.sites-runtime/
+
+# Variables de entorno y claves
+.env*
+.dev.vars*
+*.pem
+*.key
+
+# macOS
+.DS_Store
