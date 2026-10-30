@@ -1,0 +1,19 @@
+{
+  "apps": "./.app.json",
+  "author": {
+    "name": "App developer"
+  },
+  "description": "Director editorial privado para planear, validar y auditar las ediciones ejecutadas por Kiko Studio.",
+  "interface": {
+    "capabilities": [],
+    "category": "Other",
+    "defaultPrompt": null,
+    "developerName": "App developer",
+    "displayName": "Kiko Video Director",
+    "longDescription": "Director editorial privado para planear, validar y auditar las ediciones ejecutadas por Kiko Studio.",
+    "shortDescription": "Director editorial privado para planear, validar y auditar las ediciones ejecutadas por Kiko Studio.",
+    "websiteURL": "https://kiko-video-director-fv.bonnyangel65.chatgpt.site"
+  },
+  "name": "dev-a6cd832b3f1c81918257d56f4b457d1e",
+  "version": "1.0.2"
+}
