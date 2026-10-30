@@ -1,0 +1,4 @@
+{
+  "schemaVersion": 1,
+  "skills": [{"id":"kiko-video-director","name":"Kiko Video Director","version":"1.0.2","path":"skills/kiko-video-director","status":"active","plugin":"plugins/kiko-video-director","legacySource":"cloud/kiko-video-director-plugin/skills/kiko-video-director"}]
+}
