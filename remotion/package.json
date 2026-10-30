@@ -1,0 +1,26 @@
+{
+  "name": "kiko-remotion",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Editor semántico de Kiko Studio: planifica desde la transcripción por palabra y renderiza con una librería de componentes.",
+  "type": "module",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "python3 -m unittest discover -s tests",
+    "paises": "node scripts/preparar_paises.mjs"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.539",
+    "@tabler/icons": "3.49.0",
+    "d3-geo": "3.1.1",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "remotion": "4.0.539"
+  },
+  "devDependencies": {
+    "@types/d3-geo": "3.1.0",
+    "@types/react": "19.2.2",
+    "typescript": "5.9.3"
+  }
+}
