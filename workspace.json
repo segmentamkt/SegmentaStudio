@@ -1,0 +1,8 @@
+{
+  "$schema": "./docs/schemas/segmenta-workspace.schema.json",
+  "name": "segmenta-studio",
+  "version": "0.2.0",
+  "layout": {"apps":"apps","services":"services","packages":"packages","skills":"skills","plugins":"plugins"},
+  "compatibility": {"kiko_studio":"apps/studio-web","remotion":"services/video-engine","multiagent_core":"packages/multiagent-core","cloud/kiko-video-director-plugin":"plugins/kiko-video-director"},
+  "registries": {"skills":"skills/registry.json","plugins":"plugins/registry.json"}
+}
