@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Kiko Studio IA</title>
+  <link rel="stylesheet" href="/static/style.css?v=3">
+  <link rel="stylesheet" href="/static/professional.css?v=13">
+  <link rel="stylesheet" href="/static/mcp.css?v=1">
+  <link rel="stylesheet" href="/static/recording.css?v=1">
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <div class="brand"><span>K</span><div>Kiko Studio<small>IA privada en tu Mac</small></div></div>
+      <nav>
+        <button class="active" data-view="overview">Resumen</button>
+        <button data-view="video">Estudio de video</button>
+        <button data-view="recording">Grabación móvil</button>
+        <button data-view="semantic">Editor semántico</button>
+        <button data-view="skills">Skills</button>
+        <button data-view="projects">Proyectos</button>
+        <button data-view="trends">Ideas y tendencias</button>
+        <button data-view="style">Estilo Kiko</button>
+        <button data-view="team">Equipo IA</button>
+        <button data-view="tasks">Tareas</button>
+      </nav>
+      <div class="privacy">🛡️ Sin claves API<br><small>Codex, Claude y Gemini usan sus sesiones autorizadas. El video se procesa localmente.</small></div>
+    </aside>
+    <main>
+      <header><div><p class="eyebrow">CENTRO DE OPERACIONES</p><h1>Kiko Studio IA</h1></div><div class="workspace-switcher"><span id="accountAvatar" class="workspace-avatar">FV</span><label><small>Cuenta</small><select id="accountSwitch" aria-label="Cuenta activa"></select></label><label><small>Portafolio</small><select id="portfolioSwitch" aria-label="Portafolio activo"></select></label><div id="health" class="pill">Comprobando…</div></div></header>
+
+      <section id="overview" class="view active">
+        <div class="hero"><div><p class="eyebrow light">MONTAJE PROFESIONAL</p><h2>Sube tus tomas y recibe una sola pieza terminada</h2><p>Kiko Studio escucha el audio localmente, elimina márgenes sin voz, organiza el relato y crea subtítulos temporizados. También puedes pegar un libreto para dirigirlo.</p></div><button class="primary jump-video">Crear montaje</button></div>
+        <div class="stats">
+          <article><b id="projectCount">—</b><span>Proyectos</span></article>
+          <article><b id="videoCount">—</b><span>Videos</span></article>
+          <article><b id="pendingCount">—</b><span>Tareas pendientes</span></article>
+          <article><b id="agentCount">—</b><span>Recursos disponibles</span></article>
+        </div>
+        <div class="grid two"><article class="card"><div class="card-head"><h3>Actividad reciente</h3><button class="quiet" id="refreshButton">Actualizar</button></div><div id="activity" class="empty">Aún no hay actividad.</div></article><article class="card"><h3>Estado del sistema</h3><div id="providers" class="provider-list"></div></article></div>
+      </section>
+
+      <section id="recording" class="view recording-view">
+        <div class="recording-hero">
+          <div><div class="recording-kicker"><span>LABORATORIO DE GRABACIÓN</span><i>Prototipo visual</i></div><h2>Del libreto a la toma aprobada, sin subir errores</h2><p>Programa la sesión, abre la cámara desde el proyecto, graba cada escena en orden y decide al instante si la toma entra al montaje, se repite o se guarda como blooper.</p></div>
+          <button id="newRecordingSession" class="recording-primary" type="button">+ Nueva sesión</button>
+        </div>
+
+        <div class="recording-context-grid">
+          <article class="recording-context-card essence-card">
+            <div class="recording-card-head"><span>ESENCIA DEL PORTAFOLIO</span><b id="essenceStatus">Activa</b></div>
+            <div class="essence-identity"><span id="essenceMonogram">KO</span><div><h3 id="essenceName">Kiko Orator</h3><p id="essencePurpose">Ideas sobre emprendimiento, IA y liderazgo.</p></div></div>
+            <div class="essence-tokens"><span><small>Voz</small><b id="essenceVoice">Directa y humana</b></span><span><small>Audiencia</small><b id="essenceAudience">Emprendedores</b></span><span><small>Edición</small><b id="essenceEditing">Impacto directo</b></span></div>
+            <div id="essenceColors" class="essence-colors" aria-label="Paleta del portafolio"></div>
+          </article>
+
+          <article class="recording-context-card phone-link-card">
+            <div class="recording-card-head"><span>CÁMARA DEL CELULAR</span><b id="phoneLinkStatus" class="warning">Sin conectar</b></div>
+            <div class="phone-link-body"><div class="qr-mock" aria-hidden="true"><span></span><span></span><span></span><i></i></div><div><h3>Vincular este proyecto</h3><p>El celular recibirá el libreto, la escena activa y la guía de encuadre.</p><button id="pairPhone" class="recording-secondary" type="button">Mostrar código QR</button></div></div>
+          </article>
+
+          <article class="recording-context-card schedule-card">
+            <div class="recording-card-head"><span>PRÓXIMA SESIÓN</span><b>Programada</b></div>
+            <div class="schedule-time"><strong id="sessionDay">JUE 29</strong><span><b id="sessionTime">9:30 a. m.</b><small>45 minutos · Vertical 9:16</small></span></div>
+            <button id="editSchedule" class="recording-ghost" type="button">Cambiar programación</button>
+          </article>
+        </div>
+
+        <div class="recording-studio-grid">
+          <article class="recording-panel script-panel">
+            <div class="recording-panel-title"><div><span>01 · LIBRETO</span><h3>Escenas en orden</h3></div><button id="addScene" class="recording-icon-button" type="button" aria-label="Agregar escena">+</button></div>
+            <label class="recording-field">Nombre de la pieza<input id="recordingTitle" value="Lo que nadie te dice de emprender"></label>
+            <div id="sceneList" class="scene-list"></div>
+            <div class="script-summary"><span><b id="sceneCount">4</b> escenas</span><span><b id="scriptDuration">52 s</b> estimados</span></div>
+          </article>
+
+          <article class="recording-panel camera-panel">
+            <div class="recording-panel-title"><div><span>02 · CÁMARA</span><h3>Vista del celular</h3></div><b id="cameraConnection" class="camera-offline">Offline</b></div>
+            <div id="phonePreview" class="phone-preview">
+              <div class="phone-top"><span>9:41</span><i></i><span>5G ◖</span></div>
+              <div class="camera-frame"><div class="camera-grid-lines"></div><div class="person-guide"><i></i><span></span></div><div class="camera-safe-zone">ZONA SEGURA 9:16</div><div class="teleprompter"><small>ESCENA <b id="activeSceneNumber">1</b> DE <b id="activeSceneTotal">4</b></small><p id="teleprompterText">Emprender no comienza cuando tienes una idea. Comienza cuando decides sostenerla.</p></div></div>
+              <div class="phone-controls"><button class="camera-tool" type="button">1×</button><button id="recordButton" class="record-button" type="button" aria-label="Iniciar grabación"><i></i></button><button class="camera-tool" type="button">↻</button></div>
+            </div>
+            <div class="camera-notice"><span>📱</span><div><strong id="cameraNoticeTitle">Conecta el celular para comenzar</strong><small id="cameraNoticeText">La cámara real se habilitará en la siguiente fase funcional.</small></div></div>
+          </article>
+
+          <article class="recording-panel review-panel">
+            <div class="recording-panel-title"><div><span>03 · CONTROL</span><h3>Revisión de tomas</h3></div><b id="reviewCounter">3 pendientes</b></div>
+            <div id="takeReviewList" class="take-review-list"></div>
+          </article>
+        </div>
+
+        <div class="recording-pipeline">
+          <div class="pipeline-copy"><span>SELECCIÓN AUTOMÁTICA</span><h3>Solo las tomas aprobadas llegan a edición</h3><p>Las repeticiones quedan fuera. Los errores memorables se conservan en una carpeta independiente de Bloopers.</p></div>
+          <div class="pipeline-stats"><span class="approved"><b id="approvedCount">2</b><small>Aprobadas</small></span><span class="repeat"><b id="repeatCount">1</b><small>Repetir</small></span><span class="blooper"><b id="blooperCount">1</b><small>Bloopers</small></span></div>
+          <button id="sendApprovedToEdit" class="recording-primary" type="button">Preparar montaje aprobado →</button>
+        </div>
+      </section>
+
+      <section id="video" class="view">
+        <div class="section-head"><div><p class="eyebrow">EDICIÓN LOCAL</p><h2>Crear montaje profesional</h2><p class="muted">Combina varias tomas en una sola pieza. Los originales nunca se modifican.</p></div></div>
+        <div class="grid two editor-grid">
+          <form id="videoForm" class="card form-card">
+            <label>Proyecto<select id="videoProject" name="project_id" required></select></label>
+            <label>Nombre del montaje<input id="editName" placeholder="Ejemplo: Por qué emprender hoy"></label>
+            <label>Nuevas tomas <small>(opcional)</small><input id="videoFile" name="video" type="file" accept="video/mp4,video/quicktime,.mp4,.mov" multiple><small>Selecciona todos los archivos que pertenecen al mismo video.</small></label>
+            <div><span class="label-title">Tomas ya cargadas</span><div id="existingClips" class="clip-picker"><span class="muted">Cargando biblioteca…</span></div></div>
+            <label>Instrucción para las tres IA <small>(recomendado)</small><textarea id="creativeDirection" rows="5" placeholder="Ejemplo: empieza con la frase más fuerte, elimina repeticiones, usa ritmo rápido, muestra etiquetas en los conceptos y termina con un CTA."></textarea><small>Esto dirige la edición. Nunca se copiará como subtítulo.</small></label>
+            <details class="research-notes"><summary>Tengo un libreto literal o una transcripción</summary><label>Texto que sí debe decir el video <small>(opcional)</small><textarea id="videoSubtitle" rows="6" placeholder="Déjalo vacío para que Kiko Studio escuche las tomas. Pega aquí solamente palabras realmente pronunciadas."></textarea></label></details>
+            <div id="transcriptionStatus" class="transcription-status"><span><strong>Transcripción local</strong><small>Comprobando si el Mac puede escuchar las tomas…</small></span><button id="authorizeSpeech" class="quiet" type="button">Activar</button></div>
+            <section class="editorial-library" aria-labelledby="editorialTitle">
+              <div class="editorial-head"><div><span class="eyebrow">BIBLIOTECA EDITORIAL</span><h3 id="editorialTitle">Escoge cómo debe sentirse el video</h3></div><span id="activeStyleName" class="tool-count">Impacto directo</span></div>
+              <p class="muted">Compara los ejemplos animados de cada referente, escoge uno y personaliza cualquier control después.</p>
+              <div id="editorialStyles" class="editorial-style-grid"><span class="muted">Cargando estilos…</span></div>
+              <details class="research-notes"><summary>Ver el análisis y las fuentes</summary><div id="styleResearch" class="research-grid"></div></details>
+            </section>
+            <div class="toolbox">
+              <div class="toolbox-head"><div><span class="eyebrow">HERRAMIENTAS DE EDICIÓN</span><h3>Estilo del montaje</h3></div><span id="activeToolCount" class="tool-count">9 controles</span></div>
+
+              <details open>
+                <summary><span class="tool-icon">Aa</span><span><strong>Subtítulos</strong><small>Tipografía, color, tamaño y posición</small></span></summary>
+                <div class="tool-content">
+                  <label class="switch-row"><span><strong>Incluir subtítulos</strong><small>Usa la voz detectada o el libreto literal; nunca la instrucción creativa</small></span><input id="subtitleEnabled" type="checkbox" checked></label>
+                  <div class="style-cards" id="subtitlePreset">
+                    <label class="style-card"><input type="radio" name="subtitlePreset" value="clean"><span><b>Limpio</b><small>Discreto y elegante</small></span></label>
+                    <label class="style-card"><input type="radio" name="subtitlePreset" value="impact" checked><span><b>Impacto</b><small>Grande y enérgico</small></span></label>
+                    <label class="style-card"><input type="radio" name="subtitlePreset" value="caption"><span><b>Caption</b><small>Lectura protagonista</small></span></label>
+                  </div>
+                  <div class="form-row three"><label>Posición<select id="subtitlePosition"><option value="bottom">Abajo</option><option value="center">Centro</option><option value="top">Arriba</option></select></label><label>Color<select id="subtitleColor"><option value="white">Blanco</option><option value="yellow">Amarillo</option><option value="cyan">Cian</option></select></label><label>Tamaño<input id="subtitleSize" type="range" min="32" max="110" value="64"><output id="subtitleSizeValue">64</output></label></div>
+                  <label>Fondo del texto<select id="subtitleBackground"><option value="purple">Morado Kiko</option><option value="black">Negro</option><option value="none">Sin fondo</option></select></label>
+                  <div class="subtitle-preview" id="subtitlePreview"><span>Tu mensaje se verá así</span></div>
+                </div>
+              </details>
+
+              <details>
+                <summary><span class="tool-icon">↔</span><span><strong>Transiciones y ritmo</strong><small>Cambios entre tomas</small></span></summary>
+                <div class="tool-content"><label class="switch-row"><span><strong>Eliminar tiempos muertos</strong><small>Recorta pausas internas largas sin cortar palabras</small></span><input id="trimSilence" type="checkbox" checked></label><div class="form-row"><label>Pausa permitida<input id="silenceThreshold" type="range" min="0.3" max="2" step="0.05" value="0.65"><output id="silenceThresholdValue">0.65 s</output></label><label>Ritmo de subtítulos<select id="pace"><option value="natural">Frases naturales</option><option value="dynamic">Bloques ágiles</option></select></label><label>Transición<select id="transitionType"><option value="cut">Corte dinámico</option><option value="fade">Fundido suave</option></select><small id="transitionHelp">Las opciones disponibles dependen del motor instalado.</small></label><label>Duración<input id="transitionDuration" type="range" min="0" max="1.5" step="0.1" value="0.3"><output id="transitionDurationValue">0.3 s</output></label></div></div>
+              </details>
+
+              <details>
+                <summary><span class="tool-icon">♫</span><span><strong>Música y voz</strong><small>Mezcla de audio del montaje</small></span></summary>
+                <div class="tool-content"><label>Música de fondo <small>(opcional)</small><input id="musicFile" type="file" accept="audio/mpeg,audio/mp4,audio/wav,audio/aiff,.mp3,.m4a,.wav,.aiff,.aif"></label><div class="form-row"><label>Volumen de voz<input id="voiceVolume" type="range" min="0" max="2" step="0.05" value="1"><output id="voiceVolumeValue">100%</output></label><label>Volumen de música<input id="musicVolume" type="range" min="0" max="1" step="0.01" value="0.16"><output id="musicVolumeValue">16%</output></label></div></div>
+              </details>
+
+              <details>
+                <summary><span class="tool-icon">✦</span><span><strong>Efectos de sonido</strong><small>Acento automático en cada cambio de toma</small></span></summary>
+                <div class="tool-content"><label>Efecto automático<select id="sfxPreset"><option value="soft">Golpe suave</option><option value="energetic">Golpe enérgico</option><option value="none">Sin efectos</option></select><small>Se genera localmente y se coloca en los cortes.</small></label><label>Sonido personalizado <small>(reemplaza el automático)</small><input id="soundFile" type="file" accept="audio/mpeg,audio/mp4,audio/wav,audio/aiff,.mp3,.m4a,.wav,.aiff,.aif"></label><label>Intensidad<input id="soundVolume" type="range" min="0" max="1" step="0.01" value="0.55"><output id="soundVolumeValue">55%</output></label></div>
+              </details>
+
+              <details open>
+                <summary><span class="tool-icon">◈</span><span><strong>Imágenes y etiquetas</strong><small>Recursos visuales encima del video</small></span></summary>
+                <div class="tool-content"><label>Imágenes <small>(PNG, JPG o WEBP; puedes elegir varias)</small><input id="imageFiles" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" multiple></label><label>Etiquetas <small>(una por línea)</small><textarea id="overlayLabels" rows="3" placeholder="Idea clave\nPaso 1\nResultado"></textarea></label><div class="form-row"><label>Posición<select id="overlayPosition"><option value="top">Arriba</option><option value="center">Centro</option><option value="bottom">Abajo</option></select></label><label>Tiempo visible<input id="overlayDuration" type="range" min="0.5" max="10" step="0.5" value="2.5"><output id="overlayDurationValue">2.5 s</output></label></div></div>
+              </details>
+
+              <details>
+                <summary><span class="tool-icon">▣</span><span><strong>Encuadre y fondo</strong><small>Composición vertical 9:16</small></span></summary>
+                <div class="tool-content form-row"><label>Encuadre<select id="framing"><option value="fit">Mostrar imagen completa</option><option value="fill">Llenar pantalla</option></select></label><label>Fondo<select id="background"><option value="purple">Morado Kiko</option><option value="black">Negro</option><option value="cream">Crema</option></select></label></div>
+              </details>
+            </div>
+            <button id="processButton" class="primary" type="submit">Analizar y crear montaje</button>
+            <p class="fine">Una sola salida vertical 9:16 · orden narrativo · cortes · audio conservado · subtítulos · MP4 verificado</p>
+          </form>
+          <article class="card result-card">
+            <h3>Resultado</h3>
+            <div id="videoProgress" class="render-progress" aria-live="polite">
+              <div class="render-progress-head"><span id="progressStage">Listo para comenzar</span><strong id="progressPercent">0%</strong></div>
+              <div class="render-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="progressFill"></span></div>
+              <p id="progressMessage">Selecciona las tomas y pulsa Analizar y crear montaje.</p>
+              <div class="render-stages">
+                <span data-stage="transcribing">Voz</span><span data-stage="planning">3 IA</span><span data-stage="timeline">Cortes</span><span data-stage="effects">Efectos</span><span data-stage="rendering">Render</span><span data-stage="verifying">Control</span>
+              </div>
+            </div>
+            <div id="videoResult"></div>
+          </article>
+        </div>
+        <div class="section-head compact"><h3>Montajes terminados</h3></div>
+        <div id="editList" class="grid cards"></div>
+        <div class="section-head compact"><h3>Biblioteca de videos</h3></div>
+        <div id="videoList" class="grid cards"></div>
+        <details class="trash-panel"><summary><span>Papelera de videos</span><span id="videoTrashCount" class="status">0</span></summary><p class="muted">Los videos eliminados se conservan y pueden restaurarse.</p><div id="videoTrashList" class="grid cards"></div></details>
+      </section>
+
+      <section id="semantic" class="view">
+        <div class="section-head"><div><p class="eyebrow">EDICIÓN SEMÁNTICA</p><h2>Editor semántico</h2><p class="muted">Subes tus tomas y tu libreto, Kiko compara lo que dijiste con lo que escribiste y propone el montaje, los gráficos y los sonidos. Revisas el plan, ves una vista previa y solo entonces se renderiza. Los originales nunca se modifican.</p></div><span id="semanticStatus" class="status">Comprobando…</span></div>
+        <div class="grid two editor-grid">
+          <form id="semanticForm" class="card form-card">
+            <div class="semantic-step"><i>1</i><div><strong>Proyecto</strong><select id="semanticProject" required aria-label="Proyecto"></select></div></div>
+            <div class="semantic-step"><i>2</i><div><strong>Tomas</strong><small>Marca todas las tomas del video; el libreto decide el orden. Si repetiste una frase, se usa la última versión completa.</small>
+              <div id="semanticTakes" class="semantic-takes"><div class="empty">No hay tomas en este proyecto.</div></div>
+              <label class="semantic-upload">Sube tomas nuevas <small>(MOV o MP4, verticales)</small><input id="semanticFile" type="file" multiple accept="video/mp4,video/quicktime,.mp4,.mov"></label>
+            </div></div>
+            <div class="semantic-step"><i>3</i><div><strong>Libreto <span class="required">obligatorio</span></strong><small>Es el texto que dices en las tomas. Con él Kiko corrige la transcripción, ordena las tomas, descarta los errores y sabe dónde va cada gráfico.</small>
+              <textarea id="semanticLibreto" aria-label="Libreto" rows="9" placeholder="Una idea por línea, tal como la dices.&#10;En la parábola de los talentos, el tercer siervo entierra lo que recibió. [IMAGEN biblia.png]&#10;¿Cuántas cosas ha enterrado usted? [TEXTO]"></textarea>
+              <div class="semantic-libreto-bar"><label class="quiet file-button">Cargar archivo<input id="semanticLibretoFile" type="file" accept=".txt,.md,.docx,.doc,.rtf,.odt"></label><span id="semanticLibretoCount" class="fine">0 palabras</span></div>
+              <div id="semanticMissingImages" class="semantic-missing" hidden></div>
+            </div></div>
+            <div class="semantic-step"><i>4</i><div><strong>Objetivo de la edición</strong><small>Qué quieres lograr: plataforma, público, tono. El Director analiza la toma y te recomienda qué skills usar para lograrlo.</small>
+              <textarea id="semanticObjetivo" aria-label="Objetivo de la edición" rows="3" maxlength="600" placeholder="Ejemplo: Reel para Instagram que inspire a emprender, tono cercano y emotivo, para ganar seguidores."></textarea>
+              <div id="semanticSkillsStrip" class="semantic-skills-strip"></div>
+            </div></div>
+            <div class="semantic-step"><i>5</i><div><strong>Revisión con IA</strong><select id="semanticIa" aria-label="Revisión con IA"><option value="auto">Automática (Claude, Codex o Gemini)</option><option value="no">Solo análisis local</option></select><small>Sesiones autorizadas, sin claves API. La IA solo propone y todo se valida: no puede inventar tiempos, textos ni cifras.</small></div></div>
+            <button id="semanticPlanButton" class="primary" type="submit">Planificar edición</button>
+            <p class="fine">Trabaja en segundo plano: puedes seguir usando el panel y te aviso cuando el plan esté listo.</p>
+          </form>
+          <div class="semantic-side">
+            <article class="card result-card">
+              <h3>Progreso</h3>
+              <div id="semanticProgress" class="render-progress" aria-live="polite">
+                <div class="render-progress-head"><span class="semantic-stage">Listo para comenzar</span><strong class="semantic-percent">0%</strong></div>
+                <div class="render-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span class="semantic-fill"></span></div>
+                <p class="semantic-message">Elige las tomas, pega el libreto y pulsa Planificar edición.</p>
+              </div>
+              <h3>Ediciones anteriores</h3>
+              <div id="semanticHistory" class="semantic-history"><div class="empty">Todavía no hay ediciones semánticas.</div></div>
+            </article>
+            <details class="card semantic-guide">
+              <summary><span>Cómo preparar tu material</span><small>Léelo antes de grabar</small></summary>
+              <h4>Tomas</h4>
+              <ul>
+                <li>Graba en vertical (1080×1920), a 30 fps, con buena luz de frente y el micrófono cerca.</li>
+                <li>Deja un segundo de silencio antes de hablar. Si te equivocas, repite la frase completa: Kiko se queda con la última.</li>
+                <li>Puedes grabar por partes y en cualquier orden; el libreto las ordena.</li>
+              </ul>
+              <h4>Libreto</h4>
+              <ul>
+                <li>Una idea por línea, escrita como la dices. Los nombres y cifras bien escritos corrigen la transcripción.</li>
+                <li>Las indicaciones van entre corchetes al final de la línea a la que pertenecen. Las líneas que empiezan con # son notas y se ignoran.</li>
+              </ul>
+              <table class="semantic-directives">
+                <tr><td><code>[IMAGEN biblia.png]</code></td><td>Muestra tu imagen mientras dices la línea.</td></tr>
+                <tr><td><code>[IMAGEN biblia "Biblia antigua con luz de vela"]</code></td><td>Si todavía no la tienes, Kiko te ofrece generarla con IA a partir de esa descripción.</td></tr>
+                <tr><td><code>[TEXTO]</code></td><td>La línea en letras grandes.</td></tr>
+                <tr><td><code>[TEXTO "MATEO 25"]</code></td><td>Ese texto, sobre las palabras que lo dicen.</td></tr>
+                <tr><td><code>[MAPA Japón]</code></td><td>Mapa del país resaltado.</td></tr>
+                <tr><td><code>[ICONO trophy]</code></td><td>Ícono de la librería (nombre en inglés de Tabler Icons).</td></tr>
+                <tr><td><code>[SONIDO golpe.wav]</code></td><td>Tu sonido al empezar la línea.</td></tr>
+                <tr><td><code>[SIN GRÁFICO]</code></td><td>Nada en pantalla durante esa línea.</td></tr>
+              </table>
+              <h4>Recursos</h4>
+              <ul>
+                <li>El nombre del archivo es como lo llamas en el libreto: <code>biblia.png</code> se pide con <code>[IMAGEN biblia.png]</code> o <code>[IMAGEN biblia]</code>.</li>
+                <li>Imágenes PNG, JPG o WEBP de al menos 1080 px de ancho; logo en PNG con fondo transparente.</li>
+                <li>Sonidos cortos (WAV o MP3) y música sin voz. Si subes música, se usa en lugar de la base de Apple Loops.</li>
+                <li>Solo material propio, comprado con licencia o libre de derechos; la licencia es obligatoria.</li>
+                <li>¿No tienes la imagen? Genérala con IA (ChatGPT o Gemini): la revisas y solo entra a tus recursos si la apruebas.</li>
+              </ul>
+            </details>
+            <article class="card form-card semantic-library">
+              <div class="card-head"><h3>Recursos del proyecto</h3><span id="semanticAssetCount" class="status">0</span></div>
+              <div id="semanticAssets" class="semantic-assets"><div class="empty">Todavía no hay recursos.</div></div>
+              <form id="semanticAssetForm" class="semantic-asset-form">
+                <div class="form-row"><label>Tipo<select id="semanticAssetKind"><option value="image">Imagen</option><option value="logo">Logo</option><option value="sound">Sonido</option><option value="music">Música</option></select></label>
+                <label>Licencia<select id="semanticAssetLicense"><option value="Propia">Propia (la hice yo)</option><option value="Comprada con licencia">Comprada con licencia</option><option value="Libre de derechos (CC0)">Libre de derechos (CC0)</option><option value="otra">Otra…</option></select></label></div>
+                <input id="semanticAssetLicenseOther" hidden placeholder="Licencia y fuente, por ejemplo: Pixabay License, pixabay.com/…">
+                <label>Archivo<input id="semanticAssetFile" type="file" required></label>
+                <label class="semantic-check"><input id="semanticAssetRights" type="checkbox" required><span>Confirmo que tengo derecho a usar este recurso en mis videos.</span></label>
+                <button class="quiet" type="submit">Subir recurso</button>
+              </form>
+            </article>
+            <form id="semanticImageForm" class="card form-card semantic-generator">
+              <div class="card-head"><h3>Generar imagen con IA</h3><span id="semanticImageProviders" class="status">Comprobando…</span></div>
+              <label>Qué debe mostrar<textarea id="semanticImageText" rows="3" placeholder="Una Biblia antigua abierta sobre una mesa de madera, con luz de vela"></textarea></label>
+              <div class="form-row"><label>Nombre<input id="semanticImageName" maxlength="60" placeholder="biblia-antigua"></label>
+              <label>Estilo<select id="semanticImageStyle"><option value="foto">Fotografía realista</option><option value="cine">Cinematográfico</option><option value="ilustracion">Ilustración</option><option value="3d">Render 3D</option><option value="acuarela">Acuarela</option></select></label></div>
+              <label>IA<select id="semanticImageProvider"><option value="auto">Automática (ChatGPT o Gemini)</option><option value="ambas">Las dos, para elegir la mejor</option><option value="codex">ChatGPT</option><option value="gemini">Gemini (Antigravity)</option></select><small>Usa tu plan de ChatGPT o de Google, sin claves API, y tarda alrededor de un minuto. Claude no tiene generador de imágenes.</small></label>
+              <button class="quiet" type="submit">Generar imagen</button>
+              <div id="semanticImages" class="semantic-images"></div>
+            </form>
+            <form id="semanticBrandForm" class="card form-card semantic-brand">
+              <div class="card-head"><h3>Plantilla de marca</h3><span class="status">Por proyecto</span></div>
+              <div class="semantic-colors">
+                <label>Fondo<input id="semanticColorMorado" type="color"></label>
+                <label>Acento<input id="semanticColorVioleta" type="color"></label>
+                <label>Resaltado<input id="semanticColorAmarillo" type="color"></label>
+              </div>
+              <label>Logo<select id="semanticBrandLogo"><option value="">Sin logo</option></select><small>Sube el logo arriba como tipo «Logo».</small></label>
+              <label class="semantic-check"><input id="semanticBrandWatermark" type="checkbox"><span>Logo pequeño como marca de agua mientras hablas</span></label>
+              <div class="form-row"><label>Tarjeta final<input id="semanticBrandClosing" maxlength="80" placeholder="Sígueme para más"></label><label>Duración<select id="semanticBrandClosingSeconds"><option value="2">2 s</option><option value="2.5">2,5 s</option><option value="3">3 s</option><option value="4">4 s</option></select></label></div>
+              <button class="quiet" type="submit">Guardar plantilla</button>
+            </form>
+          </div>
+        </div>
+        <div id="semanticPlan"></div>
+      </section>
+
+      <section id="skills" class="view">
+        <div class="section-head"><div><p class="eyebrow">SKILLS DE EDICIÓN</p><h2>Skills</h2><p class="muted">Cada skill se encarga de una parte de la edición. Actívalas, cambia sus instrucciones y súbeles recursos. El Director las orquesta: analiza cada toma y tu objetivo y te recomienda cuáles usar.</p></div><span id="skillsStatus" class="status">Cargando…</span></div>
+        <div id="skillsDirector"></div>
+        <div id="skillsGrid" class="skills-grid"></div>
+        <dialog id="skillDialog" class="skill-dialog" aria-labelledby="skillDialogTitle"><form id="skillForm" method="dialog"></form></dialog>
+      </section>
+
+      <section id="projects" class="view">
+        <div class="section-head"><div><p class="eyebrow">ESPACIOS AISLADOS</p><h2>Proyectos</h2><p class="muted">Cada proyecto conserva sus videos, montajes y preferencias por separado.</p></div><button class="primary" id="newProject">Nuevo proyecto</button></div>
+        <div id="projectList" class="grid cards"></div>
+        <details class="trash-panel"><summary><span>Papelera</span><span id="trashCount" class="status">0</span></summary><p class="muted">Los proyectos eliminados se conservan completos y pueden restaurarse.</p><div id="trashList" class="grid cards"></div></details>
+      </section>
+
+      <section id="trends" class="view">
+        <div class="section-head"><div><p class="eyebrow">REFERENCIAS VERIFICABLES</p><h2>Ideas y tendencias</h2><p class="muted">Registra una referencia autorizada y Kiko Studio prepara una idea original sin inventar métricas.</p></div></div>
+        <div class="grid two">
+          <form id="trendForm" class="card form-card">
+            <label>Proyecto<select id="trendProject" required></select></label>
+            <label>Título<input id="trendTitle" required placeholder="Título de la referencia"></label>
+            <label>Enlace verificable<input id="trendUrl" type="url" required placeholder="https://..."></label>
+            <div class="form-row"><label>Creador<input id="trendCreator" required placeholder="Nombre"></label><label>Plataforma<input id="trendPlatform" required placeholder="Instagram, TikTok…"></label></div>
+            <label>Tema<input id="trendTopic" required placeholder="Emprendimiento, IA, marca…"></label>
+            <button class="primary" type="submit">Guardar y crear idea</button>
+          </form>
+          <article class="card"><h3>Idea generada</h3><div id="ideaResult" class="empty">Añade una referencia para generar un hook, estructura y CTA.</div></article>
+        </div>
+        <div id="trendList" class="grid cards top-gap"></div>
+      </section>
+
+      <section id="style" class="view">
+        <div class="section-head"><div><p class="eyebrow">APRENDIZAJE CONTROLADO</p><h2>Estilo Kiko</h2><p class="muted">Guarda preferencias confirmadas y revierte cualquier corrección. Nada se aprende como regla permanente sin tu decisión.</p></div></div>
+        <div class="grid two">
+          <form id="styleForm" class="card form-card">
+            <label>Proyecto<select id="styleProject" required></select></label>
+            <label>Preferencia<select id="styleKey"><option value="subtitle_style">Estilo de subtítulos</option><option value="pace">Ritmo</option><option value="framing">Encuadre</option><option value="music">Música</option><option value="typography">Tipografía</option><option value="cta">CTA</option></select></label>
+            <label>Valor confirmado<input id="styleValue" required placeholder="Ejemplo: frases cortas, blanco sobre morado"></label>
+            <label>Motivo<textarea id="styleRationale" rows="2" required placeholder="Por qué esta preferencia representa tu estilo"></textarea></label>
+            <button class="primary" type="submit">Guardar preferencia</button>
+          </form>
+          <article class="card"><h3>Preferencias activas</h3><div id="stylePreferences" class="empty">Aún no hay preferencias confirmadas.</div></article>
+        </div>
+        <div class="section-head compact"><h3>Historial reversible</h3></div>
+        <div id="styleHistory" class="card"></div>
+      </section>
+
+      <section id="team" class="view">
+        <div class="section-head"><div><p class="eyebrow">COLABORACIÓN SIN API</p><h2>Codex + Claude + Gemini</h2><p class="muted">El coordinador conserva evidencia y solo cuenta ejecuciones reales. Ninguna clave API es necesaria.</p></div></div>
+        <div class="card notice"><strong>Cómo trabajan</strong><p>Codex coordina e integra; Claude revisa decisiones de arquitectura y calidad; Gemini contrasta criterios y propone pruebas. Las tareas mecánicas de video se ejecutan localmente para no gastar tokens.</p></div>
+        <article class="card notice top-gap" id="cloudDirectorCard">
+          <div class="card-head"><div><p class="eyebrow">SKILL CLOUD CONECTADA</p><h3 id="cloudDirectorName">Kiko Video Director</h3></div><span id="cloudDirectorStatus" class="status ready">Activa</span></div>
+          <p>Convierte la solicitud en un contrato, valida la línea de tiempo y bloquea cualquier entrega que no tenga edición real.</p>
+          <div id="cloudDirectorTools" class="mcp-tools"></div>
+          <div class="actions"><a id="cloudDirectorLink" class="quiet link-button" target="_blank" rel="noreferrer">Abrir director cloud</a></div>
+        </article>
+        <article class="card ai-chat top-gap">
+          <div class="card-head"><div><p class="eyebrow">HABLA CON EL EQUIPO</p><h3>Director creativo IA</h3></div><span id="chatTeamStatus" class="status">Listo</span></div>
+          <div id="chatMessages" class="chat-messages"><div class="chat-welcome"><strong>Cuéntame el resultado que quieres.</strong><p>Puedes explicar el tema, el público, la duración, el tono, las referencias y qué debe ocurrir con tus videos.</p></div></div>
+          <form id="chatForm" class="chat-composer">
+            <textarea id="chatInput" rows="3" maxlength="20000" required placeholder="Ejemplo: Quiero un reel de 45 segundos, enérgico, que elimine silencios y cierre invitando a escribir HERRAMIENTA…"></textarea>
+            <div class="chat-actions"><small>Enter para enviar · Shift + Enter para nueva línea</small><button id="chatSend" class="primary" type="submit">Enviar al equipo</button></div>
+          </form>
+        </article>
+        <div id="teamProviders" class="grid cards top-gap"></div>
+        <div class="section-head compact"><div><p class="eyebrow">HERRAMIENTAS COMPARTIDAS</p><h2>Complementos y MCP</h2><p class="muted">Conecta servidores MCP locales o HTTP y decide qué IA puede usarlos. No se guardan claves ni contraseñas.</p></div></div>
+        <div class="grid two mcp-layout">
+          <form id="mcpForm" class="card form-card">
+            <h3>Agregar conexión</h3>
+            <label>Nombre<input id="mcpName" required maxlength="80" placeholder="Ejemplo: Archivos del proyecto"></label>
+            <label>Tipo<select id="mcpTransport"><option value="stdio">Servidor local</option><option value="http">Servidor HTTP</option></select></label>
+            <div id="mcpLocalFields">
+              <label>Ejecutable<input id="mcpCommand" placeholder="Ejemplo: npx o /ruta/al/servidor"></label>
+              <label>Argumentos<input id="mcpArguments" placeholder="Ejemplo: -y paquete-mcp /ruta/permitida"></label>
+            </div>
+            <div id="mcpHttpFields" hidden>
+              <label>URL del servidor<input id="mcpUrl" type="url" placeholder="http://127.0.0.1:3000/mcp"></label>
+            </div>
+            <fieldset class="agent-access"><legend>Compartir con</legend>
+              <label><input type="checkbox" name="mcpAgent" value="codex" checked> Codex</label>
+              <label><input type="checkbox" name="mcpAgent" value="claude" checked> Claude</label>
+              <label><input type="checkbox" name="mcpAgent" value="gemini" checked> Gemini</label>
+            </fieldset>
+            <p class="fine">Guardar no ejecuta nada. Después usa “Probar conexión” y actívala cuando Kiko reconozca sus herramientas.</p>
+            <button class="primary" type="submit">Guardar complemento</button>
+          </form>
+          <article class="card"><div class="card-head"><h3>Conexiones</h3><span id="mcpCount" class="status">0</span></div><div id="mcpList" class="mcp-list"><div class="empty">Todavía no hay complementos.</div></div></article>
+        </div>
+      </section>
+
+      <section id="tasks" class="view"><div class="section-head"><div><p class="eyebrow">COLA RECUPERABLE</p><h2>Tareas</h2></div></div><div id="taskList" class="card"></div></section>
+    </main>
+  </div>
+  <div id="stylePreviewModal" class="style-preview-modal" role="dialog" aria-modal="true" aria-labelledby="stylePreviewTitle" hidden>
+    <div class="style-preview-dialog">
+      <button id="closeStylePreview" class="style-preview-close" type="button" aria-label="Cerrar ejemplo">×</button>
+      <div class="style-preview-copy"><span class="eyebrow">EJEMPLO ANIMADO</span><h2 id="stylePreviewTitle"></h2><p id="stylePreviewDescription"></p></div>
+      <div id="stylePreviewLarge"></div>
+      <button id="applyPreviewStyle" class="primary" type="button">Usar este estilo</button>
+    </div>
+  </div>
+  <div id="toast"></div>
+  <script src="/static/app.js?v=18"></script>
+  <script src="/static/recording.js?v=1"></script>
+  <script src="/static/semantic.js?v=6"></script>
+  <script src="/static/skills.js?v=5"></script>
+</body>
+</html>
