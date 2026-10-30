@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "kiko-video-director",
+  "name": "Kiko Video Director",
+  "version": "1.0.2",
+  "entrypoint": "SKILL.md",
+  "description": "Dirección, validación y diagnóstico de ediciones reales en Segmenta Studio.",
+  "capabilities": ["plan-edit","validate-timeline","diagnose-render","release-gate"],
+  "contracts": ["kiko.edit-contract.v1"],
+  "runtime": {"type":"instructions","networkRequired":false},
+  "owners": ["segmentamkt"]
+}
