@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "reemplazar-slug",
+  "name": "Nombre de la skill",
+  "version": "0.1.0",
+  "entrypoint": "SKILL.md",
+  "description": "Qué resuelve y cuándo debe usarse.",
+  "capabilities": [],
+  "contracts": [],
+  "runtime": {"type":"instructions","networkRequired":false},
+  "owners": ["segmentamkt"]
+}
