@@ -1,0 +1,4 @@
+{
+  "schemaVersion": 1,
+  "plugins": [{"id":"kiko-video-director","version":"1.0.2","path":"plugins/kiko-video-director","skill":"kiko-video-director","status":"compatibility-adapter","legacyPackage":"cloud/kiko-video-director-plugin"}]
+}
