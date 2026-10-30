@@ -1,0 +1,15 @@
+[project]
+name = "kiko-studio-ia"
+version = "0.1.0"
+description = "Núcleo multiagente local y estudio audiovisual privado para Kiko Orator"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+kiko-studio = "kiko_studio.app:main"
+kiko-core = "multiagent_core.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
