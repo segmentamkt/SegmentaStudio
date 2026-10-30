@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kiko Video Director"
+  short_description: "Dirige y verifica ediciones reales en Kiko Studio"
+  default_prompt: "Convierte mi solicitud en un contrato de edición para Kiko Studio, supervisa el proceso local y no declares el video terminado hasta superar la verificación final."
