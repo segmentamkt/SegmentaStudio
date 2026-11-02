@@ -1,0 +1,33 @@
+name: Sync Segmenta Studio app
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/sync-segmenta-studio.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout official repository
+        uses: actions/checkout@v4
+
+      - name: Download the working application
+        run: git clone --depth 1 https://github.com/fevepe1510-collab/kiko-studio-cloud-camera.git /tmp/segmenta-studio
+
+      - name: Place the app inside the monorepository
+        run: |
+          mkdir -p apps/segmenta-studio
+          rsync -a --delete --exclude='.git' /tmp/segmenta-studio/ apps/segmenta-studio/
+
+      - name: Publish synchronized application
+        run: |
+          git config user.name 'Segmenta Studio Bot'
+          git config user.email 'segmenta-studio@users.noreply.github.com'
+          git add apps/segmenta-studio
+          git diff --cached --quiet || git commit -m 'Publicar aplicación web Segmenta Studio'
+          git push
