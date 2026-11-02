@@ -21,6 +21,9 @@ export async function GET(request: Request) {
   query = id ? query.eq("id", id) : query.order("updated_at", { ascending: false });
   const result = id ? await query.maybeSingle() : await query;
   if (result.error) {
+    if (result.error.code === "42P01" || result.error.message.includes("kiko_edit_jobs")) {
+      return id ? Response.json({ error: "Ese plan temporal ya no está en esta sesión." }, { status: 404 }) : Response.json({ jobs: [] });
+    }
     console.error("editor job lookup failed", result.error);
     return Response.json({ error: result.error.message }, { status: 500 });
   }
@@ -89,7 +92,12 @@ export async function POST(request: Request) {
       id: crypto.randomUUID(), owner_id: user.userId, session_id: sessionId, style: style.id,
       objective, status: "planned", stage: "Plan editorial listo", progress: 8, contract,
     }).select().single();
-    if (inserted.error) throw inserted.error;
+    if (inserted.error) {
+      if (inserted.error.code === "42P01" || inserted.error.message.includes("kiko_edit_jobs")) {
+        return Response.json({ job: { id: crypto.randomUUID(), ownerId: user.userId, sessionId, style: style.id, objective, status: "planned", stage: "Plan editorial listo", progress: 8, contract, resultMetadata: {}, error: null, ephemeral: true } }, { status: 201 });
+      }
+      throw inserted.error;
+    }
     return Response.json({ job: toEditJob(inserted.data) }, { status: 201 });
   } catch (error) {
     console.error("editor plan creation failed", error);
