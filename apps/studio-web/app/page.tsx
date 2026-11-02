@@ -89,17 +89,33 @@ export default function Home() {
       setError("");
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "No se pudo abrir Segmenta Studio.";
-      if (message.toLowerCase().includes("iniciar sesión")) {
-        location.href = "/login";
-        return;
-      }
       setError(message);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    let active = true;
+    const openStudio = async () => {
+      try {
+        const supabase = createSupabaseClient();
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) throw sessionError;
+        if (!session) {
+          const { error: anonymousError } = await supabase.auth.signInAnonymously();
+          if (anonymousError) throw anonymousError;
+        }
+        if (active) await refresh();
+      } catch (reason) {
+        if (!active) return;
+        setError(reason instanceof Error ? reason.message : "No se pudo abrir Segmenta Studio.");
+        setLoading(false);
+      }
+    };
+    openStudio();
+    return () => { active = false; };
+  }, [refresh]);
   useEffect(() => { previewUrlRef.current = previewUrl; }, [previewUrl]);
   useEffect(() => () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
