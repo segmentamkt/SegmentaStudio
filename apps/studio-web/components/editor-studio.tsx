@@ -70,6 +70,13 @@ export function EditorStudio(props: {
   const render = async () => {
     if (!job) return;
     setBusy("render"); setError("");
+    const fallbackStages = ["Analizando voz y silencios", "Recortando tiempos muertos", "Aplicando estilo y subtítulos", "Mezclando audio y transiciones", "Validando el MP4 final"];
+    const progressTimer = job.ephemeral ? window.setInterval(() => setJob((current) => {
+      if (!current || current.status === "ready") return current;
+      const progress = Math.min(92, Number(current.progress || 8) + 5);
+      const stageIndex = Math.min(fallbackStages.length - 1, Math.floor(progress / 20));
+      return { ...current, status: "processing", progress, stage: fallbackStages[stageIndex] };
+    }), 1400) : 0;
     const poll = job.ephemeral ? 0 : window.setInterval(async () => {
       try {
         const result = await request<{ job: Row }>(`/api/editor?id=${job.id}`);
@@ -81,7 +88,7 @@ export function EditorStudio(props: {
       setJob(result.job);
       await props.onRefresh();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo renderizar el video."); }
-    finally { if (poll) window.clearInterval(poll); setBusy(""); }
+    finally { if (poll) window.clearInterval(poll); if (progressTimer) window.clearInterval(progressTimer); setBusy(""); }
   };
 
   return (
