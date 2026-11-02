@@ -2,11 +2,11 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Kiko Studio Cloud Camera",
+  title: "Segmenta Studio Cloud Camera",
   description: "Graba por escenas desde el celular, aprueba tomas y organiza cada portafolio en la nube.",
   manifest: "/manifest.webmanifest",
-  applicationName: "Kiko Studio",
-  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Kiko Studio" },
+  applicationName: "Segmenta Studio",
+  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Segmenta Studio" },
   formatDetection: { telephone: false },
   icons: {
     icon: "/favicon.svg",

@@ -2,8 +2,8 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Kiko Studio Cloud Camera",
-    short_name: "Kiko Studio",
+    name: "Segmenta Studio Cloud Camera",
+    short_name: "Segmenta Studio",
     description: "Graba por escenas, aprueba tomas y organiza cada portafolio desde el celular.",
     start_url: "/",
     scope: "/",

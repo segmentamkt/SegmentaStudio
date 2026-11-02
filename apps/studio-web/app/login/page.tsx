@@ -38,7 +38,7 @@ export default function LoginPage() {
     <main className="grid min-h-screen place-items-center bg-[#070910] p-5 text-white">
       <section className="w-full max-w-md rounded-[2rem] border border-white/10 bg-white/[.035] p-7 shadow-2xl">
         <span className="grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-violet-500 to-cyan-400"><Film /></span>
-        <p className="mt-6 text-[10px] font-bold uppercase tracking-[.22em] text-violet-300">Kiko Studio Cloud</p>
+        <p className="mt-6 text-[10px] font-bold uppercase tracking-[.22em] text-violet-300">Segmenta Studio Cloud</p>
         <h1 className="mt-2 text-3xl font-semibold">Tu estudio, desde cualquier lugar</h1>
         <p className="mt-3 text-sm leading-6 text-zinc-500">Inicia sesión para que cada cuenta conserve sus portafolios, libretos y tomas.</p>
         <button onClick={google} disabled={loading} className="mt-7 flex w-full items-center justify-center gap-2 rounded-2xl border border-white/12 bg-white px-4 py-3.5 text-sm font-semibold text-black disabled:opacity-50">Continuar con Google</button>
