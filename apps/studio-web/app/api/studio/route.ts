@@ -1,6 +1,6 @@
 import { createClient } from "../../../lib/supabase/server";
 import { getRequestUser, unauthorized } from "../../../lib/request-user";
-import { clean, scriptScenes, toAccount, toPortfolio, toScene, toSession, toTake } from "../../../lib/studio-data";
+import { clean, scriptScenes, toAccount, toEditJob, toPortfolio, toScene, toSession, toTake } from "../../../lib/studio-data";
 
 const accents = ["violet", "cyan", "rose", "amber"];
 
@@ -31,16 +31,17 @@ export async function GET() {
   try {
     await ensureStarter(user.userId, user.displayName);
     const supabase = await createClient();
-    const [accounts, portfolios, sessions, scenes, takes] = await Promise.all([
+    const [accounts, portfolios, sessions, scenes, takes, editJobs] = await Promise.all([
       supabase.from("kiko_brand_accounts").select("*").eq("owner_id", user.userId).order("created_at"),
       supabase.from("kiko_portfolios").select("*").eq("owner_id", user.userId).order("created_at"),
       supabase.from("kiko_recording_sessions").select("*").eq("owner_id", user.userId).order("updated_at", { ascending: false }),
       supabase.from("kiko_scenes").select("*").eq("owner_id", user.userId).order("position"),
       supabase.from("kiko_takes").select("*").eq("owner_id", user.userId).order("created_at", { ascending: false }),
+      supabase.from("kiko_edit_jobs").select("*").eq("owner_id", user.userId).order("updated_at", { ascending: false }),
     ]);
-    const failure = [accounts, portfolios, sessions, scenes, takes].find((result) => result.error)?.error;
+    const failure = [accounts, portfolios, sessions, scenes, takes, editJobs].find((result) => result.error)?.error;
     if (failure) throw failure;
-    return Response.json({ user, accounts: (accounts.data || []).map(toAccount), portfolios: (portfolios.data || []).map(toPortfolio), sessions: (sessions.data || []).map(toSession), scenes: (scenes.data || []).map(toScene), takes: (takes.data || []).map(toTake) });
+    return Response.json({ user, accounts: (accounts.data || []).map(toAccount), portfolios: (portfolios.data || []).map(toPortfolio), sessions: (sessions.data || []).map(toSession), scenes: (scenes.data || []).map(toScene), takes: (takes.data || []).map(toTake), editJobs: (editJobs.data || []).map(toEditJob) });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "No se pudo abrir el estudio." }, { status: 500 });
   }

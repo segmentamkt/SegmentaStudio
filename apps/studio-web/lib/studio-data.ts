@@ -20,6 +20,25 @@ export function toTake(row: DbRow) {
   return { id: row.id, ownerId: row.owner_id, sessionId: row.session_id, sceneId: row.scene_id, objectKey: row.object_key, mimeType: row.mime_type, bytes: Number(row.bytes || 0), durationMs: row.duration_ms, status: row.status, createdAt: row.created_at };
 }
 
+export function toEditJob(row: DbRow) {
+  return {
+    id: row.id,
+    ownerId: row.owner_id,
+    sessionId: row.session_id,
+    style: row.style,
+    objective: row.objective,
+    status: row.status,
+    stage: row.stage,
+    progress: row.progress,
+    contract: row.contract,
+    resultObjectKey: row.result_object_key,
+    resultMetadata: row.result_metadata,
+    error: row.error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 export function clean(value: unknown, fallback = "") {
   return typeof value === "string" ? value.trim() : fallback;
 }

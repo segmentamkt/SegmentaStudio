@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { Upload } from "tus-js-client";
 import { InstallAppButton } from "../components/install-app-button";
+import { EditorStudio } from "../components/editor-studio";
 import { createClient as createSupabaseClient } from "../lib/supabase/browser";
 
 type Row = Record<string, any>;
@@ -18,6 +19,7 @@ type Dashboard = {
   sessions: Row[];
   scenes: Row[];
   takes: Row[];
+  editJobs: Row[];
 };
 
 const accentClasses: Record<string, string> = {
@@ -47,7 +49,7 @@ export default function Home() {
   const [data, setData] = useState<Dashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [view, setView] = useState<"record" | "library">("record");
+  const [view, setView] = useState<"record" | "library" | "edit">("record");
   const [portfolioId, setPortfolioId] = useState("");
   const [sessionId, setSessionId] = useState("");
   const [sceneIndex, setSceneIndex] = useState(0);
@@ -352,11 +354,12 @@ export default function Home() {
             <div className="flex rounded-2xl border border-white/8 bg-black/25 p-1">
               <button onClick={() => setView("record")} className={`flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm ${view === "record" ? "bg-white text-black" : "text-zinc-400"}`}><Camera size={15} />Grabar</button>
               <button onClick={() => setView("library")} className={`flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm ${view === "library" ? "bg-white text-black" : "text-zinc-400"}`}><Library size={15} />Tomas</button>
+              <button onClick={() => setView("edit")} className={`flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm ${view === "edit" ? "bg-white text-black" : "text-zinc-400"}`}><Sparkles size={15} />Editar IA</button>
             </div>
           </div>
         </section>
 
-        {view === "record" ? (
+        {view === "edit" ? <EditorStudio portfolioId={portfolioId} sessions={data?.sessions || []} scenes={data?.scenes || []} takes={data?.takes || []} editJobs={data?.editJobs || []} onRefresh={refresh} onBack={() => setView("library")} /> : view === "record" ? (
           <div className="grid gap-5 xl:grid-cols-[300px_minmax(0,1fr)_330px]">
             <aside className="space-y-4">
               <div className="flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-zinc-600">Producciones</p><h2 className="mt-1 font-medium">Tus grabaciones</h2></div><button onClick={() => setShowNewSession(true)} className="grid h-9 w-9 place-items-center rounded-xl bg-violet-500 text-white"><Plus size={16} /></button></div>
@@ -392,7 +395,7 @@ export default function Home() {
           </div>
         ) : (
           <section>
-            <div className="mb-5 flex items-end justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Biblioteca cloud</p><h2 className="mt-1 text-2xl font-semibold">Tomas de {currentPortfolio?.name}</h2></div><button onClick={() => setView("record")} className="hidden items-center gap-2 rounded-xl border border-white/10 px-4 py-2.5 text-sm sm:flex"><ArrowLeft size={15} />Volver a grabar</button></div>
+            <div className="mb-5 flex items-end justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Biblioteca cloud</p><h2 className="mt-1 text-2xl font-semibold">Tomas de {currentPortfolio?.name}</h2></div><div className="hidden gap-2 sm:flex"><button onClick={() => setView("edit")} className="flex items-center gap-2 rounded-xl bg-violet-500 px-4 py-2.5 text-sm font-semibold"><Sparkles size={15} />Editar con IA</button><button onClick={() => setView("record")} className="flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2.5 text-sm"><ArrowLeft size={15} />Volver a grabar</button></div></div>
             <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{sessions.map((session) => { const sceneRows = (data?.scenes || []).filter((scene) => scene.sessionId === session.id); const takeRows = sessionTakes.filter((take) => take.sessionId === session.id); const allTakes = (data?.takes || []).filter((take) => take.sessionId === session.id); return <article key={session.id} className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><div className="flex items-start justify-between"><div><span className={`rounded-full px-2.5 py-1 text-[10px] ${session.status === "ready_for_edit" ? "bg-emerald-400/10 text-emerald-300" : "bg-violet-400/10 text-violet-300"}`}>{session.status === "ready_for_edit" ? "Lista para edición" : "En grabación"}</span><h3 className="mt-3 font-medium">{session.title}</h3><p className="mt-1 text-xs text-zinc-600">{sceneRows.filter((scene) => scene.selectedTakeId).length}/{sceneRows.length} escenas aprobadas · {allTakes.filter((take) => take.status === "blooper").length} bloopers</p></div><button onClick={() => removeSession(session.id)} className="text-zinc-700 hover:text-red-300"><Trash2 size={16} /></button></div><div className="mt-5 grid grid-cols-3 gap-2">{allTakes.slice(0, 6).map((take) => <div key={take.id} className="group relative aspect-[9/16] overflow-hidden rounded-xl bg-black"><video src={`/api/media/${take.id}`} className="h-full w-full object-cover" preload="metadata" /><span className={`absolute bottom-1.5 left-1.5 rounded-full bg-black/70 px-2 py-1 text-[8px] ${take.status === "approved" ? "text-emerald-300" : take.status === "blooper" ? "text-amber-200" : "text-zinc-300"}`}>{statusLabel(take.status)}</span><button onClick={() => removeTake(take.id)} className="absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-full bg-black/70 opacity-0 transition group-hover:opacity-100"><Trash2 size={11} /></button></div>)}</div><button onClick={() => { setSessionId(session.id); setView("record"); }} className="mt-5 flex w-full items-center justify-between rounded-xl border border-white/8 bg-black/20 px-4 py-3 text-sm">Abrir producción <ChevronRight size={15} /></button></article>; })}</div>
             {!sessions.length && <div className="grid min-h-[420px] place-items-center rounded-3xl border border-dashed border-white/10 text-center"><div><Library className="mx-auto text-zinc-700" size={40} /><p className="mt-4 text-zinc-500">Todavía no hay tomas en este portafolio.</p></div></div>}
           </section>
