@@ -51,3 +51,4 @@ venv/
 
 # macOS
 .DS_Store
+.vercel
