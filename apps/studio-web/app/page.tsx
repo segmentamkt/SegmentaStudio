@@ -346,20 +346,34 @@ export default function Home() {
         </div>
       </header>
 
-      <div className="mx-auto max-w-[1500px] px-4 py-5 sm:px-7">
+      <div className="mx-auto max-w-[1500px] px-3 py-3 sm:px-7 sm:py-5">
         {error && <div className="mb-5 flex items-start justify-between rounded-2xl border border-red-400/20 bg-red-400/8 p-4 text-sm text-red-100"><span>{error}</span><button onClick={() => setError("")}><X size={16} /></button></div>}
-        <section className={`mb-5 overflow-hidden rounded-3xl bg-gradient-to-r ${accentClasses[currentPortfolio?.accent] || accentClasses.violet} p-[1px]`}>
-          <div className="flex flex-col justify-between gap-4 rounded-[23px] bg-[#0c0f18]/95 p-5 sm:flex-row sm:items-center">
-            <div><p className="text-[10px] font-bold uppercase tracking-[.2em] text-violet-300">{currentPortfolio?.niche}</p><h1 className="mt-1 text-xl font-semibold sm:text-2xl">{currentPortfolio?.name || "Tu portafolio"}</h1><p className="mt-1 text-sm text-zinc-500">{currentPortfolio?.essence}</p></div>
+        <section className={`mb-3 overflow-hidden rounded-2xl bg-gradient-to-r sm:mb-5 sm:rounded-3xl ${accentClasses[currentPortfolio?.accent] || accentClasses.violet} p-[1px]`}>
+          <div className="flex flex-col justify-between gap-3 rounded-[15px] bg-[#0c0f18]/95 p-3.5 sm:gap-4 sm:rounded-[23px] sm:p-5 sm:flex-row sm:items-center">
+            <div className="min-w-0"><p className="truncate text-[9px] font-bold uppercase tracking-[.18em] text-violet-300 sm:text-[10px]">{currentPortfolio?.niche}</p><h1 className="mt-0.5 truncate text-lg font-semibold sm:mt-1 sm:text-2xl">{currentPortfolio?.name || "Tu portafolio"}</h1><p className="mt-0.5 truncate text-xs text-zinc-500 sm:mt-1 sm:text-sm">{currentPortfolio?.essence}</p></div>
             <div className="flex rounded-2xl border border-white/8 bg-black/25 p-1">
-              <button onClick={() => setView("record")} className={`flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm ${view === "record" ? "bg-white text-black" : "text-zinc-400"}`}><Camera size={15} />Grabar</button>
-              <button onClick={() => setView("library")} className={`flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm ${view === "library" ? "bg-white text-black" : "text-zinc-400"}`}><Library size={15} />Tomas</button>
-              <button onClick={() => setView("edit")} className={`flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm ${view === "edit" ? "bg-white text-black" : "text-zinc-400"}`}><Sparkles size={15} />Editar IA</button>
+              <button onClick={() => setView("record")} className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs sm:gap-2 sm:px-4 sm:text-sm ${view === "record" ? "bg-white text-black" : "text-zinc-400"}`}><Camera size={15} />Grabar</button>
+              <button onClick={() => setView("library")} className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs sm:gap-2 sm:px-4 sm:text-sm ${view === "library" ? "bg-white text-black" : "text-zinc-400"}`}><Library size={15} />Tomas</button>
+              <button onClick={() => setView("edit")} className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs sm:gap-2 sm:px-4 sm:text-sm ${view === "edit" ? "bg-white text-black" : "text-zinc-400"}`}><Sparkles size={15} />Editar IA</button>
             </div>
           </div>
         </section>
 
         {view === "edit" ? <EditorStudio portfolioId={portfolioId} sessions={data?.sessions || []} scenes={data?.scenes || []} takes={data?.takes || []} editJobs={data?.editJobs || []} onRefresh={refresh} onBack={() => setView("library")} /> : view === "record" ? (
+          !sessions.length ? <section className="overflow-hidden rounded-2xl border border-white/8 bg-white/[.025] sm:rounded-3xl">
+            <div className="bg-[radial-gradient(circle_at_100%_0%,rgba(124,58,237,.18),transparent_42%)] p-5 sm:p-10">
+              <span className="grid h-11 w-11 place-items-center rounded-2xl bg-violet-400/12 text-violet-200"><Video size={20} /></span>
+              <p className="mt-5 text-[9px] font-bold uppercase tracking-[.2em] text-violet-300">Tu primer rodaje</p>
+              <h2 className="mt-1 text-2xl font-semibold leading-tight">Graba en orden, sin guardar errores</h2>
+              <p className="mt-2 max-w-lg text-sm leading-6 text-zinc-500">Pega el libreto, graba cada escena y decide al instante si se aprueba, se repite o va a bloopers.</p>
+              <div className="mt-5 grid grid-cols-3 gap-2 text-center text-[10px] text-zinc-400 sm:max-w-lg sm:text-xs">
+                <span className="rounded-xl border border-white/8 bg-black/20 px-2 py-3"><b className="mb-1 block text-violet-300">1</b>Libreto</span>
+                <span className="rounded-xl border border-white/8 bg-black/20 px-2 py-3"><b className="mb-1 block text-violet-300">2</b>Escenas</span>
+                <span className="rounded-xl border border-white/8 bg-black/20 px-2 py-3"><b className="mb-1 block text-violet-300">3</b>Aprobar</span>
+              </div>
+              <button onClick={() => setShowNewSession(true)} className="mt-5 flex w-full items-center justify-center gap-2 rounded-2xl bg-violet-500 px-5 py-3.5 text-sm font-semibold sm:w-auto"><Plus size={17} />Crear mi primera grabación</button>
+            </div>
+          </section> :
           <div className="grid gap-5 xl:grid-cols-[300px_minmax(0,1fr)_330px]">
             <aside className="space-y-4">
               <div className="flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-zinc-600">Producciones</p><h2 className="mt-1 font-medium">Tus grabaciones</h2></div><button onClick={() => setShowNewSession(true)} className="grid h-9 w-9 place-items-center rounded-xl bg-violet-500 text-white"><Plus size={16} /></button></div>
@@ -386,7 +400,7 @@ export default function Home() {
                   {previewUrl && !uploading && <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/80 to-transparent p-5 pt-20"><p className="mb-4 text-center text-sm font-medium">¿Qué hacemos con esta toma?</p><div className="grid grid-cols-3 gap-2"><button onClick={clearRecording} className="rounded-xl border border-white/15 bg-black/50 px-2 py-3 text-xs"><RotateCcw size={16} className="mx-auto mb-1" />Repetir</button><button onClick={() => classifyRecording("blooper")} className="rounded-xl border border-amber-300/25 bg-amber-300/10 px-2 py-3 text-xs text-amber-200"><Aperture size={16} className="mx-auto mb-1" />Blooper</button><button onClick={() => classifyRecording("approved")} className="rounded-xl bg-emerald-400 px-2 py-3 text-xs font-semibold text-black"><Check size={16} className="mx-auto mb-1" />Aprobar</button></div></div>}
                 </div>
                 <div className="mx-auto mt-4 flex max-w-[480px] items-center justify-between gap-4 rounded-2xl border border-white/8 bg-white/[.03] p-3"><label className="text-xs text-zinc-500">Velocidad del libreto</label><input type="range" min="1" max="6" value={scrollSpeed} onChange={(event) => setScrollSpeed(Number(event.target.value))} className="accent-violet-500" /><span className="text-xs text-zinc-500">{scrollSpeed}x</span></div>
-              </> : <div className="grid min-h-[560px] place-items-center rounded-3xl border border-dashed border-white/10 bg-white/[.02] p-8 text-center"><div><FolderOpen className="mx-auto text-zinc-700" size={40} /><h2 className="mt-5 text-xl font-semibold">Prepara tu primera grabación</h2><p className="mt-2 max-w-sm text-sm leading-6 text-zinc-500">Pega el libreto y Segmenta Studio lo separará en escenas para grabarlas en orden.</p><button onClick={() => setShowNewSession(true)} className="mt-6 rounded-2xl bg-violet-500 px-5 py-3 text-sm font-semibold">Crear grabación</button></div></div>}
+              </> : <div className="grid min-h-[320px] place-items-center rounded-3xl border border-dashed border-white/10 bg-white/[.02] p-6 text-center sm:min-h-[560px] sm:p-8"><div><FolderOpen className="mx-auto text-zinc-700" size={36} /><h2 className="mt-4 text-lg font-semibold sm:mt-5 sm:text-xl">Elige una grabación</h2><p className="mt-2 max-w-sm text-sm leading-6 text-zinc-500">Selecciona una producción para continuar con sus escenas.</p></div></div>}
             </section>
 
             <aside className="space-y-4">
