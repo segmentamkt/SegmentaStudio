@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - '.github/workflows/sync-segmenta-studio.yml'
+      - 'segmenta-studio-source.b64'
 
 permissions:
   contents: write
@@ -16,18 +17,19 @@ jobs:
       - name: Checkout official repository
         uses: actions/checkout@v4
 
-      - name: Download the working application
-        run: git clone --depth 1 https://github.com/fevepe1510-collab/kiko-studio-cloud-camera.git /tmp/segmenta-studio
+      - name: Rebuild the temporary source package
+        run: base64 --decode segmenta-studio-source.b64 > /tmp/segmenta-studio.zip
 
-      - name: Place the app inside the monorepository
+      - name: Place the app in its canonical directory
         run: |
-          mkdir -p apps/segmenta-studio
-          rsync -a --delete --exclude='.git' /tmp/segmenta-studio/ apps/segmenta-studio/
+          mkdir -p apps/studio-web
+          unzip -oq /tmp/segmenta-studio.zip -d apps/studio-web
 
-      - name: Publish synchronized application
+      - name: Publish the app and remove the temporary package
         run: |
           git config user.name 'Segmenta Studio Bot'
           git config user.email 'segmenta-studio@users.noreply.github.com'
-          git add apps/segmenta-studio
-          git diff --cached --quiet || git commit -m 'Publicar aplicación web Segmenta Studio'
+          git add apps/studio-web
+          git rm segmenta-studio-source.b64
+          git commit -m 'Publicar aplicación web Segmenta Studio'
           git push
