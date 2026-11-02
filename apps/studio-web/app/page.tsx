@@ -9,6 +9,7 @@ import {
 import { Upload } from "tus-js-client";
 import { InstallAppButton } from "../components/install-app-button";
 import { EditorStudio } from "../components/editor-studio";
+import { WORKSPACE_NAV, WorkspaceStudio, type WorkspaceView } from "../components/workspace-studio";
 import { createClient as createSupabaseClient } from "../lib/supabase/browser";
 
 type Row = Record<string, any>;
@@ -28,6 +29,13 @@ const accentClasses: Record<string, string> = {
   rose: "from-rose-400 to-fuchsia-500",
   amber: "from-amber-300 to-orange-500",
 };
+
+type StudioView = "record" | "library" | "edit" | WorkspaceView;
+const STUDIO_NAV: Array<{ id: StudioView; label: string }> = [
+  { id: "summary", label: "Resumen" }, { id: "record", label: "Estudio de video" },
+  { id: "library", label: "Grabación móvil" }, { id: "edit", label: "Editar IA" },
+  ...WORKSPACE_NAV.filter((item) => item.id !== "summary"),
+];
 
 async function api<T = any>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, options);
@@ -49,7 +57,7 @@ export default function Home() {
   const [data, setData] = useState<Dashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [view, setView] = useState<"record" | "library" | "edit">("record");
+  const [view, setView] = useState<StudioView>("summary");
   const [portfolioId, setPortfolioId] = useState("");
   const [sessionId, setSessionId] = useState("");
   const [sceneIndex, setSceneIndex] = useState(0);
@@ -346,7 +354,10 @@ export default function Home() {
         </div>
       </header>
 
-      <div className="mx-auto max-w-[1500px] px-3 py-3 sm:px-7 sm:py-5">
+      <div className="mx-auto grid max-w-[1650px] gap-5 px-3 py-3 sm:px-7 sm:py-5 lg:grid-cols-[210px_minmax(0,1fr)]">
+        <aside className="hidden lg:block"><div className="sticky top-24 rounded-3xl border border-white/8 bg-white/[.025] p-3"><p className="px-3 pb-3 pt-2 text-[9px] font-bold uppercase tracking-[.2em] text-zinc-600">Segmenta Studio</p><nav className="space-y-1">{STUDIO_NAV.map((item) => <button key={item.id} onClick={() => setView(item.id)} className={`w-full rounded-xl px-3 py-2.5 text-left text-xs transition ${view === item.id ? "bg-violet-400/15 font-medium text-violet-100" : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300"}`}>{item.label}</button>)}</nav><div className="mt-4 rounded-2xl border border-amber-300/10 bg-amber-300/5 p-3"><p className="text-[10px] font-medium text-amber-200">Motor híbrido</p><p className="mt-1 text-[9px] leading-4 text-zinc-600">Nube para proyectos y dirección. Motor local para las capacidades avanzadas aún no migradas.</p></div></div></aside>
+        <div className="min-w-0">
+        <nav className="mb-3 flex gap-1 overflow-x-auto rounded-2xl border border-white/8 bg-white/[.025] p-1.5 lg:hidden">{STUDIO_NAV.map((item) => <button key={item.id} onClick={() => setView(item.id)} className={`shrink-0 rounded-xl px-3 py-2 text-[10px] ${view === item.id ? "bg-violet-500 text-white" : "text-zinc-500"}`}>{item.label}</button>)}</nav>
         {error && <div className="mb-5 flex items-start justify-between rounded-2xl border border-red-400/20 bg-red-400/8 p-4 text-sm text-red-100"><span>{error}</span><button onClick={() => setError("")}><X size={16} /></button></div>}
         <section className={`mb-3 overflow-hidden rounded-2xl bg-gradient-to-r sm:mb-5 sm:rounded-3xl ${accentClasses[currentPortfolio?.accent] || accentClasses.violet} p-[1px]`}>
           <div className="flex flex-col justify-between gap-3 rounded-[15px] bg-[#0c0f18]/95 p-3.5 sm:gap-4 sm:rounded-[23px] sm:p-5 sm:flex-row sm:items-center">
@@ -359,7 +370,7 @@ export default function Home() {
           </div>
         </section>
 
-        {view === "edit" ? <EditorStudio portfolioId={portfolioId} sessions={data?.sessions || []} scenes={data?.scenes || []} takes={data?.takes || []} editJobs={data?.editJobs || []} onRefresh={refresh} onBack={() => setView("library")} /> : view === "record" ? (
+        {WORKSPACE_NAV.some((item) => item.id === view) ? <WorkspaceStudio view={view as WorkspaceView} portfolioId={portfolioId} portfolio={currentPortfolio} sessions={data?.sessions || []} scenes={data?.scenes || []} editJobs={data?.editJobs || []} onOpenEditor={() => setView("edit")} /> : view === "edit" ? <EditorStudio portfolioId={portfolioId} sessions={data?.sessions || []} scenes={data?.scenes || []} takes={data?.takes || []} editJobs={data?.editJobs || []} onRefresh={refresh} onBack={() => setView("library")} /> : view === "record" ? (
           !sessions.length ? <section className="overflow-hidden rounded-2xl border border-white/8 bg-white/[.025] sm:rounded-3xl">
             <div className="bg-[radial-gradient(circle_at_100%_0%,rgba(124,58,237,.18),transparent_42%)] p-5 sm:p-10">
               <span className="grid h-11 w-11 place-items-center rounded-2xl bg-violet-400/12 text-violet-200"><Video size={20} /></span>
@@ -414,6 +425,7 @@ export default function Home() {
             {!sessions.length && <div className="grid min-h-[420px] place-items-center rounded-3xl border border-dashed border-white/10 text-center"><div><Library className="mx-auto text-zinc-700" size={40} /><p className="mt-4 text-zinc-500">Todavía no hay tomas en este portafolio.</p></div></div>}
           </section>
         )}
+        </div>
       </div>
 
       {showNewSession && <div className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4 backdrop-blur-sm"><div className="w-full max-w-xl rounded-3xl border border-white/10 bg-[#111521] p-6 shadow-2xl"><div className="flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Nueva producción</p><h2 className="mt-1 text-xl font-semibold">Monta el libreto</h2></div><button onClick={() => setShowNewSession(false)} className="grid h-9 w-9 place-items-center rounded-full bg-white/5"><X size={16} /></button></div><label className="mt-6 block text-xs text-zinc-500">Nombre del video<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Ej. 3 errores al usar IA" className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none focus:border-violet-400/40" /></label><label className="mt-4 block text-xs text-zinc-500">Libreto completo<textarea value={script} onChange={(event) => setScript(event.target.value)} rows={9} placeholder={"Separa cada escena con una línea en blanco.\n\nCada párrafo se convertirá en una escena grabable."} className="mt-2 w-full resize-none rounded-xl border border-white/10 bg-black/25 p-4 text-sm leading-6 text-white outline-none focus:border-violet-400/40" /></label><p className="mt-3 text-xs leading-5 text-zinc-600">Segmenta Studio mantendrá este orden y solo enviará a edición las tomas que apruebes.</p><button onClick={createSession} disabled={saving || !title.trim()} className="mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-violet-500 px-4 py-3.5 text-sm font-semibold disabled:opacity-40">{saving ? <LoaderCircle className="animate-spin" size={17} /> : <Video size={17} />}Preparar grabación</button></div></div>}
