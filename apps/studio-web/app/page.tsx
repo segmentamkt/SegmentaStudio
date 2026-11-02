@@ -1,0 +1,386 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Aperture, ArrowLeft, Camera, Check, CheckCircle2, ChevronRight, Circle,
+  Cloud, Film, FlipHorizontal2, FolderOpen, Library, LoaderCircle, Mic,
+  Plus, RotateCcw, Sparkles, Square, Trash2, UploadCloud, Video, X,
+} from "lucide-react";
+import { Upload } from "tus-js-client";
+import { InstallAppButton } from "../components/install-app-button";
+import { createClient as createSupabaseClient } from "../lib/supabase/browser";
+
+type Row = Record<string, any>;
+type Dashboard = {
+  user: Row;
+  accounts: Row[];
+  portfolios: Row[];
+  sessions: Row[];
+  scenes: Row[];
+  takes: Row[];
+};
+
+const accentClasses: Record<string, string> = {
+  violet: "from-violet-500 to-indigo-500",
+  cyan: "from-cyan-400 to-blue-500",
+  rose: "from-rose-400 to-fuchsia-500",
+  amber: "from-amber-300 to-orange-500",
+};
+
+async function api<T = any>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(path, options);
+  const data = await response.json().catch(() => ({})) as T & { error?: string };
+  if (!response.ok) throw new Error(data.error || "No se pudo completar la acción.");
+  return data as T;
+}
+
+function formatTime(milliseconds: number) {
+  const seconds = Math.floor(milliseconds / 1000);
+  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function statusLabel(status: string) {
+  return status === "approved" ? "Aprobada" : status === "blooper" ? "Blooper" : status === "rejected" ? "Descartada" : "Pendiente";
+}
+
+export default function Home() {
+  const [data, setData] = useState<Dashboard | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [view, setView] = useState<"record" | "library">("record");
+  const [portfolioId, setPortfolioId] = useState("");
+  const [sessionId, setSessionId] = useState("");
+  const [sceneIndex, setSceneIndex] = useState(0);
+  const [showNewSession, setShowNewSession] = useState(false);
+  const [showNewPortfolio, setShowNewPortfolio] = useState(false);
+  const [title, setTitle] = useState("");
+  const [script, setScript] = useState("");
+  const [portfolioForm, setPortfolioForm] = useState({ name: "", niche: "", essence: "", accent: "violet" });
+  const [saving, setSaving] = useState(false);
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const startedAtRef = useRef(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const prompterRef = useRef<HTMLDivElement>(null);
+  const previewUrlRef = useRef("");
+  const [cameraReady, setCameraReady] = useState(false);
+  const [facing, setFacing] = useState<"user" | "environment">("user");
+  const [recording, setRecording] = useState(false);
+  const [countdown, setCountdown] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+  const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [teleprompter, setTeleprompter] = useState(true);
+  const [scrollSpeed, setScrollSpeed] = useState(2);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const next: Dashboard = await api("/api/studio");
+      setData(next);
+      setPortfolioId((current) => current && next.portfolios.some((item) => item.id === current) ? current : next.portfolios[0]?.id || "");
+      setSessionId((current) => current && next.sessions.some((item) => item.id === current) ? current : next.sessions[0]?.id || "");
+      setError("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "No se pudo abrir Kiko Studio.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { previewUrlRef.current = previewUrl; }, [previewUrl]);
+  useEffect(() => () => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+  }, []);
+
+  const portfolios = data?.portfolios || [];
+  const sessions = useMemo(() => (data?.sessions || []).filter((item) => item.portfolioId === portfolioId), [data, portfolioId]);
+  const activeSession = sessions.find((item) => item.id === sessionId) || sessions[0];
+  const sessionScenes = useMemo(() => (data?.scenes || []).filter((item) => item.sessionId === activeSession?.id).sort((a, b) => a.position - b.position), [data, activeSession]);
+  const activeScene = sessionScenes[Math.min(sceneIndex, Math.max(0, sessionScenes.length - 1))];
+  const sessionTakes = useMemo(() => (data?.takes || []).filter((item) => item.sessionId === activeSession?.id), [data, activeSession]);
+  const currentPortfolio = portfolios.find((item) => item.id === portfolioId) || portfolios[0];
+  const approvedCount = sessionScenes.filter((scene) => scene.selectedTakeId).length;
+
+  useEffect(() => {
+    const valid = sessions.some((item) => item.id === sessionId);
+    if (!valid) setSessionId(sessions[0]?.id || "");
+    setSceneIndex(0);
+  }, [portfolioId, sessions, sessionId]);
+
+  const stopCamera = useCallback(() => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    setCameraReady(false);
+  }, []);
+
+  const startCamera = useCallback(async (nextFacing = facing) => {
+    setError("");
+    stopCamera();
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError("Este navegador no permite usar la cámara. Abre la aplicación desde Safari o Chrome actualizado.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: nextFacing }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: { echoCancellation: true, noiseSuppression: true },
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      setCameraReady(true);
+    } catch {
+      setError("No pudimos abrir la cámara. Permite cámara y micrófono en el navegador y vuelve a intentarlo.");
+    }
+  }, [facing, stopCamera]);
+
+  const toggleCamera = async () => {
+    const next = facing === "user" ? "environment" : "user";
+    setFacing(next);
+    await startCamera(next);
+  };
+
+  const clearRecording = useCallback(() => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPreviewUrl("");
+    setRecordedBlob(null);
+    setElapsed(0);
+    setUploadProgress(0);
+    chunksRef.current = [];
+  }, [previewUrl]);
+
+  const stopRecording = useCallback(() => {
+    if (recorderRef.current?.state === "recording") recorderRef.current.stop();
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = null;
+    setRecording(false);
+  }, []);
+
+  const beginRecording = async () => {
+    if (!cameraReady || !streamRef.current) return startCamera();
+    clearRecording();
+    setCountdown(3);
+    for (let value = 3; value > 0; value -= 1) {
+      setCountdown(value);
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    }
+    setCountdown(0);
+    const supported = ["video/mp4", "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find((type) => MediaRecorder.isTypeSupported(type));
+    try {
+      const recorder = new MediaRecorder(streamRef.current, { ...(supported ? { mimeType: supported } : {}), videoBitsPerSecond: 2_500_000, audioBitsPerSecond: 128_000 });
+      recorderRef.current = recorder;
+      chunksRef.current = [];
+      recorder.ondataavailable = (event) => { if (event.data.size) chunksRef.current.push(event.data); };
+      recorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || supported || "video/webm" });
+        setRecordedBlob(blob);
+        setPreviewUrl(URL.createObjectURL(blob));
+      };
+      if (prompterRef.current) prompterRef.current.scrollTop = 0;
+      startedAtRef.current = Date.now();
+      recorder.start(1000);
+      setRecording(true);
+      timerRef.current = setInterval(() => {
+        const value = Date.now() - startedAtRef.current;
+        setElapsed(value);
+        if (value >= 180_000 && recorder.state === "recording") stopRecording();
+      }, 200);
+    } catch {
+      setError("La cámara abrió, pero este navegador no pudo iniciar la grabación.");
+    }
+  };
+
+  useEffect(() => {
+    if (!recording || !teleprompter) return;
+    const timer = setInterval(() => { if (prompterRef.current) prompterRef.current.scrollTop += scrollSpeed * 0.35; }, 50);
+    return () => clearInterval(timer);
+  }, [recording, teleprompter, scrollSpeed]);
+
+  const uploadTake = async (status: "approved" | "blooper") => {
+    if (!recordedBlob || !activeScene || !activeSession) throw new Error("No hay una toma lista para subir.");
+    const supabase = createSupabaseClient();
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) throw new Error("Tu sesión venció. Vuelve a iniciar sesión.");
+    const projectUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+    const projectId = new URL(projectUrl).hostname.split(".")[0];
+    const extension = recordedBlob.type.includes("quicktime") ? "mov" : recordedBlob.type.includes("webm") ? "webm" : "mp4";
+    const objectKey = `${session.user.id}/${activeSession.id}/${activeScene.id}/${crypto.randomUUID()}.${extension}`;
+    await new Promise<void>((resolve, reject) => {
+      const upload = new Upload(recordedBlob, {
+        endpoint: `https://${projectId}.storage.supabase.co/storage/v1/upload/resumable`,
+        retryDelays: [0, 3000, 5000, 10000, 20000],
+        headers: { authorization: `Bearer ${session.access_token}`, apikey: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY! },
+        uploadDataDuringCreation: true,
+        removeFingerprintOnSuccess: true,
+        chunkSize: 6 * 1024 * 1024,
+        metadata: { bucketName: "kiko-videos", objectName: objectKey, contentType: recordedBlob.type || `video/${extension}`, cacheControl: "3600" },
+        onError: (reason) => reject(reason),
+        onProgress: (uploaded, total) => setUploadProgress(Math.max(1, Math.round((uploaded / total) * 96))),
+        onSuccess: () => resolve(),
+      });
+      upload.findPreviousUploads().then((previous) => {
+        if (previous.length) upload.resumeFromPreviousUpload(previous[0]);
+        upload.start();
+      }).catch(reject);
+    });
+    setUploadProgress(98);
+    await api("/api/takes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ objectKey, sceneId: activeScene.id, sessionId: activeSession.id, durationMs: elapsed, status, bytes: recordedBlob.size, mimeType: recordedBlob.type || `video/${extension}` }) });
+    setUploadProgress(100);
+  };
+
+  const importVideo = (file?: File) => {
+    if (!file) return;
+    if (!file.type.startsWith("video/")) return setError("Selecciona un archivo de video.");
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    stopCamera();
+    setRecordedBlob(file);
+    setPreviewUrl(URL.createObjectURL(file));
+    setElapsed(0);
+    setUploadProgress(0);
+    setError("");
+  };
+
+  const classifyRecording = async (status: "approved" | "blooper") => {
+    setUploading(true); setUploadProgress(1); setError("");
+    try {
+      await uploadTake(status);
+      await refresh();
+      clearRecording();
+      if (status === "approved" && sceneIndex < sessionScenes.length - 1) setSceneIndex((value) => value + 1);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "No se pudo guardar la toma.");
+    } finally { setUploading(false); }
+  };
+
+  const createSession = async () => {
+    if (!portfolioId) return;
+    setSaving(true); setError("");
+    try {
+      const result = await api("/api/studio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "create_session", portfolioId, title, script }) });
+      setSessionId(result.session.id); setTitle(""); setScript(""); setShowNewSession(false); setSceneIndex(0);
+      await refresh();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo crear la grabación."); }
+    finally { setSaving(false); }
+  };
+
+  const createPortfolio = async () => {
+    setSaving(true); setError("");
+    try {
+      const result = await api("/api/studio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "create_portfolio", ...portfolioForm }) });
+      setPortfolioId(result.portfolio.id); setPortfolioForm({ name: "", niche: "", essence: "", accent: "violet" }); setShowNewPortfolio(false);
+      await refresh();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo crear el portafolio."); }
+    finally { setSaving(false); }
+  };
+
+  const removeTake = async (id: string) => {
+    try { await api("/api/takes", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) }); await refresh(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo eliminar la toma."); }
+  };
+
+  const removeSession = async (id: string) => {
+    if (!confirm("¿Eliminar esta grabación y todas sus tomas?")) return;
+    try { await api("/api/studio", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: id }) }); setSessionId(""); await refresh(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo eliminar la grabación."); }
+  };
+
+  const completeSession = async () => {
+    if (!activeSession) return;
+    try { await api("/api/studio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "complete_session", sessionId: activeSession.id }) }); await refresh(); setView("library"); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo cerrar la grabación."); }
+  };
+
+  if (loading && !data) return <main className="grid min-h-screen place-items-center bg-[#070910] text-white"><div className="text-center"><LoaderCircle className="mx-auto animate-spin text-violet-300" /><p className="mt-3 text-sm text-zinc-500">Abriendo tu estudio en la nube…</p></div></main>;
+
+  return (
+    <main className="min-h-screen bg-[#070910] text-white">
+      <header className="sticky top-0 z-40 border-b border-white/8 bg-[#070910]/88 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-[1500px] items-center gap-3 px-4 py-3 sm:px-7">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-violet-500 to-cyan-400"><Film size={19} /></span>
+            <div className="hidden sm:block"><p className="font-semibold">Kiko Studio</p><p className="text-[9px] uppercase tracking-[.22em] text-zinc-500">Cloud Camera</p></div>
+          </div>
+          <div className="ml-auto flex min-w-0 items-center gap-2">
+            <InstallAppButton />
+            <div className="hidden items-center gap-2 rounded-full border border-emerald-400/15 bg-emerald-400/8 px-3 py-2 text-xs text-emerald-300 md:flex"><Cloud size={13} />Sincronizado</div>
+            <select value={portfolioId} onChange={(event) => setPortfolioId(event.target.value)} className="max-w-[180px] rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-xs outline-none sm:max-w-[260px] sm:text-sm">
+              {portfolios.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+            <button onClick={() => setShowNewPortfolio(true)} className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-300" aria-label="Nuevo portafolio"><Plus size={17} /></button>
+          </div>
+        </div>
+      </header>
+
+      <div className="mx-auto max-w-[1500px] px-4 py-5 sm:px-7">
+        {error && <div className="mb-5 flex items-start justify-between rounded-2xl border border-red-400/20 bg-red-400/8 p-4 text-sm text-red-100"><span>{error}</span><button onClick={() => setError("")}><X size={16} /></button></div>}
+        <section className={`mb-5 overflow-hidden rounded-3xl bg-gradient-to-r ${accentClasses[currentPortfolio?.accent] || accentClasses.violet} p-[1px]`}>
+          <div className="flex flex-col justify-between gap-4 rounded-[23px] bg-[#0c0f18]/95 p-5 sm:flex-row sm:items-center">
+            <div><p className="text-[10px] font-bold uppercase tracking-[.2em] text-violet-300">{currentPortfolio?.niche}</p><h1 className="mt-1 text-xl font-semibold sm:text-2xl">{currentPortfolio?.name || "Tu portafolio"}</h1><p className="mt-1 text-sm text-zinc-500">{currentPortfolio?.essence}</p></div>
+            <div className="flex rounded-2xl border border-white/8 bg-black/25 p-1">
+              <button onClick={() => setView("record")} className={`flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm ${view === "record" ? "bg-white text-black" : "text-zinc-400"}`}><Camera size={15} />Grabar</button>
+              <button onClick={() => setView("library")} className={`flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm ${view === "library" ? "bg-white text-black" : "text-zinc-400"}`}><Library size={15} />Tomas</button>
+            </div>
+          </div>
+        </section>
+
+        {view === "record" ? (
+          <div className="grid gap-5 xl:grid-cols-[300px_minmax(0,1fr)_330px]">
+            <aside className="space-y-4">
+              <div className="flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-zinc-600">Producciones</p><h2 className="mt-1 font-medium">Tus grabaciones</h2></div><button onClick={() => setShowNewSession(true)} className="grid h-9 w-9 place-items-center rounded-xl bg-violet-500 text-white"><Plus size={16} /></button></div>
+              <div className="space-y-2">
+                {sessions.map((item) => {
+                  const scenesForItem = (data?.scenes || []).filter((scene) => scene.sessionId === item.id);
+                  const done = scenesForItem.filter((scene) => scene.selectedTakeId).length;
+                  return <button key={item.id} onClick={() => { setSessionId(item.id); setSceneIndex(0); }} className={`w-full rounded-2xl border p-4 text-left transition ${activeSession?.id === item.id ? "border-violet-400/35 bg-violet-400/10" : "border-white/8 bg-white/[.025]"}`}><div className="flex items-start justify-between gap-3"><span className="grid h-9 w-9 place-items-center rounded-xl bg-white/5"><Video size={16} /></span><span className="text-[10px] text-zinc-600">{done}/{scenesForItem.length}</span></div><h3 className="mt-3 truncate text-sm font-medium">{item.title}</h3><div className="mt-3 h-1 overflow-hidden rounded-full bg-white/8"><div className="h-full bg-violet-400" style={{ width: `${scenesForItem.length ? (done / scenesForItem.length) * 100 : 0}%` }} /></div></button>;
+                })}
+                {!sessions.length && <button onClick={() => setShowNewSession(true)} className="w-full rounded-2xl border border-dashed border-violet-400/25 bg-violet-400/5 p-6 text-center text-sm text-violet-200"><Plus className="mx-auto mb-2" />Crear la primera grabación</button>}
+              </div>
+            </aside>
+
+            <section className="min-w-0">
+              {activeSession && activeScene ? <>
+                <div className="relative mx-auto aspect-[9/16] max-h-[76vh] w-full max-w-[480px] overflow-hidden rounded-[2rem] border border-white/10 bg-black shadow-2xl">
+                  {previewUrl ? <video src={previewUrl} controls playsInline className="h-full w-full object-contain" /> : <video ref={videoRef} muted playsInline className={`h-full w-full object-cover ${facing === "user" ? "-scale-x-100" : ""}`} />}
+                  {!cameraReady && !previewUrl && <div className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_50%_25%,rgba(124,58,237,.22),transparent_55%)]"><div className="max-w-sm px-7 text-center"><span className="mx-auto grid h-16 w-16 place-items-center rounded-full border border-white/10 bg-white/5"><Camera size={28} className="text-violet-200" /></span><h2 className="mt-5 text-xl font-semibold">Graba o importa tu video</h2><p className="mt-2 text-sm leading-6 text-zinc-500">Puedes grabar desde el celular o subir el video que ya tienes. La carga se reanuda si tu conexión se interrumpe.</p><div className="mt-6 grid gap-2 sm:grid-cols-2"><button onClick={() => startCamera()} className="rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-black">Activar cámara</button><button onClick={() => fileInputRef.current?.click()} className="rounded-2xl border border-violet-300/30 bg-violet-400/10 px-4 py-3 text-sm font-semibold text-violet-100"><UploadCloud className="mr-2 inline" size={16} />Subir video</button></div><input ref={fileInputRef} type="file" accept="video/mp4,video/webm,video/quicktime,video/*" className="hidden" onChange={(event) => { importVideo(event.target.files?.[0]); event.currentTarget.value = ""; }} /></div></div>}
+                  {cameraReady && !previewUrl && teleprompter && <div className="pointer-events-none absolute inset-x-5 top-[15%] h-[42%] overflow-hidden rounded-2xl bg-black/48 px-5 py-6 text-center backdrop-blur-sm"><div ref={prompterRef} className="h-full overflow-hidden scroll-smooth"><div className="h-[35%]" /><p className="text-xl font-semibold leading-8 text-white drop-shadow sm:text-2xl sm:leading-10">{activeScene.script}</p><div className="h-[70%]" /></div></div>}
+                  {cameraReady && !previewUrl && <div className="absolute inset-x-0 top-0 flex items-center justify-between p-4"><span className={`rounded-full px-3 py-1.5 text-xs font-medium backdrop-blur ${recording ? "bg-red-500 text-white" : "bg-black/45 text-zinc-200"}`}>{recording ? `● REC ${formatTime(elapsed)}` : activeScene.title}</span><button onClick={toggleCamera} disabled={recording} className="grid h-10 w-10 place-items-center rounded-full bg-black/45 backdrop-blur disabled:opacity-40"><FlipHorizontal2 size={17} /></button></div>}
+                  {countdown > 0 && <div className="absolute inset-0 grid place-items-center bg-black/30 text-8xl font-black">{countdown}</div>}
+                  {uploading && <div className="absolute inset-0 grid place-items-center bg-black/80 p-8 text-center"><div className="w-full max-w-xs"><UploadCloud className="mx-auto text-violet-300" size={32} /><p className="mt-4 font-medium">Guardando la toma en la nube</p><div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-gradient-to-r from-violet-500 to-cyan-400 transition-all" style={{ width: `${uploadProgress}%` }} /></div><p className="mt-2 text-xs text-zinc-500">{uploadProgress}% · no cierres esta pantalla</p></div></div>}
+                  {cameraReady && !previewUrl && <div className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-6 bg-gradient-to-t from-black via-black/65 to-transparent px-5 pb-7 pt-16"><button onClick={() => setTeleprompter((value) => !value)} className={`grid h-11 w-11 place-items-center rounded-full border ${teleprompter ? "border-violet-300 bg-violet-400/20" : "border-white/15 bg-black/30"}`}><Sparkles size={17} /></button><button onClick={recording ? stopRecording : beginRecording} className={`grid h-20 w-20 place-items-center rounded-full border-4 border-white shadow-xl ${recording ? "bg-red-500" : "bg-white"}`}>{recording ? <Square size={25} fill="white" /> : <Circle size={54} className="text-red-500" fill="currentColor" />}</button><span className="grid h-11 w-11 place-items-center rounded-full border border-white/15 bg-black/30"><Mic size={17} /></span></div>}
+                  {previewUrl && !uploading && <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/80 to-transparent p-5 pt-20"><p className="mb-4 text-center text-sm font-medium">¿Qué hacemos con esta toma?</p><div className="grid grid-cols-3 gap-2"><button onClick={clearRecording} className="rounded-xl border border-white/15 bg-black/50 px-2 py-3 text-xs"><RotateCcw size={16} className="mx-auto mb-1" />Repetir</button><button onClick={() => classifyRecording("blooper")} className="rounded-xl border border-amber-300/25 bg-amber-300/10 px-2 py-3 text-xs text-amber-200"><Aperture size={16} className="mx-auto mb-1" />Blooper</button><button onClick={() => classifyRecording("approved")} className="rounded-xl bg-emerald-400 px-2 py-3 text-xs font-semibold text-black"><Check size={16} className="mx-auto mb-1" />Aprobar</button></div></div>}
+                </div>
+                <div className="mx-auto mt-4 flex max-w-[480px] items-center justify-between gap-4 rounded-2xl border border-white/8 bg-white/[.03] p-3"><label className="text-xs text-zinc-500">Velocidad del libreto</label><input type="range" min="1" max="6" value={scrollSpeed} onChange={(event) => setScrollSpeed(Number(event.target.value))} className="accent-violet-500" /><span className="text-xs text-zinc-500">{scrollSpeed}x</span></div>
+              </> : <div className="grid min-h-[560px] place-items-center rounded-3xl border border-dashed border-white/10 bg-white/[.02] p-8 text-center"><div><FolderOpen className="mx-auto text-zinc-700" size={40} /><h2 className="mt-5 text-xl font-semibold">Prepara tu primera grabación</h2><p className="mt-2 max-w-sm text-sm leading-6 text-zinc-500">Pega el libreto y Kiko lo separará en escenas para grabarlas en orden.</p><button onClick={() => setShowNewSession(true)} className="mt-6 rounded-2xl bg-violet-500 px-5 py-3 text-sm font-semibold">Crear grabación</button></div></div>}
+            </section>
+
+            <aside className="space-y-4">
+              {activeSession && <><section className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><div className="flex items-start justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Plan de rodaje</p><h2 className="mt-1 font-medium">{activeSession.title}</h2></div><button onClick={() => removeSession(activeSession.id)} className="text-zinc-600 hover:text-red-300"><Trash2 size={16} /></button></div><div className="mt-5 space-y-2">{sessionScenes.map((scene, index) => <button key={scene.id} onClick={() => { clearRecording(); setSceneIndex(index); }} className={`flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left ${activeScene?.id === scene.id ? "border-violet-400/30 bg-violet-400/10" : "border-white/6 bg-black/15"}`}><span className={`grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs ${scene.selectedTakeId ? "bg-emerald-400 text-black" : "bg-white/6 text-zinc-500"}`}>{scene.selectedTakeId ? <Check size={14} /> : index + 1}</span><span className="min-w-0"><strong className="block text-xs font-medium">{scene.title}</strong><small className="block truncate text-zinc-600">{scene.script}</small></span><ChevronRight className="ml-auto shrink-0 text-zinc-700" size={14} /></button>)}</div><div className="mt-5 flex items-center justify-between text-xs text-zinc-500"><span>{approvedCount} de {sessionScenes.length} aprobadas</span><span>{Math.round((approvedCount / Math.max(1, sessionScenes.length)) * 100)}%</span></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/8"><div className="h-full bg-emerald-400 transition-all" style={{ width: `${(approvedCount / Math.max(1, sessionScenes.length)) * 100}%` }} /></div><button onClick={completeSession} disabled={approvedCount !== sessionScenes.length} className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-semibold text-black disabled:opacity-30"><CheckCircle2 size={16} />Listo para editar</button></section><section className="rounded-3xl border border-cyan-400/15 bg-cyan-400/5 p-5"><p className="flex items-center gap-2 text-sm font-medium text-cyan-200"><Cloud size={16} />Flujo conectado</p><p className="mt-2 text-xs leading-5 text-zinc-500">Las tomas aprobadas conservan el orden del libreto. Bloopers queda separado y no entra al montaje principal.</p></section></>}
+            </aside>
+          </div>
+        ) : (
+          <section>
+            <div className="mb-5 flex items-end justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Biblioteca cloud</p><h2 className="mt-1 text-2xl font-semibold">Tomas de {currentPortfolio?.name}</h2></div><button onClick={() => setView("record")} className="hidden items-center gap-2 rounded-xl border border-white/10 px-4 py-2.5 text-sm sm:flex"><ArrowLeft size={15} />Volver a grabar</button></div>
+            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{sessions.map((session) => { const sceneRows = (data?.scenes || []).filter((scene) => scene.sessionId === session.id); const takeRows = sessionTakes.filter((take) => take.sessionId === session.id); const allTakes = (data?.takes || []).filter((take) => take.sessionId === session.id); return <article key={session.id} className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><div className="flex items-start justify-between"><div><span className={`rounded-full px-2.5 py-1 text-[10px] ${session.status === "ready_for_edit" ? "bg-emerald-400/10 text-emerald-300" : "bg-violet-400/10 text-violet-300"}`}>{session.status === "ready_for_edit" ? "Lista para edición" : "En grabación"}</span><h3 className="mt-3 font-medium">{session.title}</h3><p className="mt-1 text-xs text-zinc-600">{sceneRows.filter((scene) => scene.selectedTakeId).length}/{sceneRows.length} escenas aprobadas · {allTakes.filter((take) => take.status === "blooper").length} bloopers</p></div><button onClick={() => removeSession(session.id)} className="text-zinc-700 hover:text-red-300"><Trash2 size={16} /></button></div><div className="mt-5 grid grid-cols-3 gap-2">{allTakes.slice(0, 6).map((take) => <div key={take.id} className="group relative aspect-[9/16] overflow-hidden rounded-xl bg-black"><video src={`/api/media/${take.id}`} className="h-full w-full object-cover" preload="metadata" /><span className={`absolute bottom-1.5 left-1.5 rounded-full bg-black/70 px-2 py-1 text-[8px] ${take.status === "approved" ? "text-emerald-300" : take.status === "blooper" ? "text-amber-200" : "text-zinc-300"}`}>{statusLabel(take.status)}</span><button onClick={() => removeTake(take.id)} className="absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-full bg-black/70 opacity-0 transition group-hover:opacity-100"><Trash2 size={11} /></button></div>)}</div><button onClick={() => { setSessionId(session.id); setView("record"); }} className="mt-5 flex w-full items-center justify-between rounded-xl border border-white/8 bg-black/20 px-4 py-3 text-sm">Abrir producción <ChevronRight size={15} /></button></article>; })}</div>
+            {!sessions.length && <div className="grid min-h-[420px] place-items-center rounded-3xl border border-dashed border-white/10 text-center"><div><Library className="mx-auto text-zinc-700" size={40} /><p className="mt-4 text-zinc-500">Todavía no hay tomas en este portafolio.</p></div></div>}
+          </section>
+        )}
+      </div>
+
+      {showNewSession && <div className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4 backdrop-blur-sm"><div className="w-full max-w-xl rounded-3xl border border-white/10 bg-[#111521] p-6 shadow-2xl"><div className="flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Nueva producción</p><h2 className="mt-1 text-xl font-semibold">Monta el libreto</h2></div><button onClick={() => setShowNewSession(false)} className="grid h-9 w-9 place-items-center rounded-full bg-white/5"><X size={16} /></button></div><label className="mt-6 block text-xs text-zinc-500">Nombre del video<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Ej. 3 errores al usar IA" className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none focus:border-violet-400/40" /></label><label className="mt-4 block text-xs text-zinc-500">Libreto completo<textarea value={script} onChange={(event) => setScript(event.target.value)} rows={9} placeholder={"Separa cada escena con una línea en blanco.\n\nCada párrafo se convertirá en una escena grabable."} className="mt-2 w-full resize-none rounded-xl border border-white/10 bg-black/25 p-4 text-sm leading-6 text-white outline-none focus:border-violet-400/40" /></label><p className="mt-3 text-xs leading-5 text-zinc-600">Kiko mantendrá este orden y solo enviará a edición las tomas que apruebes.</p><button onClick={createSession} disabled={saving || !title.trim()} className="mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-violet-500 px-4 py-3.5 text-sm font-semibold disabled:opacity-40">{saving ? <LoaderCircle className="animate-spin" size={17} /> : <Video size={17} />}Preparar grabación</button></div></div>}
+
+      {showNewPortfolio && <div className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4 backdrop-blur-sm"><div className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#111521] p-6"><div className="flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-cyan-300">Identidad de contenido</p><h2 className="mt-1 text-xl font-semibold">Nuevo portafolio</h2></div><button onClick={() => setShowNewPortfolio(false)} className="grid h-9 w-9 place-items-center rounded-full bg-white/5"><X size={16} /></button></div><div className="mt-6 grid gap-4"><input value={portfolioForm.name} onChange={(event) => setPortfolioForm({ ...portfolioForm, name: event.target.value })} placeholder="Nombre del portafolio" className="rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-sm outline-none" /><input value={portfolioForm.niche} onChange={(event) => setPortfolioForm({ ...portfolioForm, niche: event.target.value })} placeholder="Nicho: educación, tecnología…" className="rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-sm outline-none" /><textarea value={portfolioForm.essence} onChange={(event) => setPortfolioForm({ ...portfolioForm, essence: event.target.value })} placeholder="Esencia: directo, divertido, elegante…" rows={3} className="rounded-xl border border-white/10 bg-black/25 p-4 text-sm outline-none" /><div className="flex gap-2">{Object.keys(accentClasses).map((accent) => <button key={accent} onClick={() => setPortfolioForm({ ...portfolioForm, accent })} className={`h-9 flex-1 rounded-xl bg-gradient-to-r ${accentClasses[accent]} ${portfolioForm.accent === accent ? "ring-2 ring-white ring-offset-2 ring-offset-[#111521]" : "opacity-45"}`} />)}</div></div><button onClick={createPortfolio} disabled={saving || !portfolioForm.name.trim()} className="mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-white px-4 py-3.5 text-sm font-semibold text-black disabled:opacity-40">{saving && <LoaderCircle className="animate-spin" size={17} />}Crear portafolio</button></div></div>}
+    </main>
+  );
+}
