@@ -12,6 +12,19 @@ type EditOptions = {
   broll?: boolean;
 };
 
+type EditSettings = {
+  subtitleSize?: number;
+  subtitlePosition?: "top" | "center" | "bottom";
+  silenceThresholdMs?: number;
+  transition?: "cut" | "fade" | "dissolve";
+  soundEffectVolume?: number;
+};
+
+function bounded(value: unknown, fallback: number, min: number, max: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+}
+
 export async function GET(request: Request) {
   const user = await getRequestUser();
   if (!user) return unauthorized();
@@ -40,6 +53,7 @@ export async function POST(request: Request) {
     const objective = clean(payload.objective, "Crear un video vertical claro, dinámico y profesional.");
     const style = getEditorStyle(payload.style);
     const options = (payload.options || {}) as EditOptions;
+    const settings = (payload.settings || {}) as EditSettings;
     const supabase = await createClient();
     const session = await supabase.from("kiko_recording_sessions").select("*").eq("id", sessionId).eq("owner_id", user.userId).maybeSingle();
     if (session.error) throw session.error;
@@ -61,6 +75,20 @@ export async function POST(request: Request) {
       labels: options.labels !== false,
       broll: options.broll === true,
     };
+    const styleSnapshot = {
+      ...style,
+      transition: ["cut", "fade", "dissolve"].includes(String(settings.transition)) ? settings.transition : style.transition,
+      subtitle: {
+        ...style.subtitle,
+        size: bounded(settings.subtitleSize, style.subtitle.size, 38, 100),
+        position: ["top", "center", "bottom"].includes(String(settings.subtitlePosition)) ? settings.subtitlePosition : style.subtitle.position,
+      },
+      execution: {
+        ...style.execution,
+        silenceThresholdMs: bounded(settings.silenceThresholdMs, style.execution.silenceThresholdMs, 350, 1500),
+        soundEffectVolume: bounded(settings.soundEffectVolume, style.execution.soundEffectVolume, 0, 1),
+      },
+    };
     const contract = {
       schema: "kiko.edit-contract.v1",
       objective,
@@ -75,10 +103,10 @@ export async function POST(request: Request) {
         transcript: scene.script,
       })),
       style: style.id,
-      style_snapshot: style,
+      style_snapshot: styleSnapshot,
       target_duration_seconds: null,
-      captions: { enabled: normalizedOptions.captions, language: "es", max_words_per_card: 5, emphasis: true },
-      dead_air: { remove: normalizedOptions.deadAir, threshold_ms: 550 },
+      captions: { enabled: normalizedOptions.captions, language: "es", max_words_per_card: styleSnapshot.subtitle.maxWords, emphasis: true },
+      dead_air: { remove: normalizedOptions.deadAir, threshold_ms: styleSnapshot.execution.silenceThresholdMs },
       effects: {
         transitions: normalizedOptions.transitions,
         sound_effects: normalizedOptions.soundEffects,

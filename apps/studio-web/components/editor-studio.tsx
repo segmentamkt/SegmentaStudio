@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Captions, Check, ChevronRight, Clapperboard, Download, Film, Gauge, ImageIcon, LoaderCircle, Music2, Scissors, Sparkles, Tags, Volume2, WandSparkles, Zap } from "lucide-react";
+import { Captions, Check, ChevronRight, Clapperboard, Download, Film, Gauge, ImageIcon, LoaderCircle, Music2, Scissors, SlidersHorizontal, Sparkles, Tags, Volume2, WandSparkles, Zap } from "lucide-react";
 import { EDITOR_STYLES, type EditorStyleId } from "../lib/editor-presets";
 
 type Row = Record<string, any>;
@@ -36,9 +36,11 @@ export function EditorStudio(props: {
 }) {
   const available = useMemo(() => props.sessions.filter((session) => session.portfolioId === props.portfolioId && props.scenes.some((scene) => scene.sessionId === session.id && scene.selectedTakeId)), [props.sessions, props.scenes, props.portfolioId]);
   const [sessionId, setSessionId] = useState(available[0]?.id || "");
-  const [style, setStyle] = useState<EditorStyleId>("segmenta_punch");
+  const [style, setStyle] = useState<EditorStyleId>("kiko-impacto");
   const [objective, setObjective] = useState("Reel vertical profesional: gancho fuerte, ritmo claro y cierre con autoridad.");
   const [options, setOptions] = useState({ captions: true, deadAir: true, transitions: true, soundEffects: true, labels: true, broll: false });
+  const initialStyle = EDITOR_STYLES[0];
+  const [settings, setSettings] = useState({ subtitleSize: initialStyle.subtitle.size, subtitlePosition: initialStyle.subtitle.position, silenceThresholdMs: initialStyle.execution.silenceThresholdMs, transition: initialStyle.transition, soundEffectVolume: initialStyle.execution.soundEffectVolume });
   const [job, setJob] = useState<Row | null>(null);
   const [busy, setBusy] = useState<"plan" | "render" | "">("");
   const [error, setError] = useState("");
@@ -52,6 +54,12 @@ export function EditorStudio(props: {
     if (latest) setJob(latest);
   }, [props.editJobs, sessionId]);
 
+  useEffect(() => {
+    const preset = EDITOR_STYLES.find((item) => item.id === style) || EDITOR_STYLES[0];
+    setSettings({ subtitleSize: preset.subtitle.size, subtitlePosition: preset.subtitle.position, silenceThresholdMs: preset.execution.silenceThresholdMs, transition: preset.transition, soundEffectVolume: preset.execution.soundEffectVolume });
+    setJob(null);
+  }, [style]);
+
   const selectedSession = available.find((item) => item.id === sessionId);
   const approvedScenes = props.scenes.filter((scene) => scene.sessionId === sessionId && scene.selectedTakeId);
   const approvedTakes = approvedScenes.map((scene) => props.takes.find((take) => take.id === scene.selectedTakeId)).filter(Boolean);
@@ -60,7 +68,7 @@ export function EditorStudio(props: {
   const plan = async () => {
     setBusy("plan"); setError("");
     try {
-      const result = await request<{ job: Row }>("/api/editor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, style, objective, options }) });
+      const result = await request<{ job: Row }>("/api/editor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, style, objective, options, settings }) });
       setJob(result.job);
       await props.onRefresh();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo crear el plan."); }
@@ -113,6 +121,8 @@ export function EditorStudio(props: {
             <div><div className="mb-3 flex items-end justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">3. Estilo visual</p><h3 className="mt-1 text-xl font-semibold">Escoge cómo se va a sentir</h3></div><span className="hidden text-xs text-zinc-600 sm:block">Los ejemplos son una vista del lenguaje visual</span></div>
               <StyleGallery value={style} onChange={setStyle} />
             </div>
+
+            <div className="rounded-3xl border border-cyan-400/15 bg-cyan-400/[.035] p-5"><div className="flex items-center gap-2"><SlidersHorizontal className="text-cyan-300" size={18} /><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-cyan-300">Ajuste profesional</p><h3 className="mt-1 font-medium">Personaliza cómo se ejecutará el estilo</h3></div></div><div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-5"><label className="text-[10px] text-zinc-500">Tamaño de subtítulo<input type="range" min="38" max="100" value={settings.subtitleSize} onChange={(event) => setSettings({ ...settings, subtitleSize: Number(event.target.value) })} className="mt-2 w-full accent-violet-500" /><span className="mt-1 block text-xs text-zinc-300">{settings.subtitleSize}px</span></label><label className="text-[10px] text-zinc-500">Posición<select value={settings.subtitlePosition} onChange={(event) => setSettings({ ...settings, subtitlePosition: event.target.value as typeof settings.subtitlePosition })} className="mt-2 w-full rounded-xl border border-white/10 bg-[#111521] px-3 py-2 text-xs text-zinc-200"><option value="top">Arriba</option><option value="center">Centro</option><option value="bottom">Abajo</option></select></label><label className="text-[10px] text-zinc-500">Corte de silencios<input type="range" min="350" max="1500" step="50" value={settings.silenceThresholdMs} onChange={(event) => setSettings({ ...settings, silenceThresholdMs: Number(event.target.value) })} className="mt-2 w-full accent-violet-500" /><span className="mt-1 block text-xs text-zinc-300">{(settings.silenceThresholdMs / 1000).toFixed(2)} s</span></label><label className="text-[10px] text-zinc-500">Transición<select value={settings.transition} onChange={(event) => setSettings({ ...settings, transition: event.target.value as typeof settings.transition })} className="mt-2 w-full rounded-xl border border-white/10 bg-[#111521] px-3 py-2 text-xs text-zinc-200"><option value="cut">Corte</option><option value="fade">Fundido</option><option value="dissolve">Disolvencia</option></select></label><label className="text-[10px] text-zinc-500">Golpe sonoro<input type="range" min="0" max="1" step="0.05" value={settings.soundEffectVolume} onChange={(event) => setSettings({ ...settings, soundEffectVolume: Number(event.target.value) })} className="mt-2 w-full accent-violet-500" /><span className="mt-1 block text-xs text-zinc-300">{Math.round(settings.soundEffectVolume * 100)}%</span></label></div><p className="mt-4 text-[10px] leading-4 text-zinc-500">Estos valores viajan al contrato y modifican el render final: no son una vista decorativa.</p></div>
 
             <div className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><div className="flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-cyan-300">4. Herramientas</p><h3 className="mt-1 font-medium">Qué debe aplicar el motor</h3></div><Gauge className="text-zinc-600" size={20} /></div><div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">{TOOLS.map((tool) => { const Icon = tool.icon; const enabled = options[tool.key]; return <button key={tool.key} onClick={() => setOptions({ ...options, [tool.key]: !enabled })} className={`flex items-start gap-3 rounded-2xl border p-3 text-left ${enabled ? "border-emerald-400/20 bg-emerald-400/7" : "border-white/7 bg-black/15"}`}><span className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl ${enabled ? "bg-emerald-400 text-black" : "bg-white/5 text-zinc-600"}`}><Icon size={16} /></span><span><strong className="block text-xs font-medium">{tool.title}</strong><small className="mt-1 block leading-4 text-zinc-600">{tool.text}</small></span></button>; })}<div className="flex items-start gap-3 rounded-2xl border border-dashed border-white/8 p-3 opacity-55"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-white/5 text-zinc-500"><ImageIcon size={16} /></span><span><strong className="block text-xs">B-roll e imágenes</strong><small className="mt-1 block leading-4 text-zinc-600">Visible; se activa al conectar la biblioteca de recursos.</small></span></div><div className="flex items-start gap-3 rounded-2xl border border-dashed border-white/8 p-3 opacity-55"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-white/5 text-zinc-500"><Music2 size={16} /></span><span><strong className="block text-xs">Música</strong><small className="mt-1 block leading-4 text-zinc-600">Pendiente de que elijas pistas con licencia.</small></span></div></div></div>
 

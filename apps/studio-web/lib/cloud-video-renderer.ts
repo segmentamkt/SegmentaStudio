@@ -16,7 +16,12 @@ type EditContract = {
   clips: ContractClip[];
   style_snapshot: {
     transition: "cut" | "fade" | "dissolve";
-    subtitle: { text: string; box: string; size: number; uppercase: boolean };
+    transitionDuration?: number;
+    subtitle: { text: string; box: string; size: number; uppercase: boolean; position?: "top" | "center" | "bottom" };
+    execution?: {
+      zoomPercent?: number; contrast?: number; saturation?: number; soundEffectVolume?: number;
+      framing?: "fill" | "fit"; titleCards?: boolean; titleColor?: string;
+    };
   };
   captions: { enabled: boolean; max_words_per_card: number };
   dead_air: { remove: boolean; threshold_ms: number };
@@ -118,13 +123,21 @@ export async function renderCloudEdit(input: {
   }
   const filters: string[] = [];
   const clipDurations: number[] = [];
+  const execution = input.contract.style_snapshot.execution || {};
+  const zoom = Math.max(0, Math.min(10, Number(execution.zoomPercent || 0)));
+  const contrast = Math.max(.8, Math.min(1.3, Number(execution.contrast || 1.04)));
+  const saturation = Math.max(.7, Math.min(1.4, Number(execution.saturation || 1.06)));
+  const fit = execution.framing === "fit";
   for (let index = 0; index < analyses.length; index += 1) {
     const analysis = analyses[index];
     const segmentLabels: Array<{ video: string; audio: string }> = [];
     analysis.ranges.forEach((range, segmentIndex) => {
       const video = `v${index}_${segmentIndex}`;
       const audio = `a${index}_${segmentIndex}`;
-      filters.push(`[${index}:v]trim=start=${range.start.toFixed(3)}:end=${range.end.toFixed(3)},setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30,eq=contrast=1.04:saturation=1.06,format=yuv420p[${video}]`);
+      const scale = fit
+        ? "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x09090b"
+        : `scale=${Math.round(1080 * (1 + zoom / 100))}:${Math.round(1920 * (1 + zoom / 100))}:force_original_aspect_ratio=increase,crop=1080:1920`;
+      filters.push(`[${index}:v]trim=start=${range.start.toFixed(3)}:end=${range.end.toFixed(3)},setpts=PTS-STARTPTS,${scale},setsar=1,fps=30,eq=contrast=${contrast}:saturation=${saturation},format=yuv420p[${video}]`);
       filters.push(`[${index}:a]atrim=start=${range.start.toFixed(3)}:end=${range.end.toFixed(3)},asetpts=PTS-STARTPTS,aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:channel_layouts=stereo,loudnorm=I=-16:LRA=11:TP=-1.5[${audio}]`);
       segmentLabels.push({ video, audio });
     });
@@ -136,7 +149,8 @@ export async function renderCloudEdit(input: {
     }
     clipDurations.push(analysis.ranges.reduce((sum, range) => sum + range.end - range.start, 0));
   }
-  const transitionDuration = input.contract.effects.transitions && input.contract.style_snapshot.transition !== "cut" && clipDurations.length > 1 ? 0.18 : 0;
+  const requestedTransition = Math.max(0, Math.min(.8, Number(input.contract.style_snapshot.transitionDuration ?? .18)));
+  const transitionDuration = input.contract.effects.transitions && input.contract.style_snapshot.transition !== "cut" && clipDurations.length > 1 ? requestedTransition : 0;
   let videoLabel = "vclip0";
   let audioLabel = "aclip0";
   let elapsed = clipDurations[0];
@@ -160,6 +174,7 @@ export async function renderCloudEdit(input: {
   }
   let captionCount = 0;
   if (input.contract.captions.enabled) {
+    const captionY = input.contract.style_snapshot.subtitle.position === "top" ? "h*0.11" : input.contract.style_snapshot.subtitle.position === "center" ? "(h-text_h)/2" : "h-text_h-h*0.10";
     input.contract.clips.forEach((clip, clipIndex) => {
       const items = cards(clip.transcript, input.contract.captions.max_words_per_card || 5, input.contract.style_snapshot.subtitle.uppercase);
       const duration = clipDurations[clipIndex];
@@ -167,25 +182,26 @@ export async function renderCloudEdit(input: {
         const start = clipStarts[clipIndex] + (duration * cardIndex) / Math.max(1, items.length);
         const end = clipStarts[clipIndex] + (duration * (cardIndex + 1)) / Math.max(1, items.length);
         const output = `vsub${captionCount}`;
-        filters.push(`[${videoLabel}]drawtext=text='${ffText(text)}':fontcolor=${ffColor(input.contract.style_snapshot.subtitle.text)}:fontsize=${input.contract.style_snapshot.subtitle.size}:box=1:boxcolor=${ffColor(input.contract.style_snapshot.subtitle.box, "D9")}:boxborderw=24:x=(w-text_w)/2:y=h-text_h-h*0.10:enable='between(t,${start.toFixed(3)},${end.toFixed(3)})'[${output}]`);
+        filters.push(`[${videoLabel}]drawtext=text='${ffText(text)}':fontcolor=${ffColor(input.contract.style_snapshot.subtitle.text)}:fontsize=${input.contract.style_snapshot.subtitle.size}:box=1:boxcolor=${ffColor(input.contract.style_snapshot.subtitle.box, "D9")}:boxborderw=24:x=(w-text_w)/2:y=${captionY}:enable='between(t,${start.toFixed(3)},${end.toFixed(3)})'[${output}]`);
         videoLabel = output;
         captionCount += 1;
       });
     });
   }
   let effectCount = Math.max(0, input.contract.clips.length - 1) * (transitionDuration ? 1 : 0);
-  if (input.contract.effects.labels) {
+  if (input.contract.effects.labels && execution.titleCards !== false) {
     const output = "vtitle";
-    filters.push(`[${videoLabel}]drawtext=text='${ffText(input.contract.session.title)}':fontcolor=white:fontsize=54:box=1:boxcolor=0x09090BE6:boxborderw=22:x=(w-text_w)/2:y=h*0.08:enable='between(t,0.15,2.6)'[${output}]`);
+    filters.push(`[${videoLabel}]drawtext=text='${ffText(input.contract.session.title)}':fontcolor=white:fontsize=54:box=1:boxcolor=${ffColor(execution.titleColor || "#09090b", "E6")}:boxborderw=22:x=(w-text_w)/2:y=h*0.08:enable='between(t,0.15,2.6)'[${output}]`);
     videoLabel = output;
     effectCount += 1;
   }
   if (input.contract.effects.sound_effects && clipStarts.length > 1) {
+    const soundVolume = Math.max(0, Math.min(1, Number(execution.soundEffectVolume ?? .35))) * .1;
     const sounds: string[] = [];
     clipStarts.slice(1).forEach((start, index) => {
       const label = `sfx${index}`;
       const delay = Math.round(start * 1000);
-      filters.push(`sine=frequency=880:sample_rate=48000:duration=0.12,volume=0.055,adelay=${delay}|${delay}[${label}]`);
+      filters.push(`sine=frequency=880:sample_rate=48000:duration=0.12,volume=${soundVolume.toFixed(3)},adelay=${delay}|${delay}[${label}]`);
       sounds.push(label);
     });
     if (sounds.length) {
@@ -228,6 +244,9 @@ export async function renderCloudEdit(input: {
     duration_seconds: Number(elapsed.toFixed(2)), width: 1080, height: 1920,
     has_audio: true, playable: true, caption_count: captionCount, effect_count: effectCount,
     removed_silence_seconds: Number(analyses.reduce((sum, item) => sum + item.removed, 0).toFixed(2)),
+    style_applied: true, style_id: (input.contract.style_snapshot as { id?: string }).id || null,
+    subtitle_position: input.contract.style_snapshot.subtitle.position || "bottom", zoom_percent: zoom,
+    transition: transitionDuration ? input.contract.style_snapshot.transition : "cut",
     release_gate: { passed: elapsed > 0 && (!input.contract.captions.enabled || captionCount > 0) && (!input.contract.effects.transitions || input.contract.clips.length === 1 || effectCount > 0) },
   };
 }
