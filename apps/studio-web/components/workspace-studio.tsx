@@ -26,14 +26,28 @@ export const WORKSPACE_NAV: Array<{ id: WorkspaceView; label: string }> = [
   { id: "team", label: "Equipo IA" }, { id: "tasks", label: "Tareas" },
 ];
 
-export function WorkspaceStudio({ view, portfolioId, portfolio, sessions, scenes, editJobs, onOpenEditor }: {
-  view: WorkspaceView; portfolioId: string; portfolio?: Row; sessions: Row[]; scenes: Row[]; editJobs: Row[]; onOpenEditor: () => void;
+export function WorkspaceStudio({ view, portfolioId, portfolio, sessions, scenes, onOpenEditor, onOpenResults }: {
+  view: WorkspaceView; portfolioId: string; portfolio?: Row; sessions: Row[]; scenes: Row[]; onOpenEditor: () => void; onOpenResults: () => void;
 }) {
   const [workspace, setWorkspace] = useState<WorkspaceState>(emptyState);
   const [loadedPortfolioId, setLoadedPortfolioId] = useState<string | null>(null);
   const [reference, setReference] = useState({ title: "", url: "", creator: "", topic: "" });
   const [preference, setPreference] = useState({ key: "", value: "", rationale: "" });
   const [task, setTask] = useState("");
+  const [savedOutputCount, setSavedOutputCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (view !== "summary") return;
+    let active = true;
+    fetch("/api/editor/outputs", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("No se pudieron contar los MP4.");
+        return response.json() as Promise<{ outputs?: unknown[] }>;
+      })
+      .then((result) => { if (active) setSavedOutputCount(result.outputs?.length || 0); })
+      .catch(() => { if (active) setSavedOutputCount(null); });
+    return () => { active = false; };
+  }, [view, portfolioId]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -53,7 +67,7 @@ export function WorkspaceStudio({ view, portfolioId, portfolio, sessions, scenes
   const portfolioSessions = useMemo(() => sessions.filter((item) => item.portfolioId === portfolioId), [sessions, portfolioId]);
   const approved = scenes.filter((scene) => portfolioSessions.some((session) => session.id === scene.sessionId) && scene.selectedTakeId).length;
   const totalScenes = scenes.filter((scene) => portfolioSessions.some((session) => session.id === scene.sessionId)).length;
-  const completedJobs = editJobs.filter((job) => portfolioSessions.some((session) => session.id === job.sessionId) && job.status === "ready").length;
+  const completedJobs = savedOutputCount ?? "—";
 
   const addReference = () => {
     if (!reference.title.trim() || !reference.url.trim()) return;
@@ -72,7 +86,7 @@ export function WorkspaceStudio({ view, portfolioId, portfolio, sessions, scenes
     setTask("");
   };
 
-  if (view === "summary") return <section className="space-y-5"><Heading eyebrow="CENTRO DE CONTROL" title={`Resumen de ${portfolio?.name || "tu estudio"}`} text="El mismo flujo del estudio local, ahora organizado alrededor de tu portafolio." /><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{[[portfolioSessions.length,"Proyectos"],[`${approved}/${totalScenes}`,"Escenas aprobadas"],[completedJobs,"Renders verificados"],[workspace.tasks.filter((item) => !item.done).length,"Tareas pendientes"]].map(([value,label]) => <article key={String(label)} className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><strong className="text-3xl">{value}</strong><p className="mt-2 text-xs text-zinc-500">{label}</p></article>)}</div><div className="rounded-3xl border border-violet-400/15 bg-violet-400/5 p-5"><p className="text-sm font-medium">Flujo editorial</p><div className="mt-4 grid gap-2 sm:grid-cols-4">{["Libreto y grabación","Aprobación de tomas","Edición semántica","Render y validación"].map((label,index) => <div key={label} className="rounded-2xl bg-black/20 p-4"><span className="grid h-7 w-7 place-items-center rounded-full bg-violet-500 text-xs font-bold">{index+1}</span><p className="mt-3 text-xs">{label}</p></div>)}</div></div></section>;
+  if (view === "summary") return <section className="space-y-5"><Heading eyebrow="CENTRO DE CONTROL" title={`Resumen de ${portfolio?.name || "tu estudio"}`} text="El mismo flujo del estudio local, ahora organizado alrededor de tu portafolio." /><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{[[portfolioSessions.length,"Proyectos"],[`${approved}/${totalScenes}`,"Escenas aprobadas"],[completedJobs,"MP4 guardados"],[workspace.tasks.filter((item) => !item.done).length,"Tareas pendientes"]].map(([value,label]) => <article key={String(label)} className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><strong className="text-3xl">{value}</strong><p className="mt-2 text-xs text-zinc-500">{label}</p></article>)}</div><button onClick={onOpenResults} className="flex w-full items-center justify-between rounded-2xl border border-emerald-400/20 bg-emerald-400/[.05] px-5 py-4 text-left text-sm font-medium text-emerald-100">Ver resultados editados <ExternalLink size={16} /></button><div className="rounded-3xl border border-violet-400/15 bg-violet-400/5 p-5"><p className="text-sm font-medium">Flujo editorial</p><div className="mt-4 grid gap-2 sm:grid-cols-4">{["Libreto y grabación","Aprobación de tomas","Edición semántica","Render y validación"].map((label,index) => <div key={label} className="rounded-2xl bg-black/20 p-4"><span className="grid h-7 w-7 place-items-center rounded-full bg-violet-500 text-xs font-bold">{index+1}</span><p className="mt-3 text-xs">{label}</p></div>)}</div></div></section>;
 
   if (view === "semantic") return <section className="space-y-5"><Heading eyebrow="EDICIÓN SEMÁNTICA" title="Editor semántico" text="Compara el libreto con las tomas aprobadas, conserva el orden narrativo y entrega el contrato al motor de edición." /><div className="grid gap-4 lg:grid-cols-2">{portfolioSessions.map((session) => { const sessionScenes = scenes.filter((scene) => scene.sessionId === session.id).sort((a,b) => a.position-b.position); return <article key={session.id} className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><div className="flex items-start justify-between"><div><p className="text-[10px] uppercase tracking-[.18em] text-violet-300">Producción</p><h3 className="mt-1 font-medium">{session.title}</h3></div><span className="rounded-full bg-white/5 px-3 py-1 text-[10px] text-zinc-400">{sessionScenes.filter((item) => item.selectedTakeId).length}/{sessionScenes.length} aprobadas</span></div><div className="mt-4 space-y-2">{sessionScenes.map((scene,index) => <div key={scene.id} className="flex items-center gap-3 rounded-xl bg-black/20 p-3"><span className={`grid h-7 w-7 place-items-center rounded-full text-xs ${scene.selectedTakeId ? "bg-emerald-400 text-black" : "bg-white/5 text-zinc-600"}`}>{scene.selectedTakeId ? <Check size={13}/> : index+1}</span><span className="min-w-0"><strong className="block truncate text-xs">{scene.title}</strong><small className="block truncate text-zinc-600">{scene.script}</small></span></div>)}</div><button onClick={onOpenEditor} disabled={!sessionScenes.some((item) => item.selectedTakeId)} className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-violet-500 px-4 py-3 text-sm font-semibold disabled:opacity-30"><WandSparkles size={16}/>Planificar y editar</button></article>; })}{!portfolioSessions.length && <Empty icon={<BookOpen/>} title="Crea una producción con libreto" text="Cuando grabes y apruebes las tomas, aparecerán aquí en orden." />}</div></section>;
 
