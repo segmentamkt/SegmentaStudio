@@ -32,16 +32,39 @@ type EditContract = {
   effects: { transitions: boolean; sound_effects: boolean; labels: boolean };
 };
 
-type ClipAnalysis = { duration: number; ranges: Array<{ start: number; end: number }>; removed: number; hasAudio: boolean };
+type ClipAnalysis = { duration: number; ranges: Array<{ start: number; end: number }>; removed: number; hasAudio: boolean; videoCodec: string | null; audioCodec: string | null };
 
-function capture(command: string, args: string[]) {
-  return new Promise<{ code: number; stderr: string }>((resolve, reject) => {
+type CaptureOptions = { timeoutMs?: number; onStderrLine?: (line: string) => void };
+
+/** Keep FFmpeg diagnostics bounded even when damaged media floods stderr. */
+export function capture(command: string, args: string[], options: CaptureOptions = {}) {
+  return new Promise<{ code: number; stderr: string; timedOut: boolean }>((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] });
-    let stderr = "";
+    const headLimit = 32 * 1024;
+    const tailLimit = 128 * 1024;
+    let head = "";
+    let tail = "";
+    let total = 0;
+    let partialLine = "";
+    let timedOut = false;
+    const timeout = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, options.timeoutMs ?? 60_000);
     child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", reject);
-    child.on("close", (code) => resolve({ code: code ?? -1, stderr }));
+    child.stderr.on("data", (chunk: string) => {
+      total += chunk.length;
+      if (head.length < headLimit) head += chunk.slice(0, headLimit - head.length);
+      tail = (tail + chunk).slice(-tailLimit);
+      if (options.onStderrLine) {
+        const lines = (partialLine + chunk).split(/\r\n|\r|\n/);
+        partialLine = (lines.pop() || "").slice(-8192);
+        for (const line of lines) options.onStderrLine(line);
+      }
+    });
+    child.on("error", (error) => { clearTimeout(timeout); reject(error); });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (partialLine && options.onStderrLine) options.onStderrLine(partialLine);
+      resolve({ code: code ?? -1, stderr: total <= headLimit ? head : `${head}\n[diagnóstico recortado]\n${tail}`, timedOut });
+    });
   });
 }
 
@@ -56,7 +79,8 @@ export async function verifyCloudRender(signedUrl: string) {
   const result = await capture(ffmpegPath, [
     "-hide_banner", "-nostdin", "-xerror", "-i", signedUrl,
     "-map", "0:v:0", "-map", "0:a:0", "-t", "3", "-f", "null", "-",
-  ]);
+  ], { timeoutMs: 60_000 });
+  if (result.timedOut) throw new Error("El MP4 guardado tardó demasiado en verificarse.");
   if (result.code !== 0) throw new Error(`El MP4 guardado no pasó la verificación de reproducción: ${result.stderr.slice(-800)}`);
   const video = result.stderr.match(/Video:[^\n]*?\b(\d{2,5})x(\d{2,5})\b/);
   const hasAudio = /Audio:[^\n]*/.test(result.stderr);
@@ -66,44 +90,55 @@ export async function verifyCloudRender(signedUrl: string) {
 
 async function analyzeClip(command: string, url: string, fallbackDuration: number, removeSilence: boolean, thresholdMs: number): Promise<ClipAnalysis> {
   const threshold = Math.max(0.35, thresholdMs / 1000);
-  const args = ["-hide_banner", "-nostdin", "-i", url, "-vn"];
+  const mediaLimit = Math.min(120, Math.max(1, fallbackDuration + 0.5));
+  const timeoutMs = Math.min(45_000, 15_000 + Math.max(0, fallbackDuration) * 3_000);
+  const args = ["-hide_banner", "-nostdin", "-nostats", "-threads", "1", "-filter_threads", "1", "-i", url, "-map", "0:a:0?", "-vn", "-sn", "-dn"];
   if (removeSilence) args.push("-af", `silencedetect=noise=-35dB:d=${threshold}`);
-  args.push("-f", "null", "-");
-  const result = await capture(command, args);
-  const hasVideo = /Stream #[^\n]*Video:/.test(result.stderr);
-  const hasAudio = /Stream #[^\n]*Audio:/.test(result.stderr);
-  if (!hasVideo) throw new Error(`La toma no contiene una pista de video legible: ${result.stderr.slice(-500)}`);
-  if (result.code !== 0 && hasAudio) throw new Error(`No pudimos analizar una toma: ${result.stderr.slice(-700)}`);
-  const duration = parseDuration(result.stderr) || fallbackDuration;
-  if (!duration) throw new Error("No pudimos medir la duración de una toma.");
-  if (!hasAudio || !removeSilence) return { duration, ranges: [{ start: 0, end: duration }], removed: 0, hasAudio };
-  const lines = result.stderr.split("\n");
+  args.push("-t", mediaLimit.toFixed(3), "-f", "null", "-");
   const silences: Array<{ start: number; end: number }> = [];
   let pending: number | null = null;
-  for (const line of lines) {
-    const start = line.match(/silence_start:\s*(-?\d+(?:\.\d+)?)/);
-    if (start) pending = Math.max(0, Number(start[1]));
-    const end = line.match(/silence_end:\s*(-?\d+(?:\.\d+)?)/);
-    if (end && pending !== null) {
-      silences.push({ start: pending, end: Math.min(duration, Number(end[1])) });
-      pending = null;
-    }
-  }
+  let tooManySilences = false;
+  const result = await capture(command, args, {
+    timeoutMs,
+    onStderrLine: (line) => {
+      const start = line.match(/silence_start:\s*(-?\d+(?:\.\d+)?)/);
+      if (start) pending = Math.max(0, Number(start[1]));
+      const end = line.match(/silence_end:\s*(-?\d+(?:\.\d+)?)/);
+      if (end && pending !== null) {
+        if (silences.length < 512) silences.push({ start: pending, end: Number(end[1]) });
+        else tooManySilences = true;
+        pending = null;
+      }
+    },
+  });
+  if (result.timedOut) throw new Error("La toma excedió el tiempo seguro de análisis. Prueba una toma más corta o de menor resolución.");
+  if (tooManySilences) throw new Error("La toma contiene demasiados cambios de silencio para procesarla en la nube.");
+  const hasVideo = /Stream #[^\n]*Video:/.test(result.stderr);
+  const hasAudio = /Stream #[^\n]*Audio:/.test(result.stderr);
+  const videoCodec = result.stderr.match(/Stream #[^\n]*Video:\s*([a-zA-Z0-9_]+)/)?.[1] || null;
+  const audioCodec = result.stderr.match(/Stream #[^\n]*Audio:\s*([a-zA-Z0-9_]+)/)?.[1] || null;
+  if (!hasVideo) throw new Error(`La toma no contiene una pista de video legible: ${result.stderr.slice(-500)}`);
+  if (result.code !== 0 && hasAudio) throw new Error(`No pudimos analizar una toma: ${result.stderr.slice(-700)}`);
+  const duration = Math.min(parseDuration(result.stderr) || fallbackDuration, mediaLimit);
+  if (!duration) throw new Error("No pudimos medir la duración de una toma.");
+  if (!hasAudio || !removeSilence) return { duration, ranges: [{ start: 0, end: duration }], removed: 0, hasAudio, videoCodec, audioCodec };
   if (pending !== null) silences.push({ start: pending, end: duration });
   const ranges: Array<{ start: number; end: number }> = [];
   let cursor = 0;
   let removed = 0;
   for (const silence of silences) {
-    if (silence.end - silence.start < threshold) continue;
-    const keepEnd = Math.min(duration, silence.start + 0.1);
+    const silenceStart = Math.min(duration, silence.start);
+    const silenceEnd = Math.min(duration, silence.end);
+    if (silenceEnd - silenceStart < threshold) continue;
+    const keepEnd = Math.min(duration, silenceStart + 0.1);
     if (keepEnd - cursor > 0.16) ranges.push({ start: cursor, end: keepEnd });
-    const next = Math.max(0, silence.end - 0.1);
+    const next = Math.max(0, silenceEnd - 0.1);
     removed += Math.max(0, next - keepEnd);
     cursor = next;
   }
   if (duration - cursor > 0.16) ranges.push({ start: cursor, end: duration });
   if (!ranges.length) ranges.push({ start: 0, end: duration });
-  return { duration, ranges, removed, hasAudio };
+  return { duration, ranges, removed, hasAudio, videoCodec, audioCodec };
 }
 
 function cards(text: string, size: number, uppercase: boolean) {
@@ -132,7 +167,17 @@ export async function renderCloudEdit(input: {
   const analyses: ClipAnalysis[] = [];
   for (let index = 0; index < input.contract.clips.length; index += 1) {
     const clip = input.contract.clips[index];
-    analyses.push(await analyzeClip(command, input.signedUrls[index], clip.duration_seconds, input.contract.dead_air.remove, input.contract.dead_air.threshold_ms));
+    const rssBeforeMb = Math.round(process.memoryUsage().rss / 1048576);
+    console.info("[cloud-render] clip analysis start", { index: index + 1, total: input.contract.clips.length, declaredDurationSeconds: clip.duration_seconds, rssMb: rssBeforeMb });
+    let analysis: ClipAnalysis;
+    try {
+      analysis = await analyzeClip(command, input.signedUrls[index], clip.duration_seconds, input.contract.dead_air.remove, input.contract.dead_air.threshold_ms);
+    } catch (error) {
+      console.error("[cloud-render] clip analysis failed", { index: index + 1, total: input.contract.clips.length, rssMb: Math.round(process.memoryUsage().rss / 1048576), errorType: error instanceof Error ? error.name : typeof error });
+      throw new Error(`No se pudo analizar la toma ${index + 1} de ${input.contract.clips.length}: ${error instanceof Error ? error.message : "error desconocido"}`);
+    }
+    analyses.push(analysis);
+    console.info("[cloud-render] clip analysis complete", { index: index + 1, total: input.contract.clips.length, declaredDurationSeconds: clip.duration_seconds, measuredDurationSeconds: analysis.duration, videoCodec: analysis.videoCodec, audioCodec: analysis.audioCodec, rssBeforeMb, rssAfterMb: Math.round(process.memoryUsage().rss / 1048576) });
     if (analyses.reduce((total, item) => total + item.duration, 0) > 120) {
       throw new Error("Esta versión cloud procesa hasta 2 minutos de material por edición. Divide el proyecto en escenas más cortas.");
     }
@@ -255,15 +300,17 @@ export async function renderCloudEdit(input: {
     effectCount += sound.renderedCueCount;
   }
   await input.onProgress(42, "Montando cortes, subtítulos y efectos");
-  const args = ["-y", "-hide_banner", "-nostdin", "-loglevel", "error"];
-  input.signedUrls.forEach((url) => args.push("-i", url));
+  const args = ["-y", "-hide_banner", "-nostdin", "-loglevel", "error", "-filter_complex_threads", "1"];
+  input.signedUrls.forEach((url) => args.push("-threads", "1", "-i", url));
   if (needsSilentAudio) args.push("-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
   overlayBuffers.forEach((_, index) => args.push("-f", "image2pipe", "-framerate", "30", "-c:v", "png", "-i", `pipe:${index + 3}`));
   // Keep even a two-minute export below the Free plan's 50 MB object limit.
   const maxVideoKbps = Math.max(800, Math.min(8000, Math.floor((44_000_000 * 8 / Math.max(1, elapsed) - 160_000) / 1000)));
-  args.push("-filter_complex", filters.join(";"), "-map", `[${videoLabel}]`, "-map", `[${audioLabel}]`, "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-maxrate", `${maxVideoKbps}k`, "-bufsize", `${maxVideoKbps * 2}k`, "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1");
+  args.push("-filter_complex", filters.join(";"), "-map", `[${videoLabel}]`, "-map", `[${audioLabel}]`, "-c:v", "libx264", "-threads", "1", "-preset", "veryfast", "-crf", "22", "-maxrate", `${maxVideoKbps}k`, "-bufsize", `${maxVideoKbps * 2}k`, "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1");
   await input.onProgress(60, "Renderizando el MP4");
   const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe", ...overlayBuffers.map(() => "pipe" as const)] });
+  let renderTimedOut = false;
+  const renderTimeout = setTimeout(() => { renderTimedOut = true; child.kill("SIGKILL"); }, 240_000);
   overlayBuffers.forEach((buffer, index) => {
     const pipe = child.stdio[index + 3] as Writable;
     pipe.on("error", () => undefined); // FFmpeg can close a pipe when an earlier input fails.
@@ -271,7 +318,7 @@ export async function renderCloudEdit(input: {
   });
   let stderr = "";
   (child.stderr as Readable).setEncoding("utf8");
-  (child.stderr as Readable).on("data", (chunk) => { stderr += chunk; });
+  (child.stderr as Readable).on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-128 * 1024); });
   const completion = new Promise<number>((resolve, reject) => {
     child.on("error", reject);
     child.on("close", (code) => resolve(code ?? -1));
@@ -290,6 +337,8 @@ export async function renderCloudEdit(input: {
     }
   })();
   const [processResult, outputResult] = await Promise.allSettled([completion, output]);
+  clearTimeout(renderTimeout);
+  if (renderTimedOut) throw new Error("La exportación excedió el tiempo seguro de esta versión cloud. Divide el proyecto en videos más cortos.");
   if (outputResult.status === "rejected") throw outputResult.reason;
   if (processResult.status === "rejected") throw processResult.reason;
   if (processResult.value !== 0) throw new Error(`FFmpeg no pudo terminar el render: ${stderr.slice(-1200)}`);

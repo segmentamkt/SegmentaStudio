@@ -22,42 +22,60 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 async function streamRender(job: Row, onProgress: (progress: number, stage: string) => void): Promise<Row> {
-  const response = await fetch("/api/editor/render", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/x-ndjson" },
-    body: JSON.stringify({ jobId: job.id, job: job.ephemeral ? job : undefined }),
-  });
-  if (!response.ok || !response.body) {
-    const data = await response.json().catch(() => ({})) as { job?: Row; error?: string };
-    if (!response.ok) throw new Error(data.error || "No se pudo renderizar el video.");
-    if (data.job) return data.job;
-    throw new Error("El servidor no devolvió el resultado del render.");
-  }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let remaining = "";
-  let completed: Row | null = null;
-  const consume = (line: string) => {
-    if (!line.trim()) return;
-    const event = JSON.parse(line) as { type: string; progress?: number; stage?: string; job?: Row; error?: string };
-    if (event.type === "progress") onProgress(Number(event.progress || 0), String(event.stage || "Procesando video"));
-    if (event.type === "done" && event.job) completed = event.job;
-    if (event.type === "error") throw new Error(event.error || "El render se detuvo.");
+  const controller = new AbortController();
+  let inactivityTimer = 0;
+  let stalled = false;
+  const keepAlive = () => {
+    window.clearTimeout(inactivityTimer);
+    inactivityTimer = window.setTimeout(() => { stalled = true; controller.abort(); }, 40_000);
   };
-  while (true) {
-    const { done, value } = await reader.read();
-    remaining += decoder.decode(value, { stream: !done });
-    let newline = remaining.indexOf("\n");
-    while (newline !== -1) {
-      consume(remaining.slice(0, newline));
-      remaining = remaining.slice(newline + 1);
-      newline = remaining.indexOf("\n");
+  keepAlive();
+  try {
+    const response = await fetch("/api/editor/render", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/x-ndjson" },
+      body: JSON.stringify({ jobId: job.id, job: job.ephemeral ? job : undefined }),
+      signal: controller.signal,
+    });
+    keepAlive();
+    if (!response.ok || !response.body) {
+      const data = await response.json().catch(() => ({})) as { job?: Row; error?: string };
+      if (!response.ok) throw new Error(data.error || "No se pudo renderizar el video.");
+      if (data.job) return data.job;
+      throw new Error("El servidor no devolvió el resultado del render.");
     }
-    if (done) break;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let remaining = "";
+    let completed: Row | null = null;
+    const consume = (line: string) => {
+      if (!line.trim()) return;
+      const event = JSON.parse(line) as { type: string; progress?: number; stage?: string; job?: Row; error?: string };
+      if (event.type === "progress") onProgress(Number(event.progress || 0), String(event.stage || "Procesando video"));
+      if (event.type === "done" && event.job) completed = event.job;
+      if (event.type === "error") throw new Error(event.error || "El render se detuvo.");
+    };
+    while (true) {
+      const { done, value } = await reader.read();
+      keepAlive();
+      remaining += decoder.decode(value, { stream: !done });
+      let newline = remaining.indexOf("\n");
+      while (newline !== -1) {
+        consume(remaining.slice(0, newline));
+        remaining = remaining.slice(newline + 1);
+        newline = remaining.indexOf("\n");
+      }
+      if (done) break;
+    }
+    if (remaining.trim()) consume(remaining);
+    if (!completed) throw new Error("El render terminó sin confirmar un MP4. Revisa Mis videos antes de reintentar.");
+    return completed;
+  } catch (error) {
+    if (stalled) throw new Error("El servidor dejó de enviar avances. Revisa Mis videos: si no hay un MP4 nuevo, vuelve a intentar después de corregir el fallo.");
+    throw error;
+  } finally {
+    window.clearTimeout(inactivityTimer);
   }
-  if (remaining.trim()) consume(remaining);
-  if (!completed) throw new Error("El render terminó sin confirmar un MP4. Revisa Mis videos antes de reintentar.");
-  return completed;
 }
 
 function seconds(milliseconds: unknown) {

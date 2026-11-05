@@ -43,6 +43,12 @@ async function executeRender(request: Request, onProgress: (progress: number, st
     if (production.error || scenes.error || takes.error) throw production.error || scenes.error || takes.error;
     if (!production.data) return Response.json({ error: "La producción ya no existe." }, { status: 404 });
     const contract = normalizeRenderContract(ephemeral ? temporaryJob?.contract : job?.data?.contract, production.data, scenes.data, takes.data);
+    const sourceBytes = new Map((takes.data || []).map((take) => [take.object_key, Number(take.bytes || 0)]));
+    console.info("[cloud-render] input summary", {
+      jobId,
+      clipCount: contract.clips.length,
+      clips: contract.clips.map((clip, index) => ({ index: index + 1, durationSeconds: clip.duration_seconds, bytes: sourceBytes.get(clip.object_key) || 0 })),
+    });
     phase = "abriendo los videos originales";
     const objectKeys = contract.clips.map((clip) => clip.object_key);
     const signed = await supabase.storage.from("kiko-videos").createSignedUrls(objectKeys, 3600);
