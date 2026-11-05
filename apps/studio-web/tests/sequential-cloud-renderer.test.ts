@@ -36,7 +36,7 @@ test("sequential HEVC clips normalize to a playable joined portrait MP4 with tex
       objective: "Prueba de edición en serie",
       session: { title: "Demo Segmenta" },
       clips: [
-        { id: "1", name: "uno", object_key: "uno", duration_seconds: 1.2, transcript: "HOLA UNO", caption_cues: [
+        { id: "1", name: "uno", object_key: "uno", duration_seconds: 1.2, transcript: "HOLA UNO", playback_speed: 2, audio_volume: .5, brightness: .08, contrast: 1.1, saturation: .8, caption_cues: [
           { startSeconds: .1, endSeconds: .5, text: "HOLA" },
           { startSeconds: .6, endSeconds: 1.1, text: "UNO" },
         ] },
@@ -59,9 +59,13 @@ test("sequential HEVC clips normalize to a playable joined portrait MP4 with tex
         deadline: Date.now() + 60_000,
       });
       assert.equal(result.captionCount, index === 0 ? 2 : 1);
-      if (index === 0) assert.equal(result.labelCount, 1);
+      if (index === 0) { assert.equal(result.labelCount, 1); assert.equal(result.duration, .6); }
       if (index === 1) assert.ok(result.cueCount > 0);
     }
+    const spedUpInspection = run(["-hide_banner", "-i", outputs[0], "-f", "null", "-"]);
+    const spedUpDuration = spedUpInspection.match(/Duration: 00:00:(\d+(?:\.\d+)?)/);
+    assert.ok(spedUpDuration, "FFmpeg should report the encoded clip duration");
+    assert.ok(Number(spedUpDuration[1]) > .5 && Number(spedUpDuration[1]) < .75, `Expected a ~0.6 second video, got ${spedUpDuration[1]}`);
     const list = join(directory, "concat.txt");
     await writeFile(list, outputs.map((path) => `file '${path}'`).join("\n"));
     const final = join(directory, "final.mp4");

@@ -144,15 +144,42 @@ test("renders an approved subset in the manual order with bounded trims and capt
   assert.notEqual(second.id, output.clips[1].id);
 });
 
+test("keeps per-clip speed, volume and color controls within safe render limits", () => {
+  const input = fixture();
+  Object.assign(input.raw.clips[0], { playback_speed: 1.5, audio_volume: 0, brightness: .08, contrast: 1.2, saturation: .75 });
+  const output = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.equal(output.clips[0].playback_speed, 1.5);
+  assert.equal(output.clips[0].audio_volume, 0);
+  assert.equal(output.clips[0].brightness, .08);
+  assert.equal(output.clips[0].contrast, 1.2);
+  assert.equal(output.clips[0].saturation, .75);
+  Object.assign(input.raw.clips[0], { playback_speed: 3 });
+  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /velocidad de una toma/);
+});
+
 test("rejects duplicate, foreign and invalid manual edits", () => {
   const input = fixture(2);
   input.raw.ordered_clip_ids = ["take-0", "take-0"];
-  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /ya no coinciden/);
+  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /plan cambió/);
   input.raw.ordered_clip_ids = ["take-0", "take-foreign"];
   assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /no autorizada/);
   input.raw.ordered_clip_ids = ["take-0", "take-1"];
   Object.assign(input.raw.clips[0], { trim_start_seconds: 8, trim_end_seconds: 8.1 });
   assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /0,2 segundos/);
+});
+
+test("accepts two distinct segments of the same approved take", () => {
+  const input = fixture(1, 70_000);
+  const first = input.raw.clips[0];
+  const firstPart = { ...first };
+  const secondPart = { ...first };
+  Object.assign(firstPart, { trim_start_seconds: 0, trim_end_seconds: 30 });
+  Object.assign(secondPart, { trim_start_seconds: 30, trim_end_seconds: 70 });
+  input.raw.ordered_clip_ids = [first.id, first.id];
+  input.raw.clips = [firstPart, secondPart];
+  const output = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.deepEqual(output.ordered_clip_ids, ["take-0", "take-0"]);
+  assert.deepEqual(output.clips.map((clip) => [clip.trim_start_seconds, clip.trim_end_seconds]), [[0, 30], [30, 70]]);
 });
 
 test("does not silently export a partially captioned video", () => {

@@ -11,9 +11,11 @@ Editor de video vertical para [studio.segmenta.online](https://studio.segmenta.o
 - Recomendaciones de planos de apoyo y rótulos basadas en el libreto. Los rótulos sugeridos se pueden aplicar a una toma y aparecen en el MP4; los planos que falten se deben grabar o subir.
 - Render MP4 vertical con recorte de silencios, encuadre, color, transiciones, títulos y subtítulos. Se pueden importar transcripciones SRT o VTT con tiempos por toma; el render conserva esos tiempos tras recortes y eliminación de silencios.
 - Efectos de sonido originales generados con FFmpeg para cortes de escena e internos; el volumen y estilo son configurables.
+- Línea de tiempo manual con división y duplicación de tomas, orden, recorte, inclusión/exclusión, deshacer y rehacer. Cada segmento puede tener velocidad de 0,5× a 2×, volumen de voz y ajustes de brillo, contraste y saturación propios; estos valores llegan al MP4, incluidos los tiempos de subtítulos tras cambiar la velocidad.
+- Catálogo consultable de las 244 herramientas de la guía de CapCut enviada por el propietario, organizado en 15 categorías y con estado **Disponible**, **Parcial** o **En desarrollo**. El catálogo no activa funciones que todavía no tienen motor.
 - Verificación técnica de video y audio del archivo **después** de subirlo a Storage.
 
-El render actual admite hasta 12 tomas y 120 segundos de material fuente. La función de Vercel tiene un [límite de ejecución](https://vercel.com/docs/functions/limitations); un video largo necesita un trabajador de procesamiento independiente.
+El render actual admite hasta 12 segmentos, 120 segundos de material fuente aprobado y 120 segundos de salida. La función de Vercel tiene un [límite de ejecución](https://vercel.com/docs/functions/limitations); un video largo necesita un trabajador de procesamiento independiente.
 
 ## Límites visibles en la interfaz
 

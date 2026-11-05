@@ -98,11 +98,13 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
   }
   const rawClips = rowList(contract.clips, "Los clips del contrato");
   const rawIds = contract.ordered_clip_ids;
-  if (!Array.isArray(rawIds) || rawClips.length !== rawIds.length || new Set(rawIds).size !== rawIds.length) {
+  if (!Array.isArray(rawIds) || rawClips.length !== rawIds.length) {
     throw new Error("Las tomas del plan ya no coinciden con las aprobadas.");
   }
   const sceneByTake = new Map(selectedScenes.map((scene) => [scene.selected_take_id, scene]));
   let knownDurationMs = 0;
+  let plannedDurationSeconds = 0;
+  const countedTakes = new Set<string>();
   let captionCharacters = 0;
   let cueCharacters = 0;
   const clips = rawClips.map((requestedClip, index) => {
@@ -122,7 +124,8 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
       throw new Error("El plan cambió o contiene una ruta de video no autorizada. Vuelve a crear la edición.");
     }
     const measuredMs = durationMs(take.duration_ms);
-    knownDurationMs += measuredMs;
+    if (!countedTakes.has(takeId)) knownDurationMs += measuredMs;
+    countedTakes.add(takeId);
     if (knownDurationMs > MAX_KNOWN_DURATION_MS) throw new Error("La duración conocida de las tomas supera los 120 segundos permitidos por render.");
     const transcript = text(requestedClip.transcript ?? scene.script, "El texto hablado de una escena", 1_000, true);
     captionCharacters += transcript.length;
@@ -130,6 +133,9 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
     const trimStart = bounded(requestedClip.trim_start_seconds, 0, 0, Math.max(0, measuredMs / 1_000 - .2), "El inicio del recorte");
     const trimEnd = bounded(requestedClip.trim_end_seconds, measuredMs / 1_000, .2, measuredMs / 1_000, "El final del recorte");
     if (trimEnd - trimStart < .2) throw new Error("Cada toma debe conservar al menos 0,2 segundos.");
+    const playbackSpeed = bounded(requestedClip.playback_speed, 1, .5, 2, "La velocidad de una toma");
+    plannedDurationSeconds += (trimEnd - trimStart) / playbackSpeed;
+    if (plannedDurationSeconds > 120) throw new Error("El video final supera los 120 segundos permitidos por render.");
     const rawCues = requestedClip.caption_cues ?? [];
     if (!Array.isArray(rawCues) || rawCues.length > 100) throw new Error("Hay demasiados subtítulos temporizados en una toma.");
     const captionCues = rowList(rawCues, "Los subtítulos temporizados").map((item) => {
@@ -150,6 +156,11 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
       transcript,
       trim_start_seconds: trimStart,
       trim_end_seconds: trimEnd,
+      playback_speed: playbackSpeed,
+      audio_volume: bounded(requestedClip.audio_volume, 1, 0, 2, "El volumen de una toma"),
+      brightness: bounded(requestedClip.brightness, 0, -.2, .2, "El brillo de una toma"),
+      contrast: bounded(requestedClip.contrast, 1, .8, 1.3, "El contraste de una toma"),
+      saturation: bounded(requestedClip.saturation, 1, .5, 1.5, "La saturación de una toma"),
       label: text(requestedClip.label ?? "", "El rótulo de una escena", 120, true),
       caption_cues: captionCues,
     };

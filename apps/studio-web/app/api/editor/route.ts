@@ -30,6 +30,11 @@ type TimelineItem = {
   included?: boolean;
   trimStartSeconds?: number;
   trimEndSeconds?: number;
+  playbackSpeed?: number;
+  audioVolume?: number;
+  brightness?: number;
+  contrast?: number;
+  saturation?: number;
   transcript?: string;
   label?: string;
   captionCues?: CaptionCue[];
@@ -89,8 +94,6 @@ export async function POST(request: Request) {
       return Response.json({ error: "La línea de tiempo no tiene un formato válido." }, { status: 400 });
     }
     const timeline = requestedTimeline as TimelineItem[] | null;
-    const unique = new Set(timeline?.map((item) => item.takeId));
-    if (timeline && unique.size !== timeline.length) return Response.json({ error: "Una toma aparece repetida en la línea de tiempo." }, { status: 400 });
     const byTakeId = new Map(source.map((item) => [item.take!.id, item]));
     if (timeline?.some((item) => !byTakeId.has(item.takeId))) return Response.json({ error: "La línea de tiempo contiene una toma no aprobada." }, { status: 400 });
     const ordered = timeline ? timeline.filter((item) => item.included !== false).map((item) => ({ ...byTakeId.get(item.takeId)!, edit: item })) : source.map((item) => ({ ...item, edit: null as TimelineItem | null }));
@@ -103,6 +106,11 @@ export async function POST(request: Request) {
       if (typeof start !== "number" || typeof end !== "number" || !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end > duration || end - start < .2) {
         return Response.json({ error: "Revisa el inicio y el final del recorte de cada toma." }, { status: 400 });
       }
+      for (const [value, min, max] of [[edit?.playbackSpeed, .5, 2], [edit?.audioVolume, 0, 2], [edit?.brightness, -.2, .2], [edit?.contrast, .8, 1.3], [edit?.saturation, .5, 1.5]] as const) {
+        if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max)) {
+          return Response.json({ error: "Un ajuste de velocidad, audio o color está fuera de rango." }, { status: 400 });
+        }
+      }
       if (edit && (typeof edit.transcript !== "string" || typeof edit.label !== "string" || edit.label.length > 120 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(edit.transcript + edit.label))) {
         return Response.json({ error: "El texto o rótulo de una toma no es válido." }, { status: 400 });
       }
@@ -110,7 +118,7 @@ export async function POST(request: Request) {
         return Response.json({ error: "Los tiempos de subtítulos de una toma no son válidos." }, { status: 400 });
       }
     }
-    if (ordered.reduce((total, item) => total + Number(item.take?.duration_ms || 0), 0) > 120_000) return Response.json({ error: "Este render cloud procesa hasta 2 minutos de material por edición." }, { status: 400 });
+    if (ordered.reduce((total, item) => total + ((item.edit?.trimEndSeconds ?? Number(item.take?.duration_ms || 0) / 1000) - (item.edit?.trimStartSeconds ?? 0)) / (item.edit?.playbackSpeed ?? 1), 0) > 120) return Response.json({ error: "Este render cloud admite hasta 2 minutos de video final por edición." }, { status: 400 });
     if (ordered.some((item) => String(item.edit?.transcript ?? item.scene.script ?? "").length > 1_000) || ordered.reduce((total, item) => total + String(item.edit?.transcript ?? item.scene.script ?? "").length, 0) > 5_000) return Response.json({ error: "Acorta el texto hablado: hasta 1.000 caracteres por escena y 5.000 en total." }, { status: 400 });
     const normalizedOptions = {
       captions: options.captions !== false,
@@ -152,6 +160,11 @@ export async function POST(request: Request) {
         transcript: edit?.transcript ?? scene.script,
         trim_start_seconds: edit?.trimStartSeconds ?? 0,
         trim_end_seconds: edit?.trimEndSeconds ?? Number(take.duration_ms || 0) / 1000,
+        playback_speed: edit?.playbackSpeed ?? 1,
+        audio_volume: edit?.audioVolume ?? 1,
+        brightness: edit?.brightness ?? 0,
+        contrast: edit?.contrast ?? 1,
+        saturation: edit?.saturation ?? 1,
         label: edit?.label ?? "",
         caption_cues: edit?.captionCues ?? [],
       })),

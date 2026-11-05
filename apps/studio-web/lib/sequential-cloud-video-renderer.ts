@@ -11,7 +11,7 @@ import { renderTextOverlay } from "./video-text-overlay";
 import { mapCaptionCues, type CaptionCue } from "./caption-cues";
 
 type Range = { start: number; end: number };
-type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string; trim_start_seconds?: number; trim_end_seconds?: number; label?: string; caption_cues?: CaptionCue[] };
+type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string; trim_start_seconds?: number; trim_end_seconds?: number; playback_speed?: number; audio_volume?: number; brightness?: number; contrast?: number; saturation?: number; label?: string; caption_cues?: CaptionCue[] };
 type EditContract = {
   objective: string;
   session: { title: string };
@@ -153,37 +153,43 @@ export async function renderSequentialClip(input: {
 }) {
   const { command, contract, analysis, url, index, output, videoKbps, transitionSeconds, deadline } = input;
   const execution = contract.style_snapshot.execution || {};
-  const duration = analysis.ranges.reduce((total, range) => total + range.end - range.start, 0);
+  const clip = contract.clips[index];
+  const speed = Math.max(.5, Math.min(2, Number(clip.playback_speed ?? 1)));
+  const volume = Math.max(0, Math.min(2, Number(clip.audio_volume ?? 1)));
+  const sourceDuration = analysis.ranges.reduce((total, range) => total + range.end - range.start, 0);
+  const duration = sourceDuration / speed;
+  const clipTransition = Math.min(transitionSeconds, duration / 3);
   const select = analysis.ranges.map((range) => `between(t,${fixed(range.start)},${fixed(range.end)})`).join("+");
   const fit = execution.framing === "fit";
   const zoom = Math.max(0, Math.min(10, Number(execution.zoomPercent || 0)));
-  const contrast = Math.max(.8, Math.min(1.3, Number(execution.contrast || 1.04)));
-  const saturation = Math.max(.7, Math.min(1.4, Number(execution.saturation || 1.06)));
+  const brightness = Math.max(-.2, Math.min(.2, Number(clip.brightness ?? 0)));
+  const contrast = Math.max(.8, Math.min(1.3, Number(execution.contrast || 1.04) * Number(clip.contrast ?? 1)));
+  const saturation = Math.max(.5, Math.min(1.5, Number(execution.saturation || 1.06) * Number(clip.saturation ?? 1)));
   const scale = fit
     ? "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x09090b"
     : `scale=${Math.round(1080 * (1 + zoom / 100))}:${Math.round(1920 * (1 + zoom / 100))}:force_original_aspect_ratio=increase,crop=1080:1920`;
-  const fade = transitionSeconds > 0
-    ? `,fade=t=in:st=0:d=${fixed(index > 0 ? transitionSeconds : 0)},fade=t=out:st=${fixed(Math.max(0, duration - transitionSeconds))}:d=${fixed(index < contract.clips.length - 1 ? transitionSeconds : 0)}`
+  const fade = clipTransition > 0
+    ? `,fade=t=in:st=0:d=${fixed(index > 0 ? clipTransition : 0)},fade=t=out:st=${fixed(Math.max(0, duration - clipTransition))}:d=${fixed(index < contract.clips.length - 1 ? clipTransition : 0)}`
     : "";
-  const audioFade = transitionSeconds > 0
-    ? `,afade=t=in:st=0:d=${fixed(index > 0 ? transitionSeconds : 0)},afade=t=out:st=${fixed(Math.max(0, duration - transitionSeconds))}:d=${fixed(index < contract.clips.length - 1 ? transitionSeconds : 0)}`
+  const audioFade = clipTransition > 0
+    ? `,afade=t=in:st=0:d=${fixed(index > 0 ? clipTransition : 0)},afade=t=out:st=${fixed(Math.max(0, duration - clipTransition))}:d=${fixed(index < contract.clips.length - 1 ? clipTransition : 0)}`
     : "";
   const filters: string[] = [
-    `[0:v]fps=30,select='${select}',setpts=N/(30*TB),${scale},setsar=1,eq=contrast=${contrast}:saturation=${saturation},format=yuv420p${fade}[vbase]`,
+    `[0:v]fps=30,select='${select}',setpts=N/(30*TB*${speed}),${scale},setsar=1,eq=brightness=${brightness}:contrast=${contrast}:saturation=${saturation},format=yuv420p${fade}[vbase]`,
   ];
   const audioSource = analysis.hasAudio ? 0 : 1;
   const audioTrim = analysis.hasAudio
-    ? `aselect='${select}',asetpts=N/SR/TB,aresample=48000:async=1:first_pts=0`
+    ? `aselect='${select}',asetpts=N/SR/TB,atempo=${speed},aresample=48000:async=1:first_pts=0`
     : `atrim=0:${fixed(duration)},asetpts=PTS-STARTPTS,aresample=48000`;
   // loudnorm may emit no short voice stream when mixed with generated SFX.
   // A streaming compressor keeps speech audible and bounds peak level.
-  filters.push(`[${audioSource}:a]${audioTrim},aformat=sample_fmts=fltp:channel_layouts=stereo${analysis.hasAudio ? ",acompressor=threshold=-18dB:ratio=2:attack=5:release=60" : ""}${audioFade}[abase]`);
+  filters.push(`[${audioSource}:a]${audioTrim},aformat=sample_fmts=fltp:channel_layouts=stereo${analysis.hasAudio ? ",acompressor=threshold=-18dB:ratio=2:attack=5:release=60" : ""},volume=${volume}${audioFade}[abase]`);
   const overlays: Buffer[] = [];
   let videoLabel = "vbase";
   let captionCount = 0;
   const fontFile = join(process.cwd(), "assets", "fonts", "Inter.ttf");
   const title = contract.session.title.trim();
-  const label = contract.clips[index].label?.trim();
+  const label = clip.label?.trim();
   const showTitle = index === 0 && contract.effects.labels && execution.titleCards !== false
     && Boolean(title) && !label && !/^edici[oó]n de \d+ videos?$/i.test(title);
   const addOverlay = async (text: string, start: number, end: number, position: string, title = false) => {
@@ -207,12 +213,11 @@ export async function renderSequentialClip(input: {
   }
   if (contract.captions.enabled) {
     const position = contract.style_snapshot.subtitle.position === "top" ? "H*0.11" : contract.style_snapshot.subtitle.position === "center" ? "(H-h)/2" : "H-h-H*0.10";
-    const clip = contract.clips[index];
     const sourceCues = clip.caption_cues?.length ? clip.caption_cues : [{ startSeconds: 0, endSeconds: analysis.duration, text: clip.transcript }];
     for (const cue of mapCaptionCues(sourceCues, analysis.ranges)) {
       const items = cards(cue.text, contract.captions.max_words_per_card || 5, contract.style_snapshot.subtitle.uppercase);
       for (const [cardIndex, text] of items.entries()) {
-        await addOverlay(text, cue.startSeconds + (cue.endSeconds - cue.startSeconds) * cardIndex / items.length, cue.startSeconds + (cue.endSeconds - cue.startSeconds) * (cardIndex + 1) / items.length, position);
+        await addOverlay(text, (cue.startSeconds + (cue.endSeconds - cue.startSeconds) * cardIndex / items.length) / speed, (cue.startSeconds + (cue.endSeconds - cue.startSeconds) * (cardIndex + 1) / items.length) / speed, position);
         captionCount += 1;
       }
     }
@@ -221,7 +226,7 @@ export async function renderSequentialClip(input: {
   let cueCount = 0;
   if (contract.effects.sound_effects) {
     let position = 0;
-    const internalCuts = analysis.ranges.slice(0, -1).map((range) => { position += range.end - range.start; return position; });
+    const internalCuts = analysis.ranges.slice(0, -1).map((range) => { position += range.end - range.start; return position / speed; });
     const cueTimes = [...(index > 0 || showTitle || label ? [.15] : []), ...internalCuts];
     const cues = planCutSoundCues(cueTimes, execution.soundPreset && execution.soundPreset !== "auto" ? execution.soundPreset : (contract.style_snapshot as { id?: string }).id);
     const sound = buildSoundDesignGraph({
@@ -262,7 +267,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
     analyses.push(trimSequentialAnalysis(result, clip));
     await input.onProgress(14 + Math.round((index + 1) / input.contract.clips.length * 20), `Analizando toma ${index + 1} de ${input.contract.clips.length}`);
   }
-  const totalDuration = analyses.reduce((sum, item) => sum + item.ranges.reduce((value, range) => value + range.end - range.start, 0), 0);
+  const totalDuration = analyses.reduce((sum, item, index) => sum + item.ranges.reduce((value, range) => value + range.end - range.start, 0) / Math.max(.5, Math.min(2, Number(input.contract.clips[index].playback_speed ?? 1))), 0);
   if (totalDuration > 120) throw new Error("Esta versión cloud procesa hasta 2 minutos por edición.");
   const transitionSeconds = input.contract.effects.transitions && input.contract.style_snapshot.transition !== "cut"
     ? Math.max(0, Math.min(.35, Number(input.contract.style_snapshot.transitionDuration ?? .18))) : 0;
