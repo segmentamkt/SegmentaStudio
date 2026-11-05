@@ -63,6 +63,7 @@ async function executeRender(request: Request, onProgress: (progress: number, st
         const result = await supabase.from("kiko_edit_jobs").update({ status: "processing", progress, stage, error: null, updated_at: new Date().toISOString() }).eq("id", jobId).eq("owner_id", user.userId);
         if (result.error) throw result.error;
       }
+      console.info("[cloud-render] progress", { jobId, progress, stage });
       onProgress(progress, stage);
     };
     outputObjectKey = `${user.userId}/renders/${jobId}.mp4`;
@@ -86,6 +87,10 @@ async function executeRender(request: Request, onProgress: (progress: number, st
     const verification = await verifyCloudRender(link.data.signedUrl);
     if (verification.width !== 1080 || verification.height !== 1920) throw new Error("El MP4 final no conserva el formato vertical 1080 × 1920.");
     const verifiedEvidence = { ...evidence, ...verification, release_gate: { passed: true } };
+    console.info("[cloud-render] completed", {
+      jobId, durationSeconds: verifiedEvidence.duration_seconds,
+      captionCount: verifiedEvidence.caption_count, effectCount: verifiedEvidence.effect_count,
+    });
     if (ephemeral) {
       return Response.json({ job: { ...temporaryJob, status: "ready", stage: "Edición verificada", progress: 100, resultObjectKey: outputObjectKey, resultMetadata: verifiedEvidence, resultUrl: link.data.signedUrl, error: null } });
     }
