@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import ffmpegPath from "ffmpeg-static";
+import { MAX_RENDER_BYTES, uploadRenderedMp4 } from "./cloud-render-upload";
 import { buildSoundDesignGraph, planCutSoundCues } from "./sound-design";
 import { renderTextOverlay } from "./video-text-overlay";
 
@@ -258,7 +259,10 @@ export async function renderCloudEdit(input: {
   input.signedUrls.forEach((url) => args.push("-i", url));
   if (needsSilentAudio) args.push("-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
   overlayBuffers.forEach((_, index) => args.push("-f", "image2pipe", "-framerate", "30", "-c:v", "png", "-i", `pipe:${index + 3}`));
-  args.push("-filter_complex", filters.join(";"), "-map", `[${videoLabel}]`, "-map", `[${audioLabel}]`, "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1");
+  // Keep even a two-minute export below the Free plan's 50 MB object limit.
+  const maxVideoKbps = Math.max(800, Math.min(8000, Math.floor((44_000_000 * 8 / Math.max(1, elapsed) - 160_000) / 1000)));
+  args.push("-filter_complex", filters.join(";"), "-map", `[${videoLabel}]`, "-map", `[${audioLabel}]`, "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-maxrate", `${maxVideoKbps}k`, "-bufsize", `${maxVideoKbps * 2}k`, "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1");
+  await input.onProgress(60, "Renderizando el MP4");
   const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe", ...overlayBuffers.map(() => "pipe" as const)] });
   overlayBuffers.forEach((buffer, index) => {
     const pipe = child.stdio[index + 3] as Writable;
@@ -272,23 +276,31 @@ export async function renderCloudEdit(input: {
     child.on("error", reject);
     child.on("close", (code) => resolve(code ?? -1));
   });
-  const storagePath = input.outputObjectKey.split("/").map(encodeURIComponent).join("/");
-  const upload = fetch(`${input.projectUrl}/storage/v1/object/kiko-videos/${storagePath}`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${input.accessToken}`,
-      apikey: input.publishableKey,
-      "content-type": "video/mp4",
-      "x-upsert": "true",
-    },
-    body: Readable.toWeb(child.stdout as Readable) as ReadableStream,
-    // Node fetch requires duplex for streamed request bodies.
-    ...({ duplex: "half" } as Record<string, string>),
+  const chunks: Buffer[] = [];
+  let byteCount = 0;
+  const output = (async () => {
+    for await (const chunk of child.stdout as Readable) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      byteCount += bytes.length;
+      if (byteCount > MAX_RENDER_BYTES) {
+        child.kill("SIGTERM");
+        throw new Error("El MP4 supera el límite de 48 MB de esta edición. Divide el proyecto en videos más cortos.");
+      }
+      chunks.push(bytes);
+    }
+  })();
+  const [processResult, outputResult] = await Promise.allSettled([completion, output]);
+  if (outputResult.status === "rejected") throw outputResult.reason;
+  if (processResult.status === "rejected") throw processResult.reason;
+  if (processResult.value !== 0) throw new Error(`FFmpeg no pudo terminar el render: ${stderr.slice(-1200)}`);
+  await input.onProgress(72, "Subiendo el MP4 en partes seguras");
+  await uploadRenderedMp4({
+    bytes: Buffer.concat(chunks, byteCount),
+    objectKey: input.outputObjectKey,
+    accessToken: input.accessToken,
+    projectUrl: input.projectUrl,
+    publishableKey: input.publishableKey,
   });
-  await input.onProgress(72, "Renderizando y subiendo el MP4");
-  const [code, uploadResponse] = await Promise.all([completion, upload]);
-  if (code !== 0) throw new Error(`FFmpeg no pudo terminar el render: ${stderr.slice(-1200)}`);
-  if (!uploadResponse.ok) throw new Error(`No se pudo guardar el render: ${await uploadResponse.text()}`);
   await input.onProgress(94, "Verificando el archivo final");
   return {
     duration_seconds: Number(elapsed.toFixed(2)), width: 1080, height: 1920,

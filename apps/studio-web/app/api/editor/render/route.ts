@@ -6,12 +6,24 @@ import { clean, toEditJob } from "../../../../lib/studio-data";
 
 export const maxDuration = 300;
 
+function safeErrorMessage(error: unknown) {
+  const message = error && typeof error === "object" && "message" in error ? String(error.message) : "No se pudo renderizar el video.";
+  return message.replace(/https?:\/\/\S+/gi, "[URL protegida]").replace(/Bearer\s+\S+/gi, "Bearer [oculto]").slice(0, 900);
+}
+
+function networkCode(error: unknown) {
+  const cause = error && typeof error === "object" && "cause" in error ? error.cause : null;
+  const nested = cause && typeof cause === "object" && "causingError" in cause ? cause.causingError : cause;
+  return nested && typeof nested === "object" && "code" in nested ? String(nested.code).slice(0, 40) : null;
+}
+
 export async function POST(request: Request) {
   const user = await getRequestUser();
   if (!user) return unauthorized();
   const supabase = await createClient();
   let jobId = "";
   let outputObjectKey = "";
+  let phase = "leyendo el plan";
   try {
     const payload = await request.json() as Record<string, unknown>;
     jobId = clean(payload.jobId);
@@ -20,6 +32,7 @@ export async function POST(request: Request) {
     const job = ephemeral ? null : await supabase.from("kiko_edit_jobs").select("*").eq("id", jobId).eq("owner_id", user.userId).maybeSingle();
     if (job?.error) throw job.error;
     if (!ephemeral && !job?.data) return Response.json({ error: "No encontramos ese trabajo de edición." }, { status: 404 });
+    phase = "validando las tomas";
     const sessionId = clean(ephemeral ? temporaryJob?.sessionId : job?.data?.session_id);
     if (!sessionId) return Response.json({ error: "El plan no identifica una producción." }, { status: 400 });
     const [production, scenes, takes] = await Promise.all([
@@ -30,6 +43,7 @@ export async function POST(request: Request) {
     if (production.error || scenes.error || takes.error) throw production.error || scenes.error || takes.error;
     if (!production.data) return Response.json({ error: "La producción ya no existe." }, { status: 404 });
     const contract = normalizeRenderContract(ephemeral ? temporaryJob?.contract : job?.data?.contract, production.data, scenes.data, takes.data);
+    phase = "abriendo los videos originales";
     const objectKeys = contract.clips.map((clip) => clip.object_key);
     const signed = await supabase.storage.from("kiko-videos").createSignedUrls(objectKeys, 3600);
     if (signed.error) throw signed.error;
@@ -43,6 +57,7 @@ export async function POST(request: Request) {
       if (result.error) throw result.error;
     };
     outputObjectKey = `${user.userId}/renders/${jobId}.mp4`;
+    phase = "renderizando y subiendo el MP4";
     const evidence = await renderCloudEdit({
       contract,
       signedUrls,
@@ -53,6 +68,7 @@ export async function POST(request: Request) {
       onProgress: update,
     });
     if (!evidence.release_gate.passed) throw new Error("El control de calidad rechazó el render porque faltan elementos solicitados.");
+    phase = "verificando el MP4 guardado";
     const link = await supabase.storage.from("kiko-videos").createSignedUrl(outputObjectKey, 3600);
     if (link.error) throw link.error;
     await update(96, "Comprobando video y audio del MP4");
@@ -70,7 +86,8 @@ export async function POST(request: Request) {
     if (completed.error) throw completed.error;
     return Response.json({ job: toEditJob(completed.data) });
   } catch (error) {
-    console.error("cloud render failed", error);
+    const message = `Error durante ${phase}: ${safeErrorMessage(error)}`;
+    console.error("cloud render failed", { phase, message: safeErrorMessage(error), code: networkCode(error), jobId });
     if (outputObjectKey) {
       try {
         const cleanup = await supabase.storage.from("kiko-videos").remove([outputObjectKey]);
@@ -79,7 +96,14 @@ export async function POST(request: Request) {
         console.error("cloud render cleanup failed", cleanupError);
       }
     }
-    if (jobId) await supabase.from("kiko_edit_jobs").update({ status: "failed", stage: "Render detenido", error: error instanceof Error ? error.message : "Error de render", updated_at: new Date().toISOString() }).eq("id", jobId).eq("owner_id", user.userId);
-    return Response.json({ error: error instanceof Error ? error.message : "No se pudo renderizar el video." }, { status: 500 });
+    if (jobId) {
+      try {
+        const failed = await supabase.from("kiko_edit_jobs").update({ status: "failed", stage: "Render detenido", error: message, updated_at: new Date().toISOString() }).eq("id", jobId).eq("owner_id", user.userId);
+        if (failed.error) console.error("cloud render status update failed", { code: failed.error.code || null, jobId });
+      } catch (updateError) {
+        console.error("cloud render status update failed", { code: networkCode(updateError), jobId });
+      }
+    }
+    return Response.json({ error: message }, { status: 500 });
   }
 }

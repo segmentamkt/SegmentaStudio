@@ -55,20 +55,26 @@ export function EditorStudio(props: {
   const initialStyle = EDITOR_STYLES[0];
   const [settings, setSettings] = useState({ subtitleSize: initialStyle.subtitle.size, subtitlePosition: initialStyle.subtitle.position, silenceThresholdMs: initialStyle.execution.silenceThresholdMs, transition: initialStyle.transition, soundEffectVolume: initialStyle.execution.soundEffectVolume });
   const [localJob, setJob] = useState<Row | null | undefined>(undefined);
+  const [lastResult, setLastResult] = useState<Row | null>(null);
+  const [previewMode, setPreviewMode] = useState<"final" | "original">("final");
   const latestJob = props.editJobs.find((item) => item.sessionId === sessionId) || null;
   const job = localJob === undefined || (localJob && localJob.sessionId !== sessionId) ? latestJob : localJob;
   const ephemeralStorageKey = `segmenta.edit-job.v1:${props.portfolioId}:${sessionId}`;
+  const resultStorageKey = `segmenta.latest-result.v1:${props.portfolioId}:${sessionId}`;
   const [busy, setBusy] = useState<"plan" | "render" | "">("");
   const [error, setError] = useState("");
   const [selectedTakeId, setSelectedTakeId] = useState("");
   const [playing, setPlaying] = useState(false);
+  const [mediaErrorSrc, setMediaErrorSrc] = useState("");
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
       try {
         const saved = JSON.parse(window.localStorage.getItem(ephemeralStorageKey) || "null") as Row | null;
-        if (!latestJob && saved?.ephemeral && saved.sessionId === sessionId) setJob(saved);
+        if (!latestJob && saved?.ephemeral && saved.sessionId === sessionId) {
+          setJob(saved.status === "processing" ? { ...saved, status: "failed", stage: "Render interrumpido", progress: 0, error: "El intento anterior se interrumpió. Revisa Mis videos para ver si se guardó un MP4 y, si no aparece, vuelve a renderizar." } : saved);
+        }
       } catch { /* Un plan local corrupto se ignora. */ }
     });
     return () => window.cancelAnimationFrame(frame);
@@ -78,6 +84,22 @@ export function EditorStudio(props: {
     if (localJob === null) window.localStorage.removeItem(ephemeralStorageKey);
     else if (localJob?.ephemeral && localJob.sessionId === sessionId) window.localStorage.setItem(ephemeralStorageKey, JSON.stringify(localJob));
   }, [ephemeralStorageKey, localJob, sessionId]);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      try {
+        const saved = JSON.parse(window.localStorage.getItem(resultStorageKey) || "null") as Row | null;
+        setLastResult(saved?.status === "ready" && saved.sessionId === sessionId ? saved : null);
+      } catch { setLastResult(null); }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [resultStorageKey, sessionId]);
+
+  useEffect(() => {
+    if (lastResult?.status === "ready" && lastResult.sessionId === sessionId) {
+      window.localStorage.setItem(resultStorageKey, JSON.stringify(lastResult));
+    }
+  }, [lastResult, resultStorageKey, sessionId]);
 
   const chooseStyle = (nextStyle: EditorStyleId) => {
     const preset = EDITOR_STYLES.find((item) => item.id === nextStyle) || EDITOR_STYLES[0];
@@ -103,7 +125,12 @@ export function EditorStudio(props: {
   const selectedStyle = EDITOR_STYLES.find((item) => item.id === style) || EDITOR_STYLES[0];
   const selectedTake = approvedTakes.find((take) => take.id === selectedTakeId) || approvedTakes[0];
   const ready = job?.status === "ready";
-  const previewSrc = ready ? `/api/editor/output/${job.id}` : selectedTake ? `/api/media/${selectedTake.id}` : "";
+  const activeResult = ready ? job : latestJob?.status === "ready" ? latestJob : lastResult?.sessionId === sessionId ? lastResult : null;
+  const showingFinal = Boolean(activeResult && previewMode === "final");
+  const resultSrc = activeResult ? `/api/editor/output/${activeResult.id}` : "";
+  const previewSrc = showingFinal ? resultSrc : selectedTake ? `/api/media/${selectedTake.id}` : "";
+  const resultMetadata = activeResult?.resultMetadata || {};
+  const resultStyle = EDITOR_STYLES.find((item) => item.id === resultMetadata.style_id)?.name || "Estilo no registrado";
 
   const plan = async () => {
     setBusy("plan"); setError("");
@@ -120,7 +147,7 @@ export function EditorStudio(props: {
     setBusy("render"); setError("");
     const fallbackStages = ["Analizando voz y silencios", "Recortando tiempos muertos", "Aplicando estilo y subtítulos", "Mezclando audio y transiciones", "Validando el MP4 final"];
     const progressTimer = job.ephemeral ? window.setInterval(() => setJob((current) => {
-      if (!current || current.status === "ready") return current;
+      if (!current || current.status === "ready" || current.status === "failed") return current;
       const progress = Math.min(92, Number(current.progress || 8) + 5);
       return { ...current, status: "processing", progress, stage: fallbackStages[Math.min(fallbackStages.length - 1, Math.floor(progress / 20))] };
     }), 1400) : 0;
@@ -129,14 +156,23 @@ export function EditorStudio(props: {
     }, 1500);
     try {
       const result = await request<{ job: Row }>("/api/editor/render", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jobId: job.id, job: job.ephemeral ? job : undefined }) });
-      setJob(result.job); await props.onRefresh();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo renderizar el video."); }
+      setJob(result.job);
+      if (result.job.status === "ready") { setLastResult(result.job); setPreviewMode("final"); }
+      await props.onRefresh();
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "No se pudo renderizar el video.";
+      setError(message);
+      setJob((current) => ({ ...(current || job), status: "failed", stage: "Render falló", progress: 0, error: message }));
+    }
     finally { if (poll) window.clearInterval(poll); if (progressTimer) window.clearInterval(progressTimer); setBusy(""); }
   };
 
   const togglePlayback = async () => {
     if (!videoRef.current) return;
-    if (videoRef.current.paused) { await videoRef.current.play(); setPlaying(true); }
+    if (videoRef.current.paused) {
+      try { await videoRef.current.play(); setPlaying(true); }
+      catch { setMediaErrorSrc(previewSrc); }
+    }
     else { videoRef.current.pause(); setPlaying(false); }
   };
 
@@ -146,8 +182,11 @@ export function EditorStudio(props: {
       <div className="min-w-0"><p className="truncate text-sm font-medium">{selectedSession?.title || "Nuevo proyecto"}</p><p className="text-[9px] text-zinc-600">{selectedSession ? "Guardado automáticamente" : "Añade material para comenzar"}</p></div>
       {available.length ? <select value={sessionId} onChange={(event) => { setSessionId(event.target.value); setJob(undefined); setSelectedTakeId(""); }} className="ml-auto max-w-[170px] rounded-xl border border-white/8 bg-white/5 px-3 py-2 text-[11px] text-zinc-300 outline-none">{available.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select> : <span className="ml-auto rounded-xl border border-amber-300/15 bg-amber-300/5 px-3 py-2 text-[10px] text-amber-200">Sin material</span>}
       <span className="hidden rounded-xl border border-white/8 px-3 py-2 text-[10px] text-zinc-500 sm:inline">9:16 · 1080p</span>
-      {ready ? <a href={previewSrc} className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-black"><Download size={14} />Exportar</a> : available.length ? <button onClick={job ? render : plan} disabled={busy !== ""} className="flex items-center gap-2 rounded-xl bg-violet-500 px-3 py-2 text-xs font-semibold disabled:opacity-50">{busy ? <LoaderCircle className="animate-spin" size={14} /> : <Sparkles size={14} />}{busy === "render" ? "Exportando…" : job ? "Renderizar" : "Preparar edición"}</button> : <button onClick={props.onUpload} className="flex items-center gap-2 rounded-xl bg-violet-500 px-3 py-2 text-xs font-semibold"><Plus size={14} />Subir videos</button>}
+      {ready ? <a href={`${resultSrc}?download=1`} className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-black"><Download size={14} />Descargar MP4</a> : available.length ? <button onClick={job ? render : plan} disabled={busy !== ""} className="flex items-center gap-2 rounded-xl bg-violet-500 px-3 py-2 text-xs font-semibold disabled:opacity-50">{busy ? <LoaderCircle className="animate-spin" size={14} /> : <Sparkles size={14} />}{busy === "render" ? "Exportando…" : job ? "Renderizar" : "Preparar edición"}</button> : <button onClick={props.onUpload} className="flex items-center gap-2 rounded-xl bg-violet-500 px-3 py-2 text-xs font-semibold"><Plus size={14} />Subir videos</button>}
     </header>
+
+    {activeResult && <div className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-400/20 bg-emerald-400/[.08] px-4 py-4 sm:px-6"><div><p className="flex items-center gap-2 text-sm font-semibold text-emerald-200"><Check size={16} />{job?.status === "failed" ? "Resultado anterior disponible" : "Resultado editado listo"}</p><p className="mt-1 text-xs text-zinc-400">El MP4 pasó una comprobación inicial de video y audio. Revísalo completo antes de publicarlo.</p><div className="mt-2 flex flex-wrap gap-2 text-[10px] text-zinc-300"><span>{resultStyle}</span><span>· {Number(resultMetadata.duration_seconds || 0).toFixed(1)} s finales</span><span>· {Number(resultMetadata.caption_count || 0)} subtítulos</span><span>· {Number(resultMetadata.effect_count || 0)} efectos</span><span>· {Number(resultMetadata.removed_silence_seconds || 0).toFixed(1)} s de silencio retirado</span></div></div><div className="flex w-full gap-2 sm:w-auto"><button onClick={() => setPreviewMode("final")} className="flex-1 rounded-xl bg-emerald-400 px-3 py-2 text-xs font-semibold text-black sm:flex-none">Ver resultado</button><a href={`${resultSrc}?download=1`} className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-emerald-300/30 px-3 py-2 text-xs text-emerald-100 sm:flex-none"><Download size={14} />Descargar</a></div></div>}
+    {job?.status === "failed" && <div className="border-b border-red-400/20 bg-red-400/[.08] px-4 py-4 text-sm text-red-100 sm:px-6"><strong>La edición no se completó. No existe un MP4 final de este intento.</strong><p className="mt-1 text-xs text-red-200/80">{job.error || error || "Revisa el mensaje y vuelve a intentar el render."}</p></div>}
 
     <div className="grid min-h-[670px] lg:grid-cols-[78px_250px_minmax(320px,1fr)_260px]">
       <nav className="order-2 flex overflow-x-auto border-t border-white/8 bg-[#0d1018] p-1.5 lg:order-none lg:flex-col lg:border-r lg:border-t-0 lg:p-2">
@@ -169,22 +208,23 @@ export function EditorStudio(props: {
       <main className="order-1 flex min-h-[540px] flex-col bg-[#07090e] lg:order-none">
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="relative aspect-[9/16] h-[430px] max-h-[58vh] overflow-hidden rounded-2xl border border-white/10 bg-black shadow-[0_30px_100px_rgba(0,0,0,.65)] sm:h-[520px]">
-            {previewSrc ? <video key={previewSrc} ref={videoRef} src={previewSrc} controls={ready} playsInline preload="metadata" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} className="h-full w-full object-contain" /> : <button onClick={props.onUpload} className="grid h-full w-full place-items-center bg-[radial-gradient(circle_at_50%_35%,rgba(124,58,237,.18),transparent_45%)] text-center"><span><span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-violet-400/10 text-violet-200"><UploadCloud size={24} /></span><strong className="mt-4 block text-sm text-zinc-200">Sube videos para editar</strong><small className="mt-2 block px-7 leading-4 text-zinc-600">Después podrás cortarlos, subtitularlos y aplicar estilos.</small></span></button>}
-            {!ready && options.captions && hasTranscript && <div className={`pointer-events-none absolute inset-x-5 flex justify-center ${settings.subtitlePosition === "top" ? "top-[12%]" : settings.subtitlePosition === "center" ? "top-1/2 -translate-y-1/2" : "bottom-[10%]"}`}><span className="rounded-lg px-3 py-2 text-center font-black shadow-xl" style={{ color: selectedStyle.subtitle.text, backgroundColor: selectedStyle.subtitle.box, fontSize: `${Math.max(15, settings.subtitleSize * .3)}px`, textTransform: selectedStyle.subtitle.uppercase ? "uppercase" : "none" }}>{selectedStyle.caption}</span></div>}
-            {!ready && <span className="absolute left-3 top-3 rounded-full bg-black/70 px-2.5 py-1 text-[8px] text-zinc-300">VISTA PREVIA</span>}
+            {previewSrc ? <video key={previewSrc} ref={videoRef} src={previewSrc} aria-label={showingFinal ? "Resultado editado" : "Toma original sin editar"} controls playsInline preload="metadata" onLoadedMetadata={() => setMediaErrorSrc("")} onError={() => setMediaErrorSrc(previewSrc)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} className="h-full w-full object-contain" /> : <button onClick={props.onUpload} className="grid h-full w-full place-items-center bg-[radial-gradient(circle_at_50%_35%,rgba(124,58,237,.18),transparent_45%)] text-center"><span><span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-violet-400/10 text-violet-200"><UploadCloud size={24} /></span><strong className="mt-4 block text-sm text-zinc-200">Sube videos para editar</strong><small className="mt-2 block px-7 leading-4 text-zinc-600">Después podrás cortarlos, subtitularlos y aplicar estilos.</small></span></button>}
+            {mediaErrorSrc === previewSrc && <p className="absolute inset-x-3 bottom-12 rounded-xl bg-black/90 p-3 text-center text-[10px] leading-4 text-amber-100">{showingFinal ? "Este resultado no se pudo reproducir aquí. Prueba descargarlo o actualizar la biblioteca." : "Esta toma original no se reproduce en este navegador. El render final se exporta como MP4."}</p>}
+            {!showingFinal && options.captions && hasTranscript && <div className={`pointer-events-none absolute inset-x-5 flex justify-center ${settings.subtitlePosition === "top" ? "top-[12%]" : settings.subtitlePosition === "center" ? "top-1/2 -translate-y-1/2" : "bottom-[10%]"}`}><span className="rounded-lg px-3 py-2 text-center font-black shadow-xl" style={{ color: selectedStyle.subtitle.text, backgroundColor: selectedStyle.subtitle.box, fontSize: `${Math.max(15, settings.subtitleSize * .3)}px`, textTransform: selectedStyle.subtitle.uppercase ? "uppercase" : "none" }}>{selectedStyle.caption}</span></div>}
+            <span className={`absolute left-3 top-3 rounded-full px-2.5 py-1 text-[8px] ${showingFinal ? "bg-emerald-400 text-black" : "bg-black/70 text-zinc-300"}`}>{showingFinal ? "RESULTADO EDITADO" : "TOMA ORIGINAL · SIN EDITAR"}</span>
           </div>
         </div>
-        <div className="flex items-center justify-center gap-4 border-t border-white/8 px-4 py-3"><button onClick={togglePlayback} disabled={!previewSrc} className="grid h-9 w-9 place-items-center rounded-full bg-white text-black disabled:opacity-30">{playing ? <Pause size={15} fill="currentColor" /> : <Play size={15} fill="currentColor" />}</button><span className="text-[10px] text-zinc-600">{selectedTake ? seconds(selectedTake.durationMs) : ready ? `${job.resultMetadata?.duration_seconds || 0}s` : "0:00"}</span><span className="rounded-lg bg-white/5 px-2 py-1 text-[9px] text-zinc-500">{selectedStyle.name}</span></div>
+        <div className="flex flex-wrap items-center justify-center gap-3 border-t border-white/8 px-4 py-3">{activeResult && <div className="flex rounded-xl border border-white/10 bg-white/5 p-1 text-[10px]"><button onClick={() => setPreviewMode("final")} className={`rounded-lg px-3 py-1.5 ${showingFinal ? "bg-emerald-400 font-semibold text-black" : "text-zinc-400"}`}>Resultado editado</button><button onClick={() => setPreviewMode("original")} className={`rounded-lg px-3 py-1.5 ${!showingFinal ? "bg-white font-semibold text-black" : "text-zinc-400"}`}>Toma original</button></div>}<button onClick={togglePlayback} disabled={!previewSrc} className="grid h-9 w-9 place-items-center rounded-full bg-white text-black disabled:opacity-30">{playing ? <Pause size={15} fill="currentColor" /> : <Play size={15} fill="currentColor" />}</button><span className="text-[10px] text-zinc-400">{showingFinal ? `${Number(resultMetadata.duration_seconds || 0).toFixed(1)} s` : selectedTake ? seconds(selectedTake.durationMs) : "0:00"}</span><span className="rounded-lg bg-white/5 px-2 py-1 text-[9px] text-zinc-500">{showingFinal ? resultStyle : selectedStyle.name}</span></div>
       </main>
 
       <aside className="order-4 border-t border-white/8 bg-[#0c0f17] p-4 lg:order-none lg:border-l lg:border-t-0">
         <PanelTitle icon={Settings2} title="Director de edición" text="Describe el resultado" />
         <textarea value={objective} onChange={(event) => { setObjective(event.target.value); setJob(null); }} rows={5} className="mt-4 w-full resize-none rounded-xl border border-white/8 bg-black/20 p-3 text-xs leading-5 text-zinc-300 outline-none focus:border-violet-400/40" placeholder="Ej. Quiero un reel energético, directo y con pausas mínimas…" />
-        <div className="mt-4 rounded-xl border border-white/7 bg-black/15 p-3"><p className="text-[10px] font-medium text-zinc-300">Aplicado al render</p><div className="mt-3 space-y-2 text-[9px] text-zinc-500"><p className="flex justify-between"><span>Estilo</span><b className="text-zinc-300">{selectedStyle.name}</b></p><p className="flex justify-between"><span>Escenas</span><b className="text-zinc-300">{approvedScenes.length}</b></p><p className="flex justify-between"><span>Silencios</span><b className="text-zinc-300">{options.deadAir ? `${settings.silenceThresholdMs} ms` : "No"}</b></p><p className="flex justify-between"><span>Subtítulos</span><b className="text-zinc-300">{options.captions && hasTranscript ? "Sí" : "No"}</b></p></div></div>
-        {job && <div className={`mt-4 rounded-xl border p-3 ${ready ? "border-emerald-400/20 bg-emerald-400/6" : job.status === "failed" ? "border-red-400/20 bg-red-400/6" : "border-violet-400/20 bg-violet-400/6"}`}><div className="flex items-center justify-between text-[10px]"><span>{ready ? "Exportación verificada" : job.status === "failed" ? "Requiere corrección" : job.stage}</span><b>{job.progress || 0}%</b></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/8"><div className="h-full bg-gradient-to-r from-violet-500 to-cyan-400 transition-all" style={{ width: `${Math.max(2, Number(job.progress || 0))}%` }} /></div>{job.error && <p className="mt-2 text-[9px] leading-4 text-red-200">{job.error}</p>}</div>}
+        <div className="mt-4 rounded-xl border border-white/7 bg-black/15 p-3"><p className="text-[10px] font-medium text-zinc-300">Ajustes actuales de edición</p><div className="mt-3 space-y-2 text-[9px] text-zinc-500"><p className="flex justify-between"><span>Estilo</span><b className="text-zinc-300">{selectedStyle.name}</b></p><p className="flex justify-between"><span>Escenas</span><b className="text-zinc-300">{approvedScenes.length}</b></p><p className="flex justify-between"><span>Silencios</span><b className="text-zinc-300">{options.deadAir ? `${settings.silenceThresholdMs} ms` : "No"}</b></p><p className="flex justify-between"><span>Subtítulos</span><b className="text-zinc-300">{options.captions && hasTranscript ? "Sí" : "No"}</b></p></div></div>
+        {job && <div className={`mt-4 rounded-xl border p-3 ${ready ? "border-emerald-400/20 bg-emerald-400/6" : job.status === "failed" ? "border-red-400/20 bg-red-400/6" : "border-violet-400/20 bg-violet-400/6"}`}><div className="flex items-center justify-between text-[10px]"><span>{ready ? "MP4 generado" : job.status === "failed" ? "Render falló" : job.stage}</span><b>{job.status === "failed" ? "Error" : `${job.progress || 0}%`}</b></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/8"><div className={`h-full transition-all ${job.status === "failed" ? "bg-red-400" : "bg-gradient-to-r from-violet-500 to-cyan-400"}`} style={{ width: `${job.status === "failed" ? 0 : Math.max(2, Number(job.progress || 0))}%` }} /></div>{job.error && <p className="mt-2 text-[9px] leading-4 text-red-200">{job.error}</p>}</div>}
         {job?.contract?.skill_manifest?.decisions && <details className="mt-4 rounded-xl border border-white/8 bg-black/15 p-3"><summary className="cursor-pointer text-xs text-zinc-300">Decisiones de las skills ({job.contract.skill_manifest.decisions.length})</summary><div className="mt-3 max-h-52 space-y-2 overflow-y-auto">{job.contract.skill_manifest.decisions.map((decision: Row) => <p key={decision.skillId} className="border-t border-white/5 pt-2 text-[10px] leading-4 text-zinc-500"><strong className="block text-zinc-300">{decision.skillId} · {decision.execution === "render" ? "render" : decision.execution === "pending" ? "pendiente" : decision.execution === "plan" ? "plan" : "parcial"}</strong>{decision.summary}</p>)}</div></details>}
         {!ready && <button onClick={available.length ? (job ? render : plan) : props.onUpload} disabled={busy !== ""} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-500 to-indigo-500 px-4 py-3 text-xs font-semibold disabled:opacity-40">{busy ? <LoaderCircle className="animate-spin" size={15} /> : available.length ? (job ? <Film size={15} /> : <Sparkles size={15} />) : <Plus size={15} />}{busy === "plan" ? "Creando edición…" : busy === "render" ? "Renderizando…" : available.length ? (job ? "Renderizar MP4" : "Crear edición") : "Subir videos"}</button>}
-        {ready && <a href={previewSrc} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-white px-4 py-3 text-xs font-semibold text-black"><Download size={15} />Descargar MP4</a>}
+        {activeResult && <a href={`${resultSrc}?download=1`} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-white px-4 py-3 text-xs font-semibold text-black"><Download size={15} />Descargar resultado MP4</a>}
         {error && <p className="mt-4 rounded-xl bg-red-400/8 p-3 text-[10px] leading-4 text-red-200">{error}</p>}
       </aside>
     </div>
