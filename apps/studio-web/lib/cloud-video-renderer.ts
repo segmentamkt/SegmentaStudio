@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import ffmpegPath from "ffmpeg-static";
 import { buildSoundDesignGraph, planCutSoundCues } from "./sound-design";
+import { renderTextOverlay } from "./video-text-overlay";
 
 type ContractClip = {
   id: string;
@@ -104,14 +105,6 @@ async function analyzeClip(command: string, url: string, fallbackDuration: numbe
   return { duration, ranges, removed, hasAudio };
 }
 
-function ffText(value: string) {
-  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/:/g, "\\:").replace(/%/g, "\\%").replace(/[\r\n]+/g, " ").trim();
-}
-
-function ffColor(value: string, alpha = "") {
-  return `0x${value.replace("#", "")}${alpha}`;
-}
-
 function cards(text: string, size: number, uppercase: boolean) {
   const words = text.replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
   const result: string[] = [];
@@ -153,6 +146,9 @@ export async function renderCloudEdit(input: {
   const saturation = Math.max(.7, Math.min(1.4, Number(execution.saturation || 1.06)));
   const fit = execution.framing === "fit";
   const silentAudioInput = input.signedUrls.length;
+  const needsSilentAudio = analyses.some((analysis) => !analysis.hasAudio);
+  const overlayInputStart = input.signedUrls.length + Number(needsSilentAudio);
+  const overlayBuffers: Buffer[] = [];
   for (let index = 0; index < analyses.length; index += 1) {
     const analysis = analyses[index];
     const segmentLabels: Array<{ video: string; audio: string }> = [];
@@ -203,24 +199,37 @@ export async function renderCloudEdit(input: {
   }
   let captionCount = 0;
   if (input.contract.captions.enabled) {
-    const captionY = input.contract.style_snapshot.subtitle.position === "top" ? "h*0.11" : input.contract.style_snapshot.subtitle.position === "center" ? "(h-text_h)/2" : "h-text_h-h*0.10";
-    input.contract.clips.forEach((clip, clipIndex) => {
+    const captionY = input.contract.style_snapshot.subtitle.position === "top" ? "H*0.11" : input.contract.style_snapshot.subtitle.position === "center" ? "(H-h)/2" : "H-h-H*0.10";
+    for (const [clipIndex, clip] of input.contract.clips.entries()) {
       const items = cards(clip.transcript, input.contract.captions.max_words_per_card || 5, input.contract.style_snapshot.subtitle.uppercase);
       const duration = clipDurations[clipIndex];
-      items.forEach((text, cardIndex) => {
+      for (const [cardIndex, text] of items.entries()) {
+        if (overlayBuffers.length >= 96) throw new Error("Esta edición contiene demasiadas tarjetas de texto. Divide el video en escenas más cortas.");
         const start = clipStarts[clipIndex] + (duration * cardIndex) / Math.max(1, items.length);
         const end = clipStarts[clipIndex] + (duration * (cardIndex + 1)) / Math.max(1, items.length);
+        const overlayInput = overlayInputStart + overlayBuffers.length;
+        overlayBuffers.push(await renderTextOverlay({
+          text, fontFile, fontSize: input.contract.style_snapshot.subtitle.size,
+          textColor: input.contract.style_snapshot.subtitle.text,
+          boxColor: input.contract.style_snapshot.subtitle.box, boxOpacity: .85,
+        }));
         const output = `vsub${captionCount}`;
-        filters.push(`[${videoLabel}]drawtext=fontfile='${ffText(fontFile)}':text='${ffText(text)}':fontcolor=${ffColor(input.contract.style_snapshot.subtitle.text)}:fontsize=${input.contract.style_snapshot.subtitle.size}:box=1:boxcolor=${ffColor(input.contract.style_snapshot.subtitle.box, "D9")}:boxborderw=24:x=(w-text_w)/2:y=${captionY}:enable='between(t,${start.toFixed(3)},${end.toFixed(3)})'[${output}]`);
+        filters.push(`[${videoLabel}][${overlayInput}:v]overlay=x=(W-w)/2:y=${captionY}:enable='between(t,${start.toFixed(3)},${end.toFixed(3)})':eof_action=repeat:shortest=0[${output}]`);
         videoLabel = output;
         captionCount += 1;
-      });
-    });
+      }
+    }
   }
   let effectCount = Math.max(0, input.contract.clips.length - 1) * (transitionDuration ? 1 : 0);
-  if (input.contract.effects.labels && execution.titleCards !== false) {
+  if (input.contract.effects.labels && execution.titleCards !== false && input.contract.session.title.trim()) {
+    if (overlayBuffers.length >= 96) throw new Error("Esta edición contiene demasiadas tarjetas de texto. Divide el video en escenas más cortas.");
+    const overlayInput = overlayInputStart + overlayBuffers.length;
+    overlayBuffers.push(await renderTextOverlay({
+      text: input.contract.session.title, fontFile, fontSize: 54,
+      textColor: "#FFFFFF", boxColor: execution.titleColor || "#09090B", boxOpacity: .9,
+    }));
     const output = "vtitle";
-    filters.push(`[${videoLabel}]drawtext=fontfile='${ffText(fontFile)}':text='${ffText(input.contract.session.title)}':fontcolor=white:fontsize=54:box=1:boxcolor=${ffColor(execution.titleColor || "#09090b", "E6")}:boxborderw=22:x=(w-text_w)/2:y=h*0.08:enable='between(t,0.15,2.6)'[${output}]`);
+    filters.push(`[${videoLabel}][${overlayInput}:v]overlay=x=(W-w)/2:y=H*0.08:enable='between(t,0.15,2.6)':eof_action=repeat:shortest=0[${output}]`);
     videoLabel = output;
     effectCount += 1;
   }
@@ -247,12 +256,18 @@ export async function renderCloudEdit(input: {
   await input.onProgress(42, "Montando cortes, subtítulos y efectos");
   const args = ["-y", "-hide_banner", "-nostdin", "-loglevel", "error"];
   input.signedUrls.forEach((url) => args.push("-i", url));
-  if (analyses.some((analysis) => !analysis.hasAudio)) args.push("-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
+  if (needsSilentAudio) args.push("-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
+  overlayBuffers.forEach((_, index) => args.push("-f", "image2pipe", "-framerate", "30", "-c:v", "png", "-i", `pipe:${index + 3}`));
   args.push("-filter_complex", filters.join(";"), "-map", `[${videoLabel}]`, "-map", `[${audioLabel}]`, "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1");
-  const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe", ...overlayBuffers.map(() => "pipe" as const)] });
+  overlayBuffers.forEach((buffer, index) => {
+    const pipe = child.stdio[index + 3] as Writable;
+    pipe.on("error", () => undefined); // FFmpeg can close a pipe when an earlier input fails.
+    pipe.end(buffer);
+  });
   let stderr = "";
-  child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  (child.stderr as Readable).setEncoding("utf8");
+  (child.stderr as Readable).on("data", (chunk) => { stderr += chunk; });
   const completion = new Promise<number>((resolve, reject) => {
     child.on("error", reject);
     child.on("close", (code) => resolve(code ?? -1));
@@ -266,7 +281,7 @@ export async function renderCloudEdit(input: {
       "content-type": "video/mp4",
       "x-upsert": "true",
     },
-    body: Readable.toWeb(child.stdout) as ReadableStream,
+    body: Readable.toWeb(child.stdout as Readable) as ReadableStream,
     // Node fetch requires duplex for streamed request bodies.
     ...({ duplex: "half" } as Record<string, string>),
   });

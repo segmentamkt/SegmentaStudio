@@ -11,6 +11,7 @@ export async function POST(request: Request) {
   if (!user) return unauthorized();
   const supabase = await createClient();
   let jobId = "";
+  let outputObjectKey = "";
   try {
     const payload = await request.json() as Record<string, unknown>;
     jobId = clean(payload.jobId);
@@ -41,7 +42,7 @@ export async function POST(request: Request) {
       const result = await supabase.from("kiko_edit_jobs").update({ status: "processing", progress, stage, error: null, updated_at: new Date().toISOString() }).eq("id", jobId).eq("owner_id", user.userId);
       if (result.error) throw result.error;
     };
-    const outputObjectKey = `${user.userId}/renders/${jobId}.mp4`;
+    outputObjectKey = `${user.userId}/renders/${jobId}.mp4`;
     const evidence = await renderCloudEdit({
       contract,
       signedUrls,
@@ -70,6 +71,14 @@ export async function POST(request: Request) {
     return Response.json({ job: toEditJob(completed.data) });
   } catch (error) {
     console.error("cloud render failed", error);
+    if (outputObjectKey) {
+      try {
+        const cleanup = await supabase.storage.from("kiko-videos").remove([outputObjectKey]);
+        if (cleanup.error) console.error("cloud render cleanup failed", cleanup.error);
+      } catch (cleanupError) {
+        console.error("cloud render cleanup failed", cleanupError);
+      }
+    }
     if (jobId) await supabase.from("kiko_edit_jobs").update({ status: "failed", stage: "Render detenido", error: error instanceof Error ? error.message : "Error de render", updated_at: new Date().toISOString() }).eq("id", jobId).eq("owner_id", user.userId);
     return Response.json({ error: error instanceof Error ? error.message : "No se pudo renderizar el video." }, { status: 500 });
   }
