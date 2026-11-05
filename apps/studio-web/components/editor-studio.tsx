@@ -173,13 +173,17 @@ export function EditorStudio(props: {
         const saved = JSON.parse(window.localStorage.getItem(ephemeralStorageKey) || "null") as Row | null;
         if (!latestJob && saved?.ephemeral && saved.sessionId === sessionId) {
           if (saved.status === "processing" || saved.status === "unconfirmed") {
-            setJob({ ...saved, status: "unconfirmed", stage: "Comprobando el resultado", progress: 0, error: null });
+            setJob((current) => current && (current.id !== saved.id || current.status === "processing")
+              ? current : { ...saved, status: "unconfirmed", stage: "Comprobando el resultado", progress: 0, error: null });
             void findSavedRender(saved).then((result) => {
               if (cancelled) return;
-              if (result) { setJob(result); setLastResult(result); }
-              else setJob({ ...saved, status: "unconfirmed", stage: "Resultado sin confirmar", progress: 0, error: "No hay un MP4 confirmado para este intento. Revisa Mis videos antes de volver a renderizar." });
+              setJob((current) => {
+                if (current && (current.id !== saved.id || current.status === "processing")) return current;
+                if (result) return result;
+                return { ...saved, status: "unconfirmed", stage: "Resultado sin confirmar", progress: 0, error: "No hay un MP4 confirmado para este intento. Revisa Mis videos antes de volver a renderizar." };
+              });
             });
-          } else setJob(saved);
+          } else setJob((current) => current && current.id !== saved.id ? current : saved);
         }
       } catch { /* Un plan local corrupto se ignora. */ }
     });
