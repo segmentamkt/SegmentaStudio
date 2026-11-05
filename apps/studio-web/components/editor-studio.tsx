@@ -157,9 +157,6 @@ export function EditorStudio(props: {
   const available = useMemo(() => props.sessions.filter((session) => session.portfolioId === props.portfolioId && props.scenes.some((scene) => scene.sessionId === session.id && scene.selectedTakeId)), [props.sessions, props.scenes, props.portfolioId]);
   const [sessionChoice, setSessionId] = useState(props.initialSessionId || available[0]?.id || "");
   const sessionId = available.some((item) => item.id === sessionChoice) ? sessionChoice : available[0]?.id || "";
-  useEffect(() => {
-    if (props.initialSessionId && available.some((item) => item.id === props.initialSessionId)) setSessionId(props.initialSessionId);
-  }, [props.initialSessionId, available]);
   const [style, setStyle] = useState<EditorStyleId>("kiko-impacto");
   const [tool, setTool] = useState<ToolTab>("media");
   const [catalogSearch, setCatalogSearch] = useState("");
