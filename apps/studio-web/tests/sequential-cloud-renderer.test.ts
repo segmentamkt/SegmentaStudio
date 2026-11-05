@@ -5,7 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import ffmpegPath from "ffmpeg-static";
-import { renderSequentialClip } from "../lib/sequential-cloud-video-renderer";
+import { renderSequentialClip, trimSequentialAnalysis } from "../lib/sequential-cloud-video-renderer";
+
+test("manual trim intersects voice ranges without moving source timestamps", () => {
+  const analysis = { duration: 10, ranges: [{ start: 0, end: 3 }, { start: 5, end: 10 }], removed: 2, hasAudio: true };
+  const result = trimSequentialAnalysis(analysis, { id: "one", name: "Toma", object_key: "one", duration_seconds: 10, transcript: "", trim_start_seconds: 1, trim_end_seconds: 7 });
+  assert.deepEqual(result.ranges, [{ start: 1, end: 3 }, { start: 5, end: 7 }]);
+  assert.equal(result.removed, 2);
+});
 
 test("sequential HEVC clips normalize to a playable joined portrait MP4 with text and sound", async () => {
   assert.ok(ffmpegPath);

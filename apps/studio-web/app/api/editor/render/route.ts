@@ -1,6 +1,6 @@
 import { createClient } from "../../../../lib/supabase/server";
 import { getRequestUser, unauthorized } from "../../../../lib/request-user";
-import { renderCloudEdit, verifyCloudRender } from "../../../../lib/cloud-video-renderer";
+import { verifyCloudRender } from "../../../../lib/cloud-video-renderer";
 import { renderSequentialCloudEdit } from "../../../../lib/sequential-cloud-video-renderer";
 import { normalizeRenderContract } from "../../../../lib/render-contract-security";
 import { clean, toEditJob } from "../../../../lib/studio-data";
@@ -68,9 +68,8 @@ async function executeRender(request: Request, onProgress: (progress: number, st
     };
     outputObjectKey = `${user.userId}/renders/${jobId}.mp4`;
     phase = "renderizando y subiendo el MP4";
-    const renderer = contract.clips.length > 2 ? renderSequentialCloudEdit : renderCloudEdit;
-    console.info("[cloud-render] renderer selected", { jobId, mode: contract.clips.length > 2 ? "sequential" : "standard" });
-    const evidence = await renderer({
+    console.info("[cloud-render] renderer selected", { jobId, mode: "sequential" });
+    const evidence = await renderSequentialCloudEdit({
       contract,
       signedUrls,
       outputObjectKey,

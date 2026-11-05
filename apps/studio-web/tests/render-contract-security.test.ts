@@ -68,7 +68,7 @@ test("rebuilds a valid contract from DB rows and applies bounded skill overrides
 
   const output = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
   assert.deepEqual(output.ordered_clip_ids, ["take-0", "take-1"]);
-  assert.equal(output.clips[0].transcript, "Texto real de la escena 1");
+  assert.equal(output.clips[0].transcript, "Text injected by the browser");
   assert.equal(output.clips[0].object_key, input.takes[0].object_key);
   assert.equal(output.style_snapshot.execution.titleColor, getEditorStyle("aula-premium").execution.titleColor);
   assert.equal(output.style_snapshot.subtitle.size, 90);
@@ -125,4 +125,32 @@ test("accepts an official cut-only style with zero transition duration", () => {
   const output = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
   assert.equal(output.style_snapshot.transition, "cut");
   assert.equal(output.style_snapshot.transitionDuration, 0);
+});
+
+test("renders an approved subset in the manual order with bounded trims and captions", () => {
+  const input = fixture(3);
+  const [first, second, third] = input.raw.clips;
+  input.raw.clips = [third, first];
+  input.raw.ordered_clip_ids = [third.id, first.id];
+  input.raw.clips[0].transcript = "Cierre aprobado por el editor";
+  Object.assign(input.raw.clips[0], { trim_start_seconds: 1.2, trim_end_seconds: 7.5, label: "Pide tu cotización" });
+  const output = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.deepEqual(output.ordered_clip_ids, ["take-2", "take-0"]);
+  assert.equal(output.clips[0].trim_start_seconds, 1.2);
+  assert.equal(output.clips[0].trim_end_seconds, 7.5);
+  assert.equal(output.clips[0].label, "Pide tu cotización");
+  assert.equal(output.clips[0].transcript, "Cierre aprobado por el editor");
+  assert.equal(output.clips.length, 2);
+  assert.notEqual(second.id, output.clips[1].id);
+});
+
+test("rejects duplicate, foreign and invalid manual edits", () => {
+  const input = fixture(2);
+  input.raw.ordered_clip_ids = ["take-0", "take-0"];
+  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /ya no coinciden/);
+  input.raw.ordered_clip_ids = ["take-0", "take-foreign"];
+  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /no autorizada/);
+  input.raw.ordered_clip_ids = ["take-0", "take-1"];
+  Object.assign(input.raw.clips[0], { trim_start_seconds: 8, trim_end_seconds: 8.1 });
+  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /0,2 segundos/);
 });

@@ -10,7 +10,7 @@ import { buildSoundDesignGraph, planCutSoundCues } from "./sound-design";
 import { renderTextOverlay } from "./video-text-overlay";
 
 type Range = { start: number; end: number };
-type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string };
+type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string; trim_start_seconds?: number; trim_end_seconds?: number; label?: string };
 type EditContract = {
   objective: string;
   session: { title: string };
@@ -20,7 +20,7 @@ type EditContract = {
     transitionDuration?: number;
     subtitle: { text: string; box: string; size: number; uppercase: boolean; position?: "top" | "center" | "bottom" };
     execution?: {
-      zoomPercent?: number; contrast?: number; saturation?: number; soundEffectVolume?: number;
+      zoomPercent?: number; contrast?: number; saturation?: number; soundEffectVolume?: number; soundPreset?: "auto" | "none" | "soft" | "kinetic" | "cinematic" | "pop";
       framing?: "fill" | "fit"; titleCards?: boolean; titleColor?: string;
     };
   };
@@ -93,6 +93,19 @@ export async function analyzeSequentialClip(command: string, url: string, durati
   if (duration - cursor > .16) ranges.push({ start: cursor, end: duration });
   if (!ranges.length) ranges.push({ start: 0, end: duration });
   return { duration, ranges, removed, hasAudio };
+}
+
+/** Keep source timestamps intact so FFmpeg can select the exact manual range. */
+export function trimSequentialAnalysis(analysis: Analysis, clip: Clip): Analysis {
+  const start = Math.max(0, Number(clip.trim_start_seconds ?? 0));
+  const end = Math.min(analysis.duration, Number(clip.trim_end_seconds ?? analysis.duration));
+  const ranges = analysis.ranges.map((range) => ({ start: Math.max(start, range.start), end: Math.min(end, range.end) }))
+    .filter((range) => range.end - range.start > .16);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end - start < .2 || !ranges.length) {
+    throw new Error(`El recorte de “${clip.name}” no contiene video suficiente.`);
+  }
+  const kept = ranges.reduce((total, range) => total + range.end - range.start, 0);
+  return { ...analysis, ranges, removed: Math.max(0, end - start - kept) };
 }
 
 function cards(text: string, size: number, uppercase: boolean): string[] {
@@ -168,8 +181,9 @@ export async function renderSequentialClip(input: {
   let captionCount = 0;
   const fontFile = join(process.cwd(), "assets", "fonts", "Inter.ttf");
   const title = contract.session.title.trim();
+  const label = contract.clips[index].label?.trim();
   const showTitle = index === 0 && contract.effects.labels && execution.titleCards !== false
-    && Boolean(title) && !/^edici[oó]n de \d+ videos?$/i.test(title);
+    && Boolean(title) && !label && !/^edici[oó]n de \d+ videos?$/i.test(title);
   const addOverlay = async (text: string, start: number, end: number, position: string, title = false) => {
     if (overlays.length >= 96) throw new Error("Demasiadas tarjetas de texto en una toma.");
     const slot = 1 + Number(!analysis.hasAudio) + overlays.length;
@@ -186,6 +200,9 @@ export async function renderSequentialClip(input: {
   if (showTitle) {
     await addOverlay(title, .15, Math.min(duration, 2.6), "H*0.08", true);
   }
+  if (label && contract.effects.labels) {
+    await addOverlay(label, .15, Math.min(duration, 2.6), "H*0.07", true);
+  }
   if (contract.captions.enabled) {
     const position = contract.style_snapshot.subtitle.position === "top" ? "H*0.11" : contract.style_snapshot.subtitle.position === "center" ? "(H-h)/2" : "H-h-H*0.10";
     const items = cards(contract.clips[index].transcript, contract.captions.max_words_per_card || 5, contract.style_snapshot.subtitle.uppercase);
@@ -199,8 +216,8 @@ export async function renderSequentialClip(input: {
   if (contract.effects.sound_effects) {
     let position = 0;
     const internalCuts = analysis.ranges.slice(0, -1).map((range) => { position += range.end - range.start; return position; });
-    const cueTimes = [...(index > 0 ? [.02] : []), ...internalCuts];
-    const cues = planCutSoundCues(cueTimes, (contract.style_snapshot as { id?: string }).id);
+    const cueTimes = [...(index > 0 || showTitle || label ? [.15] : []), ...internalCuts];
+    const cues = planCutSoundCues(cueTimes, execution.soundPreset && execution.soundPreset !== "auto" ? execution.soundPreset : (contract.style_snapshot as { id?: string }).id);
     const sound = buildSoundDesignGraph({
       inputLabel: audioLabel, cues, durationSeconds: duration,
       volume: Number(execution.soundEffectVolume ?? .35), outputLabel: "audiofx",
@@ -219,7 +236,7 @@ export async function renderSequentialClip(input: {
     "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", output,
   );
   await ffmpegFile(command, args, overlays, deadline);
-  return { duration, captionCount, cueCount, labelCount: showTitle ? 1 : 0 };
+  return { duration, captionCount, cueCount, labelCount: Number(showTitle) + Number(Boolean(label && contract.effects.labels)) };
 }
 
 /**
@@ -236,7 +253,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
   const analyses: Analysis[] = [];
   for (const [index, clip] of input.contract.clips.entries()) {
     const result = await analyzeSequentialClip(command, input.signedUrls[index], clip.duration_seconds, input.contract.dead_air.remove, input.contract.dead_air.threshold_ms);
-    analyses.push(result);
+    analyses.push(trimSequentialAnalysis(result, clip));
     await input.onProgress(14 + Math.round((index + 1) / input.contract.clips.length * 20), `Analizando toma ${index + 1} de ${input.contract.clips.length}`);
   }
   const totalDuration = analyses.reduce((sum, item) => sum + item.ranges.reduce((value, range) => value + range.end - range.start, 0), 0);

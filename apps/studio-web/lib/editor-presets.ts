@@ -4,14 +4,14 @@ export type EditorStyle = {
   id: EditorStyleId; name: string; reference: string; description: string; pace: string;
   palette: [string, string, string]; caption: string; transition: "cut" | "fade" | "dissolve"; transitionDuration: number;
   subtitle: { text: string; box: string; size: number; uppercase: boolean; position: "top" | "center" | "bottom"; maxWords: number };
-  execution: { silenceThresholdMs: number; zoomPercent: number; contrast: number; saturation: number; soundEffectVolume: number; framing: "fill" | "fit"; titleCards: boolean; titleColor: string };
+  execution: { silenceThresholdMs: number; zoomPercent: number; contrast: number; saturation: number; soundEffectVolume: number; soundPreset?: "auto" | "none" | "soft" | "kinetic" | "cinematic" | "pop"; framing: "fill" | "fit"; titleCards: boolean; titleColor: string };
 };
 
 export const EDITOR_STYLES: EditorStyle[] = [
   {
     id: "kiko-impacto", name: "Impacto directo", reference: "Alex Hormozi · Juan Lombana",
     description: "Cortes firmes, lectura muy visible y bloques breves para sostener la atención.", pace: "Ágil · ventas y hooks",
-    palette: ["#7c3aed", "#09090b", "#facc15"], caption: "NO VENDAS SIN ESTO", transition: "cut", transitionDuration: .2,
+    palette: ["#7c3aed", "#09090b", "#facc15"], caption: "NO VENDAS SIN ESTO", transition: "fade", transitionDuration: .18,
     subtitle: { text: "#facc15", box: "#09090b", size: 82, uppercase: true, position: "bottom", maxWords: 4 },
     execution: { silenceThresholdMs: 500, zoomPercent: 5, contrast: 1.08, saturation: 1.12, soundEffectVolume: .65, framing: "fill", titleCards: true, titleColor: "#7c3aed" },
   },

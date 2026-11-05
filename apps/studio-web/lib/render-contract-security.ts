@@ -90,17 +90,20 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
   }
   selectedScenes.sort((left, right) => Number(left.position) - Number(right.position));
 
-  if (!Array.isArray(contract.clips) || contract.clips.length > MAX_CLIPS) {
+  if (!Array.isArray(contract.clips) || !contract.clips.length || contract.clips.length > MAX_CLIPS) {
     throw new Error(`El contrato admite hasta ${MAX_CLIPS} clips.`);
   }
   const rawClips = rowList(contract.clips, "Los clips del contrato");
   const rawIds = contract.ordered_clip_ids;
-  if (!Array.isArray(rawIds) || rawClips.length !== selectedScenes.length || rawIds.length !== selectedScenes.length) {
+  if (!Array.isArray(rawIds) || rawClips.length !== rawIds.length || new Set(rawIds).size !== rawIds.length) {
     throw new Error("Las tomas del plan ya no coinciden con las aprobadas.");
   }
+  const sceneByTake = new Map(selectedScenes.map((scene) => [scene.selected_take_id, scene]));
   let knownDurationMs = 0;
   let captionCharacters = 0;
-  const clips = selectedScenes.map((scene, index) => {
+  const clips = rawClips.map((requestedClip, index) => {
+    const scene = sceneByTake.get(rawIds[index]);
+    if (!scene) throw new Error("El plan cambió o contiene una toma no autorizada. Vuelve a crear la edición.");
     const sceneId = text(scene.id, "El ID de una escena", 128);
     const takeId = text(scene.selected_take_id, "La toma seleccionada", 128);
     const take = takeById.get(takeId);
@@ -111,16 +114,18 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
     if (!objectKey.startsWith(`${ownerId}/${sessionId}/${sceneId}/`)) {
       throw new Error("La ruta de una toma no corresponde a esta producción.");
     }
-    const requestedClip = rawClips[index];
     if (rawIds[index] !== takeId || requestedClip.id !== takeId || requestedClip.scene_id !== sceneId || requestedClip.object_key !== objectKey) {
       throw new Error("El plan cambió o contiene una ruta de video no autorizada. Vuelve a crear la edición.");
     }
     const measuredMs = durationMs(take.duration_ms);
     knownDurationMs += measuredMs;
     if (knownDurationMs > MAX_KNOWN_DURATION_MS) throw new Error("La duración conocida de las tomas supera los 120 segundos permitidos por render.");
-    const transcript = text(scene.script, "El libreto de una escena", 1_000, true);
+    const transcript = text(requestedClip.transcript ?? scene.script, "El texto hablado de una escena", 1_000, true);
     captionCharacters += transcript.length;
     if (captionCharacters > 5_000) throw new Error("El libreto completo es demasiado largo para este render.");
+    const trimStart = bounded(requestedClip.trim_start_seconds, 0, 0, Math.max(0, measuredMs / 1_000 - .2), "El inicio del recorte");
+    const trimEnd = bounded(requestedClip.trim_end_seconds, measuredMs / 1_000, .2, measuredMs / 1_000, "El final del recorte");
+    if (trimEnd - trimStart < .2) throw new Error("Cada toma debe conservar al menos 0,2 segundos.");
     return {
       id: takeId,
       scene_id: sceneId,
@@ -128,6 +133,9 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
       object_key: objectKey,
       duration_seconds: measuredMs / 1_000,
       transcript,
+      trim_start_seconds: trimStart,
+      trim_end_seconds: trimEnd,
+      label: text(requestedClip.label ?? "", "El rótulo de una escena", 120, true),
     };
   });
 
@@ -146,6 +154,7 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
   const maxWords = bounded(requestedCaptions.max_words_per_card, style.subtitle.maxWords, 2, 8, "Las palabras por subtítulo");
   const silenceThresholdMs = bounded(requestedExecution.silenceThresholdMs ?? requestedDeadAir.threshold_ms, style.execution.silenceThresholdMs, 350, 1_500, "El umbral de silencio");
   const soundEffectVolume = bounded(requestedExecution.soundEffectVolume, style.execution.soundEffectVolume, 0, 1, "El volumen de efectos");
+  const soundPreset = oneOf(requestedExecution.soundPreset, "auto", ["auto", "none", "soft", "kinetic", "cinematic", "pop"] as const, "El tipo de efecto sonoro");
   const zoomPercent = bounded(requestedExecution.zoomPercent, style.execution.zoomPercent, 0, 10, "El acercamiento");
   const contrast = bounded(requestedExecution.contrast, style.execution.contrast, 0.8, 1.3, "El contraste");
   const saturation = bounded(requestedExecution.saturation, style.execution.saturation, 0.7, 1.4, "La saturación");
@@ -155,7 +164,7 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
     ...style,
     transition, transitionDuration,
     subtitle: { ...style.subtitle, size: subtitleSize, position: subtitlePosition, uppercase: subtitleUppercase },
-    execution: { ...style.execution, silenceThresholdMs, soundEffectVolume, zoomPercent, contrast, saturation, framing, titleCards },
+    execution: { ...style.execution, silenceThresholdMs, soundEffectVolume, soundPreset, zoomPercent, contrast, saturation, framing, titleCards },
   };
   const captionsEnabled = flag(requestedCaptions.enabled, true, "Los subtítulos");
   const removeDeadAir = flag(requestedDeadAir.remove, true, "El corte de silencios");
@@ -185,7 +194,7 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
       portrait: true,
       audio: true,
       captions: captionsEnabled,
-      effects: (transitions && transition !== "cut" && clips.length > 1) || (labels && titleCards),
+      effects: (transitions && transition !== "cut" && clips.length > 1) || (labels && (titleCards || clips.some((clip) => clip.label))),
     },
   };
   return applySkillProfilesToContract(baseContract, contract.skill_profiles);

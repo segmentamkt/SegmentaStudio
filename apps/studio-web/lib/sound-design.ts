@@ -23,6 +23,7 @@ export const SOUND_PRESETS: Array<{ id: SoundPreset; name: string; description: 
 
 export function soundPresetForStyle(styleId: unknown): SoundPreset {
   switch (styleId) {
+    case "none": case "soft": case "kinetic": case "cinematic": case "pop": return styleId;
     case "reflexion-intima": case "autoridad-minimal": return "none";
     case "historia-cinematica": return "cinematic";
     case "kiko-impacto": case "ia-demostrativa": return "kinetic";

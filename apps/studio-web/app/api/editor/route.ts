@@ -19,6 +19,16 @@ type EditSettings = {
   silenceThresholdMs?: number;
   transition?: "cut" | "fade" | "dissolve";
   soundEffectVolume?: number;
+  soundPreset?: "auto" | "none" | "soft" | "kinetic" | "cinematic" | "pop";
+};
+
+type TimelineItem = {
+  takeId: string;
+  included?: boolean;
+  trimStartSeconds?: number;
+  trimEndSeconds?: number;
+  transcript?: string;
+  label?: string;
 };
 
 function bounded(value: unknown, fallback: number, min: number, max: number) {
@@ -68,11 +78,21 @@ export async function POST(request: Request) {
     if (scenes.error) throw scenes.error;
     if (takes.error) throw takes.error;
     const approved = new Map((takes.data || []).map((take) => [take.id, take]));
-    const ordered = (scenes.data || []).map((scene) => ({ scene, take: approved.get(scene.selected_take_id) })).filter((item) => item.take);
+    const source = (scenes.data || []).map((scene) => ({ scene, take: approved.get(scene.selected_take_id) })).filter((item) => item.take);
+    const requestedTimeline = payload.timeline === undefined ? null : payload.timeline;
+    if (requestedTimeline !== null && (!Array.isArray(requestedTimeline) || requestedTimeline.length > 12 || requestedTimeline.some((item) => !item || typeof item !== "object" || typeof item.takeId !== "string"))) {
+      return Response.json({ error: "La línea de tiempo no tiene un formato válido." }, { status: 400 });
+    }
+    const timeline = requestedTimeline as TimelineItem[] | null;
+    const unique = new Set(timeline?.map((item) => item.takeId));
+    if (timeline && unique.size !== timeline.length) return Response.json({ error: "Una toma aparece repetida en la línea de tiempo." }, { status: 400 });
+    const byTakeId = new Map(source.map((item) => [item.take!.id, item]));
+    if (timeline?.some((item) => !byTakeId.has(item.takeId))) return Response.json({ error: "La línea de tiempo contiene una toma no aprobada." }, { status: 400 });
+    const ordered = timeline ? timeline.filter((item) => item.included !== false).map((item) => ({ ...byTakeId.get(item.takeId)!, edit: item })) : source.map((item) => ({ ...item, edit: null as TimelineItem | null }));
     if (!ordered.length) return Response.json({ error: "Aprueba al menos una toma antes de planificar la edición." }, { status: 400 });
     if (ordered.length > 12) return Response.json({ error: "Este render cloud admite hasta 12 tomas aprobadas por edición." }, { status: 400 });
     if (ordered.reduce((total, item) => total + Number(item.take?.duration_ms || 0), 0) > 120_000) return Response.json({ error: "Este render cloud procesa hasta 2 minutos de material por edición." }, { status: 400 });
-    if (ordered.some((item) => String(item.scene.script || "").length > 1_000) || ordered.reduce((total, item) => total + String(item.scene.script || "").length, 0) > 5_000) return Response.json({ error: "Acorta el libreto antes de renderizar: hasta 1.000 caracteres por escena y 5.000 en total." }, { status: 400 });
+    if (ordered.some((item) => String(item.edit?.transcript ?? item.scene.script ?? "").length > 1_000) || ordered.reduce((total, item) => total + String(item.edit?.transcript ?? item.scene.script ?? "").length, 0) > 5_000) return Response.json({ error: "Acorta el texto hablado: hasta 1.000 caracteres por escena y 5.000 en total." }, { status: 400 });
     const normalizedOptions = {
       captions: options.captions !== false,
       deadAir: options.deadAir !== false,
@@ -81,6 +101,9 @@ export async function POST(request: Request) {
       labels: options.labels !== false,
       broll: options.broll === true,
     };
+    if (normalizedOptions.captions && ordered.some(({ scene, edit }) => !String(edit?.transcript ?? scene.script ?? "").trim())) {
+      return Response.json({ error: "Falta el texto hablado de una o más tomas. Complétalo en la línea de tiempo o desactiva subtítulos." }, { status: 400 });
+    }
     const styleSnapshot = {
       ...style,
       transition: ["cut", "fade", "dissolve"].includes(String(settings.transition)) ? settings.transition : style.transition,
@@ -93,6 +116,7 @@ export async function POST(request: Request) {
         ...style.execution,
         silenceThresholdMs: bounded(settings.silenceThresholdMs, style.execution.silenceThresholdMs, 350, 1500),
         soundEffectVolume: bounded(settings.soundEffectVolume, style.execution.soundEffectVolume, 0, 1),
+        soundPreset: ["auto", "none", "soft", "kinetic", "cinematic", "pop"].includes(String(settings.soundPreset)) ? settings.soundPreset : "auto",
       },
     };
     const contract = {
@@ -100,13 +124,16 @@ export async function POST(request: Request) {
       objective,
       session: { id: session.data.id, title: session.data.title, script: session.data.script },
       ordered_clip_ids: ordered.map((item) => item.take.id),
-      clips: ordered.map(({ scene, take }) => ({
+      clips: ordered.map(({ scene, take, edit }) => ({
         id: take.id,
         scene_id: scene.id,
         name: scene.title,
         object_key: take.object_key,
         duration_seconds: Number(take.duration_ms || 0) / 1000,
-        transcript: scene.script,
+        transcript: edit?.transcript ?? scene.script,
+        trim_start_seconds: edit?.trimStartSeconds ?? 0,
+        trim_end_seconds: edit?.trimEndSeconds ?? Number(take.duration_ms || 0) / 1000,
+        label: edit?.label ?? "",
       })),
       style: style.id,
       style_snapshot: styleSnapshot,
@@ -123,12 +150,6 @@ export async function POST(request: Request) {
       quality_gates: { portrait: true, audio: true, captions: normalizedOptions.captions, effects: normalizedOptions.transitions || normalizedOptions.labels },
     };
     const contractWithSkills = applySkillProfilesToContract(contract, payload.skillProfiles);
-    if (!ordered.some(({ scene }) => String(scene.script || "").trim())) {
-      contractWithSkills.captions.enabled = false;
-      contractWithSkills.quality_gates.captions = false;
-      const subtitleDecision = contractWithSkills.skill_manifest.decisions.find((item) => item.skillId === "subtitulos");
-      if (subtitleDecision) subtitleDecision.summary = "Sin libreto o transcripción, no se generarán subtítulos.";
-    }
     const inserted = await supabase.from("kiko_edit_jobs").insert({
       id: crypto.randomUUID(), owner_id: user.userId, session_id: sessionId, style: style.id,
       objective, status: "planned", stage: "Plan editorial listo", progress: 8, contract: contractWithSkills,
