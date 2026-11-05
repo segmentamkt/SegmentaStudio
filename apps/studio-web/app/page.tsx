@@ -213,6 +213,14 @@ export default function Home() {
       && (data?.scenes || []).some((scene) => scene.sessionId === original.id && scene.selectedTakeId)
       && (data?.editJobs || []).some((job) => job.id === output.id && job.sessionId === original.id && job.status === "ready" && Array.isArray(job.contract?.clips) && job.contract.clips.length));
     if (original && hasEditableSources) {
+      const draftBaselineKey = `segmenta.draft-baseline.v1:${original.portfolioId}:${original.id}`;
+      const previousBaseline = window.localStorage.getItem(draftBaselineKey);
+      if (previousBaseline && previousBaseline !== output.id) {
+        window.localStorage.removeItem(`segmenta.timeline.v1:${original.portfolioId}:${original.id}`);
+        window.localStorage.removeItem(`segmenta.editor-preferences.v1:${original.portfolioId}:${original.id}`);
+        window.localStorage.removeItem(`segmenta.timeline-pending.v1:${original.portfolioId}:${original.id}`);
+      }
+      window.localStorage.setItem(draftBaselineKey, output.id);
       setPortfolioId(original.portfolioId);
       setEditorSessionId(original.id);
       setEditorResultId(output.id);

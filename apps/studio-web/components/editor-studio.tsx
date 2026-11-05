@@ -213,7 +213,7 @@ export function EditorStudio(props: {
         transcript: String(scene.script || ""), label: "", captionCues: [] }];
     });
     let saved: TimelineClip[] = [];
-    try { saved = selectedResultId ? [] : JSON.parse(window.localStorage.getItem(timelineStorageKey) || "[]") as TimelineClip[]; }
+    try { saved = selectedResultId && window.localStorage.getItem(draftPendingKey) !== "1" ? [] : JSON.parse(window.localStorage.getItem(timelineStorageKey) || "[]") as TimelineClip[]; }
     catch { /* Keep the original approved order if the local draft is corrupt. */ }
     if (!Array.isArray(saved) || !saved.length) {
       const contractClips = latestJob?.contract?.clips;
@@ -256,7 +256,7 @@ export function EditorStudio(props: {
 
   useEffect(() => {
     let saved: Row | null = null;
-    try { saved = selectedResultId ? null : JSON.parse(window.localStorage.getItem(preferencesStorageKey) || "null") as Row | null; }
+    try { saved = selectedResultId && window.localStorage.getItem(draftPendingKey) !== "1" ? null : JSON.parse(window.localStorage.getItem(preferencesStorageKey) || "null") as Row | null; }
     catch { /* Restore the saved render settings if this local draft is corrupt. */ }
     const contract = latestJob?.contract;
     const source = saved || contract;
@@ -286,7 +286,7 @@ export function EditorStudio(props: {
     setPreferencesReadyKey(preferencesStorageKey);
   // Restore preferences once per selected project, without overwriting edits on a job refresh.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preferencesStorageKey]);
+  }, [preferencesStorageKey, latestJob?.id]);
 
   useEffect(() => {
     if (preferencesReadyKey === preferencesStorageKey) {
@@ -681,7 +681,7 @@ export function EditorStudio(props: {
           <div className="relative aspect-[9/16] h-[430px] max-h-[58vh] overflow-hidden rounded-2xl border border-white/10 bg-black shadow-[0_30px_100px_rgba(0,0,0,.65)] sm:h-[520px]">
             {previewSrc ? <video key={`${previewSrc}:${showingFinal ? "final" : selectedClip?.segmentId}`} ref={videoRef} src={previewSrc} aria-label={showingFinal ? "Resultado editado" : "Vista previa de la toma original"} controls playsInline preload="metadata" onLoadedMetadata={(event) => { setMediaErrorSrc(""); if (!showingFinal && selectedClip) { event.currentTarget.currentTime = selectedClip.trimStartSeconds; event.currentTarget.playbackRate = selectedClip.playbackSpeed; event.currentTarget.volume = Math.min(1, selectedClip.audioVolume); setPreviewTime(selectedClip.trimStartSeconds); } else setPreviewTime(event.currentTarget.currentTime); }} onTimeUpdate={(event) => setPreviewTime(event.currentTarget.currentTime)} onError={() => setMediaErrorSrc(previewSrc)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} className="h-full w-full object-contain" style={!showingFinal && selectedClip ? { filter: `brightness(${1 + selectedClip.brightness}) contrast(${selectedClip.contrast}) saturate(${selectedClip.saturation})` } : undefined} /> : <button onClick={props.onUpload} className="grid h-full w-full place-items-center bg-[radial-gradient(circle_at_50%_35%,rgba(124,58,237,.18),transparent_45%)] text-center"><span><span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-violet-400/10 text-violet-200"><UploadCloud size={24} /></span><strong className="mt-4 block text-sm text-zinc-200">Sube videos para editar</strong><small className="mt-2 block px-7 leading-4 text-zinc-600">Después podrás cortarlos, subtitularlos y aplicar estilos.</small></span></button>}
             {previewSrc && mediaErrorSrc === previewSrc && <p className="absolute inset-x-3 bottom-12 rounded-xl bg-black/90 p-3 text-center text-[10px] leading-4 text-amber-100">{showingFinal ? "Este resultado no se pudo reproducir aquí. Prueba descargarlo o actualizar la biblioteca." : "Esta toma original no se reproduce en este navegador. El render final se exporta como MP4."}</p>}
-            {!showingFinal && selectedClip && options.labels && previewTime < 2.6 && <button type="button" onClick={() => openOverlayEditor("label")} className="absolute inset-x-9 top-[7%] mx-auto max-w-[80%] rounded-lg border border-dashed border-violet-200/60 bg-black/70 px-3 py-2 text-center text-sm font-black text-white shadow-xl" aria-label="Editar rótulo sobre el video">{selectedClip.label || "＋ Añadir rótulo"}</button>}
+            {!showingFinal && selectedClip && options.labels && previewTime - selectedClip.trimStartSeconds < 2.6 && <button type="button" onClick={() => openOverlayEditor("label")} className="absolute inset-x-9 top-[7%] mx-auto max-w-[80%] rounded-lg border border-dashed border-violet-200/60 bg-black/70 px-3 py-2 text-center text-sm font-black text-white shadow-xl" aria-label="Editar rótulo sobre el video">{selectedClip.label || "＋ Añadir rótulo"}</button>}
             {!showingFinal && selectedClip && options.captions && <button type="button" onClick={() => openOverlayEditor("caption")} className={`absolute inset-x-5 mx-auto max-w-[90%] rounded-lg border border-dashed border-violet-200/50 px-3 py-2 text-center font-black shadow-xl ${settings.subtitlePosition === "top" ? "top-[12%]" : settings.subtitlePosition === "center" ? "top-1/2 -translate-y-1/2" : "bottom-[10%]"}`} style={{ color: selectedStyle.subtitle.text, backgroundColor: selectedStyle.subtitle.box, fontSize: `${Math.max(15, settings.subtitleSize * .3)}px`, textTransform: selectedStyle.subtitle.uppercase ? "uppercase" : "none" }} aria-label="Editar subtítulo sobre el video">{previewCaption || (selectedClip.captionCues.length ? "Editar subtítulos" : "＋ Escribir subtítulo")}</button>}
             {!showingFinal && selectedClip && overlayEditor && <form onSubmit={(event) => { event.preventDefault(); applyOverlayEditor(); }} className="absolute inset-x-3 top-1/2 z-10 -translate-y-1/2 rounded-xl border border-violet-300/50 bg-[#10121e]/95 p-3 shadow-2xl"><label className="block text-xs font-semibold text-white">{overlayEditor === "label" ? "Rótulo de esta toma" : overlayCueIndex >= 0 ? "Subtítulo en este momento" : "Texto hablado de esta toma"}<textarea autoFocus value={overlayDraft} onChange={(event) => setOverlayDraft(event.target.value)} maxLength={overlayEditor === "label" ? 120 : overlayCueIndex >= 0 ? 250 : 1000} rows={overlayEditor === "label" ? 2 : 4} className="mt-2 w-full resize-y rounded-lg border border-white/20 bg-black/40 p-2 text-xs font-normal text-white outline-none focus:border-violet-300" /></label><div className="mt-2 flex justify-end gap-2"><button type="button" onClick={() => setOverlayEditor(null)} className="rounded-lg border border-white/20 px-3 py-2 text-xs text-zinc-300">Cancelar</button><button type="submit" className="rounded-lg bg-violet-500 px-3 py-2 text-xs font-semibold text-white">Aplicar al video</button></div></form>}
             <span className={`pointer-events-none absolute left-3 top-3 rounded-full px-2.5 py-1 text-[8px] ${showingFinal ? "bg-emerald-400 text-black" : "bg-black/70 text-zinc-300"}`}>{showingFinal ? resultIsPrevious ? "RESULTADO ANTERIOR" : "RESULTADO EDITADO" : "VISTA PREVIA · TEXTO EDITABLE"}</span>
