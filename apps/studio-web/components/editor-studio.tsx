@@ -14,6 +14,32 @@ import { loadSkillProfiles } from "../lib/studio-skills";
 type Row = Record<string, any>;
 type ToolTab = "media" | "styles" | "text" | "effects" | "audio";
 
+class RenderStatusUnconfirmedError extends Error {}
+
+async function findSavedRender(job: Row): Promise<Row | null> {
+  if (!job.ephemeral) {
+    try {
+      const response = await fetch(`/api/editor?id=${encodeURIComponent(job.id)}`, { cache: "no-store" });
+      if (response.ok) {
+        const data = await response.json() as { job?: Row };
+        if (data.job?.status === "ready") return data.job;
+        if (data.job?.status === "failed") return null;
+      }
+    } catch { /* The output library may still be available. */ }
+  }
+  try {
+    const response = await fetch("/api/editor/outputs", { cache: "no-store" });
+    if (!response.ok) return null;
+    const data = await response.json() as { outputs?: { id: string; sizeBytes: number }[] };
+    if (!data.outputs?.some((output) => output.id === job.id && output.sizeBytes > 0)) return null;
+    return {
+      ...job, status: "ready", stage: "MP4 encontrado en la biblioteca", progress: 100,
+      resultObjectKey: job.resultObjectKey || `${job.ownerId}/renders/${job.id}.mp4`,
+      resultMetadata: { ...(job.resultMetadata || {}), recoveredFromStorage: true }, error: null,
+    };
+  } catch { return null; }
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, options);
   const data = await response.json().catch(() => ({})) as T & { error?: string };
@@ -24,12 +50,19 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 async function streamRender(job: Row, onProgress: (progress: number, stage: string) => void): Promise<Row> {
   const controller = new AbortController();
   let inactivityTimer = 0;
+  let progressTimer = 0;
   let stalled = false;
+  let serverFailure = false;
   const keepAlive = () => {
     window.clearTimeout(inactivityTimer);
     inactivityTimer = window.setTimeout(() => { stalled = true; controller.abort(); }, 40_000);
   };
+  const keepProgress = () => {
+    window.clearTimeout(progressTimer);
+    progressTimer = window.setTimeout(() => { stalled = true; controller.abort(); }, 180_000);
+  };
   keepAlive();
+  keepProgress();
   try {
     const response = await fetch("/api/editor/render", {
       method: "POST",
@@ -40,9 +73,9 @@ async function streamRender(job: Row, onProgress: (progress: number, stage: stri
     keepAlive();
     if (!response.ok || !response.body) {
       const data = await response.json().catch(() => ({})) as { job?: Row; error?: string };
-      if (!response.ok) throw new Error(data.error || "No se pudo renderizar el video.");
+      if (!response.ok) { serverFailure = true; throw new Error(data.error || "No se pudo renderizar el video."); }
       if (data.job) return data.job;
-      throw new Error("El servidor no devolvió el resultado del render.");
+      throw new RenderStatusUnconfirmedError("El servidor no devolvió el resultado del render.");
     }
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -51,9 +84,12 @@ async function streamRender(job: Row, onProgress: (progress: number, stage: stri
     const consume = (line: string) => {
       if (!line.trim()) return;
       const event = JSON.parse(line) as { type: string; progress?: number; stage?: string; job?: Row; error?: string };
-      if (event.type === "progress") onProgress(Number(event.progress || 0), String(event.stage || "Procesando video"));
+      if (event.type === "progress") {
+        keepProgress();
+        onProgress(Number(event.progress || 0), String(event.stage || "Procesando video"));
+      }
       if (event.type === "done" && event.job) completed = event.job;
-      if (event.type === "error") throw new Error(event.error || "El render se detuvo.");
+      if (event.type === "error") { serverFailure = true; throw new Error(event.error || "El render se detuvo."); }
     };
     while (true) {
       const { done, value } = await reader.read();
@@ -68,13 +104,18 @@ async function streamRender(job: Row, onProgress: (progress: number, stage: stri
       if (done) break;
     }
     if (remaining.trim()) consume(remaining);
-    if (!completed) throw new Error("El render terminó sin confirmar un MP4. Revisa Mis videos antes de reintentar.");
+    if (!completed) throw new RenderStatusUnconfirmedError("El render terminó sin confirmar un MP4.");
     return completed;
   } catch (error) {
-    if (stalled) throw new Error("El servidor dejó de enviar avances. Revisa Mis videos: si no hay un MP4 nuevo, vuelve a intentar después de corregir el fallo.");
-    throw error;
+    if (serverFailure) throw error;
+    const saved = await findSavedRender(job);
+    if (saved) return saved;
+    throw new RenderStatusUnconfirmedError(stalled
+      ? "El servidor dejó de enviar avances reales. No pudimos confirmar el resultado; revisa Mis videos antes de reintentar."
+      : "Se interrumpió la conexión antes de confirmar el MP4. Revisa Mis videos antes de reintentar.");
   } finally {
     window.clearTimeout(inactivityTimer);
+    window.clearTimeout(progressTimer);
   }
 }
 
@@ -126,15 +167,23 @@ export function EditorStudio(props: {
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
+    let cancelled = false;
     const frame = window.requestAnimationFrame(() => {
       try {
         const saved = JSON.parse(window.localStorage.getItem(ephemeralStorageKey) || "null") as Row | null;
         if (!latestJob && saved?.ephemeral && saved.sessionId === sessionId) {
-          setJob(saved.status === "processing" ? { ...saved, status: "failed", stage: "Render interrumpido", progress: 0, error: "El intento anterior se interrumpió. Revisa Mis videos para ver si se guardó un MP4 y, si no aparece, vuelve a renderizar." } : saved);
+          if (saved.status === "processing" || saved.status === "unconfirmed") {
+            setJob({ ...saved, status: "unconfirmed", stage: "Comprobando el resultado", progress: 0, error: null });
+            void findSavedRender(saved).then((result) => {
+              if (cancelled) return;
+              if (result) { setJob(result); setLastResult(result); }
+              else setJob({ ...saved, status: "unconfirmed", stage: "Resultado sin confirmar", progress: 0, error: "No hay un MP4 confirmado para este intento. Revisa Mis videos antes de volver a renderizar." });
+            });
+          } else setJob(saved);
         }
       } catch { /* Un plan local corrupto se ignora. */ }
     });
-    return () => window.cancelAnimationFrame(frame);
+    return () => { cancelled = true; window.cancelAnimationFrame(frame); };
   }, [ephemeralStorageKey, latestJob, sessionId]);
 
   useEffect(() => {
@@ -220,7 +269,7 @@ export function EditorStudio(props: {
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "No se pudo renderizar el video.";
       setError(message);
-      setJob((current) => ({ ...(current || job), status: "failed", stage: "Render falló", progress: 0, error: message }));
+      setJob((current) => ({ ...(current || job), status: reason instanceof RenderStatusUnconfirmedError ? "unconfirmed" : "failed", stage: reason instanceof RenderStatusUnconfirmedError ? "Resultado sin confirmar" : "Render falló", progress: 0, error: message }));
     }
     finally { setBusy(""); }
   };
@@ -243,8 +292,10 @@ export function EditorStudio(props: {
       {ready ? <a href={`${resultSrc}?download=1`} className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-black"><Download size={14} />Descargar MP4</a> : available.length ? <button onClick={job ? render : plan} disabled={busy !== ""} className="flex items-center gap-2 rounded-xl bg-violet-500 px-3 py-2 text-xs font-semibold disabled:opacity-50">{busy ? <LoaderCircle className="animate-spin" size={14} /> : <Sparkles size={14} />}{busy === "render" ? "Exportando…" : job ? "Renderizar" : "Preparar edición"}</button> : <button onClick={props.onUpload} className="flex items-center gap-2 rounded-xl bg-violet-500 px-3 py-2 text-xs font-semibold"><Plus size={14} />Subir videos</button>}
     </header>
 
-    {activeResult && <div className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-400/20 bg-emerald-400/[.08] px-4 py-4 sm:px-6"><div><p className="flex items-center gap-2 text-sm font-semibold text-emerald-200"><Check size={16} />{job?.status === "failed" ? "Resultado anterior disponible" : "Resultado editado listo"}</p><p className="mt-1 text-xs text-zinc-400">El MP4 pasó una comprobación inicial de video y audio. Revísalo completo antes de publicarlo.</p><div className="mt-2 flex flex-wrap gap-2 text-[10px] text-zinc-300"><span>{resultStyle}</span><span>· {Number(resultMetadata.duration_seconds || 0).toFixed(1)} s finales</span><span>· {Number(resultMetadata.caption_count || 0)} subtítulos</span><span>· {Number(resultMetadata.effect_count || 0)} efectos</span><span>· {Number(resultMetadata.removed_silence_seconds || 0).toFixed(1)} s de silencio retirado</span></div></div><div className="flex w-full gap-2 sm:w-auto"><button onClick={() => setPreviewMode("final")} className="flex-1 rounded-xl bg-emerald-400 px-3 py-2 text-xs font-semibold text-black sm:flex-none">Ver resultado</button><a href={`${resultSrc}?download=1`} className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-emerald-300/30 px-3 py-2 text-xs text-emerald-100 sm:flex-none"><Download size={14} />Descargar</a></div></div>}
+    {activeResult && <div className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-400/20 bg-emerald-400/[.08] px-4 py-4 sm:px-6"><div><p className="flex items-center gap-2 text-sm font-semibold text-emerald-200"><Check size={16} />{job?.status === "failed" || job?.status === "unconfirmed" ? "Resultado anterior disponible" : "Resultado editado listo"}</p><p className="mt-1 text-xs text-zinc-400">{resultMetadata.recoveredFromStorage ? "El MP4 apareció en la biblioteca tras perderse la conexión. Reprodúcelo completo para comprobar el resultado." : "El MP4 pasó una comprobación inicial de video y audio. Revísalo completo antes de publicarlo."}</p>{!resultMetadata.recoveredFromStorage && <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-zinc-300"><span>{resultStyle}</span><span>· {Number(resultMetadata.duration_seconds || 0).toFixed(1)} s finales</span><span>· {Number(resultMetadata.caption_count || 0)} subtítulos</span><span>· {Number(resultMetadata.effect_count || 0)} efectos</span><span>· {Number(resultMetadata.removed_silence_seconds || 0).toFixed(1)} s de silencio retirado</span></div>}</div><div className="flex w-full gap-2 sm:w-auto"><button onClick={() => setPreviewMode("final")} className="flex-1 rounded-xl bg-emerald-400 px-3 py-2 text-xs font-semibold text-black sm:flex-none">Ver resultado</button><a href={`${resultSrc}?download=1`} className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-emerald-300/30 px-3 py-2 text-xs text-emerald-100 sm:flex-none"><Download size={14} />Descargar</a></div></div>}
     {job?.status === "failed" && <div className="border-b border-red-400/20 bg-red-400/[.08] px-4 py-4 text-sm text-red-100 sm:px-6"><strong>La edición no se completó. No existe un MP4 final de este intento.</strong><p className="mt-1 text-xs text-red-200/80">{job.error || error || "Revisa el mensaje y vuelve a intentar el render."}</p></div>}
+    {job?.status === "unconfirmed" && <div className="border-b border-amber-300/20 bg-amber-300/[.07] px-4 py-4 text-sm text-amber-100 sm:px-6"><strong>No pudimos confirmar el resultado de este intento.</strong><p className="mt-1 text-xs text-amber-100/80">{job.error || "Abre Mis videos para ver si apareció el MP4 antes de reintentar."}</p></div>}
+    {job?.ephemeral && <div className="border-b border-amber-300/15 bg-amber-300/[.04] px-4 py-2.5 text-[11px] text-amber-100/80 sm:px-6">El plan y el progreso de esta edición solo se conservan en este navegador. El MP4 terminado aparecerá en Mis videos de esta misma sesión.</div>}
 
     <div className="grid min-h-[670px] lg:grid-cols-[78px_250px_minmax(320px,1fr)_260px]">
       <nav className="order-2 flex overflow-x-auto border-t border-white/8 bg-[#0d1018] p-1.5 lg:order-none lg:flex-col lg:border-r lg:border-t-0 lg:p-2">
@@ -280,7 +331,7 @@ export function EditorStudio(props: {
         <textarea value={objective} onChange={(event) => { setObjective(event.target.value); setJob(null); }} disabled={Boolean(busy)} rows={5} className="mt-4 w-full resize-none rounded-xl border border-white/8 bg-black/20 p-3 text-xs leading-5 text-zinc-300 outline-none focus:border-violet-400/40 disabled:opacity-50" placeholder="Ej. Quiero un reel energético, directo y con pausas mínimas…" />
         <div className="mt-4 rounded-xl border border-white/7 bg-black/15 p-3"><p className="text-[10px] font-medium text-zinc-300">Ajustes actuales de edición</p><div className="mt-3 space-y-2 text-[9px] text-zinc-500"><p className="flex justify-between"><span>Estilo</span><b className="text-zinc-300">{selectedStyle.name}</b></p><p className="flex justify-between"><span>Escenas</span><b className="text-zinc-300">{approvedScenes.length}</b></p><p className="flex justify-between"><span>Silencios</span><b className="text-zinc-300">{options.deadAir ? `${settings.silenceThresholdMs} ms` : "No"}</b></p><p className="flex justify-between"><span>Subtítulos</span><b className="text-zinc-300">{options.captions && hasTranscript ? "Sí" : "No"}</b></p></div></div>
         {approvedScenes.length > 0 && !hasTranscript && <div className="mt-3 rounded-xl border border-amber-300/20 bg-amber-300/[.06] p-3 text-[10px] leading-4 text-amber-100"><strong className="block">Este proyecto saldrá sin subtítulos.</strong><p className="mt-1 text-amber-100/70">Añade el texto hablado de cada escena para incluirlos en el próximo render.</p><button onClick={() => props.onAddToCurrent(sessionId)} className="mt-2 font-semibold underline underline-offset-2">Añadir texto a las escenas</button></div>}
-        {job && <div className={`mt-4 rounded-xl border p-3 ${ready ? "border-emerald-400/20 bg-emerald-400/6" : job.status === "failed" ? "border-red-400/20 bg-red-400/6" : "border-violet-400/20 bg-violet-400/6"}`}><div className="flex items-center justify-between text-[10px]"><span>{ready ? "MP4 generado" : job.status === "failed" ? "Render falló" : job.stage}</span><b>{job.status === "failed" ? "Error" : `${job.progress || 0}%`}</b></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/8"><div className={`h-full transition-all ${job.status === "failed" ? "bg-red-400" : "bg-gradient-to-r from-violet-500 to-cyan-400"}`} style={{ width: `${job.status === "failed" ? 0 : Math.max(2, Number(job.progress || 0))}%` }} /></div>{job.error && <p className="mt-2 text-[9px] leading-4 text-red-200">{job.error}</p>}</div>}
+        {job && <div className={`mt-4 rounded-xl border p-3 ${ready ? "border-emerald-400/20 bg-emerald-400/6" : job.status === "failed" ? "border-red-400/20 bg-red-400/6" : job.status === "unconfirmed" ? "border-amber-300/20 bg-amber-300/6" : "border-violet-400/20 bg-violet-400/6"}`}><div className="flex items-center justify-between text-[10px]"><span>{ready ? "MP4 generado" : job.status === "failed" ? "Render falló" : job.stage}</span><b>{job.status === "failed" ? "Error" : job.status === "unconfirmed" ? "Sin confirmar" : `${job.progress || 0}%`}</b></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/8"><div className={`h-full transition-all ${job.status === "failed" ? "bg-red-400" : job.status === "unconfirmed" ? "bg-amber-300" : "bg-gradient-to-r from-violet-500 to-cyan-400"}`} style={{ width: `${job.status === "failed" || job.status === "unconfirmed" ? 0 : Math.max(2, Number(job.progress || 0))}%` }} /></div>{job.error && <p className="mt-2 text-[9px] leading-4 text-red-200">{job.error}</p>}</div>}
         {job?.contract?.skill_manifest?.decisions && <details className="mt-4 rounded-xl border border-white/8 bg-black/15 p-3"><summary className="cursor-pointer text-xs text-zinc-300">Decisiones de las skills ({job.contract.skill_manifest.decisions.length})</summary><div className="mt-3 max-h-52 space-y-2 overflow-y-auto">{job.contract.skill_manifest.decisions.map((decision: Row) => <p key={decision.skillId} className="border-t border-white/5 pt-2 text-[10px] leading-4 text-zinc-500"><strong className="block text-zinc-300">{decision.skillId} · {decision.execution === "render" ? "render" : decision.execution === "pending" ? "pendiente" : decision.execution === "plan" ? "plan" : "parcial"}</strong>{decision.summary}</p>)}</div></details>}
         {!ready && <button onClick={available.length ? (job ? render : plan) : props.onUpload} disabled={busy !== ""} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-500 to-indigo-500 px-4 py-3 text-xs font-semibold disabled:opacity-40">{busy ? <LoaderCircle className="animate-spin" size={15} /> : available.length ? (job ? <Film size={15} /> : <Sparkles size={15} />) : <Plus size={15} />}{busy === "plan" ? "Creando edición…" : busy === "render" ? "Renderizando…" : available.length ? (job ? "Renderizar MP4" : "Crear edición") : "Subir videos"}</button>}
         {activeResult && <a href={`${resultSrc}?download=1`} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-white px-4 py-3 text-xs font-semibold text-black"><Download size={15} />Descargar resultado MP4</a>}
