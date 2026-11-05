@@ -142,6 +142,8 @@ function Toggle({ enabled, label, detail, onChange }: { enabled: boolean; label:
 }
 
 export function EditorStudio(props: {
+  initialSessionId?: string;
+  initialResultId?: string;
   portfolioId: string;
   sessions: Row[];
   scenes: Row[];
@@ -153,8 +155,11 @@ export function EditorStudio(props: {
   onAddToCurrent: (sessionId: string) => void;
 }) {
   const available = useMemo(() => props.sessions.filter((session) => session.portfolioId === props.portfolioId && props.scenes.some((scene) => scene.sessionId === session.id && scene.selectedTakeId)), [props.sessions, props.scenes, props.portfolioId]);
-  const [sessionChoice, setSessionId] = useState(available[0]?.id || "");
+  const [sessionChoice, setSessionId] = useState(props.initialSessionId || available[0]?.id || "");
   const sessionId = available.some((item) => item.id === sessionChoice) ? sessionChoice : available[0]?.id || "";
+  useEffect(() => {
+    if (props.initialSessionId && available.some((item) => item.id === props.initialSessionId)) setSessionId(props.initialSessionId);
+  }, [props.initialSessionId, available]);
   const [style, setStyle] = useState<EditorStyleId>("kiko-impacto");
   const [tool, setTool] = useState<ToolTab>("media");
   const [catalogSearch, setCatalogSearch] = useState("");
@@ -163,9 +168,12 @@ export function EditorStudio(props: {
   const initialStyle = EDITOR_STYLES[0];
   const [settings, setSettings] = useState({ subtitleSize: initialStyle.subtitle.size, subtitlePosition: initialStyle.subtitle.position, silenceThresholdMs: initialStyle.execution.silenceThresholdMs, silenceNoiseDb: -30, transition: initialStyle.transition, soundEffectVolume: initialStyle.execution.soundEffectVolume, soundPreset: "auto" as "auto" | "none" | "soft" | "kinetic" | "cinematic" | "pop" });
   const [localJob, setJob] = useState<Row | null | undefined>(undefined);
+  const [selectedResultId, setSelectedResultId] = useState(props.initialResultId || "");
+  useEffect(() => { setSelectedResultId(props.initialResultId || ""); }, [props.initialResultId]);
   const [lastResult, setLastResult] = useState<Row | null>(null);
   const [previewMode, setPreviewMode] = useState<"final" | "original">("final");
-  const latestJob = props.editJobs.find((item) => item.sessionId === sessionId) || null;
+  const latestJob = props.editJobs.find((item) => item.id === selectedResultId && item.sessionId === sessionId)
+    || props.editJobs.find((item) => item.sessionId === sessionId) || null;
   const job = localJob === undefined || (localJob && localJob.sessionId !== sessionId) ? latestJob : localJob;
   const ephemeralStorageKey = `segmenta.edit-job.v1:${props.portfolioId}:${sessionId}`;
   const resultStorageKey = `segmenta.latest-result.v1:${props.portfolioId}:${sessionId}`;
@@ -179,6 +187,7 @@ export function EditorStudio(props: {
   const [, setHistoryVersion] = useState(0);
   const [splitPoint, setSplitPoint] = useState(0);
   const [timelineReadyKey, setTimelineReadyKey] = useState("");
+  const [preferencesReadyKey, setPreferencesReadyKey] = useState("");
   const [draftPending, setDraftPending] = useState(false);
   const [scriptDraft, setScriptDraft] = useState("");
   const [savingScript, setSavingScript] = useState(false);
@@ -189,6 +198,7 @@ export function EditorStudio(props: {
   const approvedScenes = props.scenes.filter((scene) => scene.sessionId === sessionId && scene.selectedTakeId).sort((a, b) => a.position - b.position);
   const approvedTakes = approvedScenes.map((scene) => props.takes.find((take) => take.id === scene.selectedTakeId)).filter(Boolean) as Row[];
   const timelineStorageKey = `segmenta.timeline.v1:${props.portfolioId}:${sessionId}`;
+  const preferencesStorageKey = `segmenta.editor-preferences.v1:${props.portfolioId}:${sessionId}`;
   const draftPendingKey = `segmenta.timeline-pending.v1:${props.portfolioId}:${sessionId}`;
   const sourceSignature = approvedScenes.map((scene) => `${scene.id}:${scene.selectedTakeId}:${scene.script || ""}`).join("|");
 
@@ -202,8 +212,18 @@ export function EditorStudio(props: {
         transcript: String(scene.script || ""), label: "", captionCues: [] }];
     });
     let saved: TimelineClip[] = [];
-    try { saved = JSON.parse(window.localStorage.getItem(timelineStorageKey) || "[]") as TimelineClip[]; }
+    try { saved = selectedResultId ? [] : JSON.parse(window.localStorage.getItem(timelineStorageKey) || "[]") as TimelineClip[]; }
     catch { /* Keep the original approved order if the local draft is corrupt. */ }
+    if (!Array.isArray(saved) || !saved.length) {
+      const contractClips = latestJob?.contract?.clips;
+      if (Array.isArray(contractClips)) saved = contractClips.map((clip: Row, index: number) => ({
+        segmentId: `${String(clip.id)}:${index}`, takeId: String(clip.id), sceneId: String(clip.scene_id || ""),
+        trimStartSeconds: clip.trim_start_seconds, trimEndSeconds: clip.trim_end_seconds,
+        playbackSpeed: clip.playback_speed, audioVolume: clip.audio_volume,
+        brightness: clip.brightness, contrast: clip.contrast, saturation: clip.saturation,
+        transcript: clip.transcript, label: clip.label, captionCues: clip.caption_cues,
+      })) as TimelineClip[];
+    }
     const byId = new Map(defaults.map((clip) => [clip.takeId, clip]));
     const seenTakes = new Set<string>();
     const seenSegments = new Set<string>();
@@ -231,7 +251,47 @@ export function EditorStudio(props: {
     setTimelineReadyKey(timelineStorageKey);
   // Only refresh the draft when approved source material changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timelineStorageKey, sourceSignature]);
+  }, [timelineStorageKey, sourceSignature, latestJob?.id]);
+
+  useEffect(() => {
+    let saved: Row | null = null;
+    try { saved = selectedResultId ? null : JSON.parse(window.localStorage.getItem(preferencesStorageKey) || "null") as Row | null; }
+    catch { /* Restore the saved render settings if this local draft is corrupt. */ }
+    const contract = latestJob?.contract;
+    const source = saved || contract;
+    if (source) {
+      const nextStyle = String(source.style || "");
+      if (EDITOR_STYLES.some((item) => item.id === nextStyle)) setStyle(nextStyle as EditorStyleId);
+      setObjective(String(source.objective || "Reel vertical profesional: gancho fuerte, ritmo claro y cierre con autoridad."));
+      if (saved) {
+        if (saved.options) setOptions(saved.options);
+        if (saved.settings) setSettings(saved.settings);
+      } else if (contract) {
+        const snapshot = contract.style_snapshot || {};
+        setOptions({ captions: contract.captions?.enabled !== false, deadAir: contract.dead_air?.remove !== false,
+          transitions: contract.effects?.transitions !== false, soundEffects: contract.effects?.sound_effects !== false,
+          labels: contract.effects?.labels !== false, broll: contract.effects?.images_or_broll === true });
+        setSettings({ subtitleSize: draftNumber(snapshot.subtitle?.size, initialStyle.subtitle.size, 38, 100),
+          subtitlePosition: ["top", "center", "bottom"].includes(snapshot.subtitle?.position) ? snapshot.subtitle.position : "bottom",
+          silenceThresholdMs: draftNumber(contract.dead_air?.threshold_ms, initialStyle.execution.silenceThresholdMs, 350, 1500),
+          silenceNoiseDb: draftNumber(contract.dead_air?.noise_db, -30, -35, -25),
+          transition: ["cut", "fade", "dissolve"].includes(snapshot.transition) ? snapshot.transition : "cut",
+          soundEffectVolume: draftNumber(snapshot.execution?.soundEffectVolume, initialStyle.execution.soundEffectVolume, 0, 1),
+          soundPreset: ["auto", "none", "soft", "kinetic", "cinematic", "pop"].includes(snapshot.execution?.soundPreset) ? snapshot.execution.soundPreset : "auto" });
+      }
+    } else if (available.find((item) => item.id === sessionId)?.title?.startsWith("Copia del MP4 ·")) {
+      setOptions((current) => ({ ...current, captions: false }));
+    }
+    setPreferencesReadyKey(preferencesStorageKey);
+  // Restore preferences once per selected project, without overwriting edits on a job refresh.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preferencesStorageKey]);
+
+  useEffect(() => {
+    if (preferencesReadyKey === preferencesStorageKey) {
+      window.localStorage.setItem(preferencesStorageKey, JSON.stringify({ style, objective, options, settings }));
+    }
+  }, [preferencesReadyKey, preferencesStorageKey, style, objective, options, settings]);
 
   useEffect(() => {
     if (timelineReadyKey === timelineStorageKey) window.localStorage.setItem(timelineStorageKey, JSON.stringify(timeline));
@@ -375,7 +435,8 @@ export function EditorStudio(props: {
   }, [selectedSegmentId]);
   const needsPlan = !job || draftPending;
   const ready = job?.status === "ready" && !draftPending;
-  const activeResult = ready ? job : latestJob?.status === "ready" ? latestJob : lastResult?.sessionId === sessionId ? lastResult : null;
+  const previousReadyJob = props.editJobs.find((item) => item.sessionId === sessionId && item.status === "ready");
+  const activeResult = ready ? job : latestJob?.status === "ready" ? latestJob : previousReadyJob || (lastResult?.sessionId === sessionId ? lastResult : null);
   const resultIsPrevious = Boolean(activeResult && (draftPending || job?.status !== "ready"));
   const showingFinal = Boolean(activeResult && previewMode === "final");
   const resultSrc = activeResult ? `/api/editor/output/${activeResult.id}` : "";
@@ -495,6 +556,7 @@ export function EditorStudio(props: {
       await ensureScriptSaved();
       const result = await request<{ job: Row }>("/api/editor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, style, objective, options, settings, timeline, skillProfiles: loadSkillProfiles(props.portfolioId) }) });
       setJob(result.job);
+      setSelectedResultId(result.job.id);
       setDraftPending(false);
       window.localStorage.removeItem(draftPendingKey);
       if (result.job.ephemeral) window.localStorage.setItem(ephemeralStorageKey, JSON.stringify(result.job));
@@ -551,7 +613,8 @@ export function EditorStudio(props: {
       <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">{workflowSteps.map((step, index) => <button key={step.label} onClick={() => goToWorkflowStep(index)} className={`flex items-center gap-2 rounded-xl border px-2.5 py-2 text-left text-[10px] sm:text-xs ${step.done ? "border-emerald-400/20 bg-emerald-400/[.07] text-emerald-100" : "border-white/10 bg-white/[.03] text-zinc-400 hover:border-violet-400/35 hover:text-white"}`}><span className={`grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-semibold ${step.done ? "bg-emerald-400 text-black" : "bg-white/10 text-zinc-300"}`}>{step.done ? <Check size={12} /> : index + 1}</span><span className="min-w-0">{step.label}</span></button>)}</div>
     </nav>
 
-    {activeResult && <div className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-400/20 bg-emerald-400/[.08] px-4 py-4 sm:px-6"><div><p className="flex items-center gap-2 text-sm font-semibold text-emerald-200"><Check size={16} />{resultIsPrevious ? "Resultado anterior disponible" : "Resultado editado listo"}</p><p className="mt-1 text-xs text-zinc-400">{resultIsPrevious ? "Esta versión todavía no incluye los cambios pendientes. Prepara y renderiza una nueva versión." : resultMetadata.recoveredFromStorage ? "El MP4 apareció en la biblioteca tras perderse la conexión. Reprodúcelo completo para comprobar el resultado." : "El MP4 pasó una comprobación inicial de video y audio. Revísalo completo antes de publicarlo."}</p>{!resultMetadata.recoveredFromStorage && <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-zinc-300"><span>{resultStyle}</span><span>· {Number(resultMetadata.duration_seconds || 0).toFixed(1)} s finales</span><span>· {Number(resultMetadata.caption_count || 0)} subtítulos</span><span>· {Number(resultMetadata.effect_count || 0)} efectos</span><span>· {Number(resultMetadata.removed_silence_seconds || 0).toFixed(1)} s de silencio retirado</span></div>}</div><div className="flex w-full gap-2 sm:w-auto"><button onClick={() => setPreviewMode("final")} className="flex-1 rounded-xl bg-emerald-400 px-3 py-2 text-xs font-semibold text-black sm:flex-none">Ver resultado</button><a href={`${resultSrc}?download=1`} className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-emerald-300/30 px-3 py-2 text-xs text-emerald-100 sm:flex-none"><Download size={14} />Descargar</a></div></div>}
+    {activeResult && <div className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-400/20 bg-emerald-400/[.08] px-4 py-4 sm:px-6"><div><p className="flex items-center gap-2 text-sm font-semibold text-emerald-200"><Check size={16} />{resultIsPrevious ? "Resultado anterior disponible" : "Resultado editado listo"}</p><p className="mt-1 text-xs text-zinc-400">{resultIsPrevious ? "Esta versión todavía no incluye los cambios pendientes. Prepara y renderiza una nueva versión." : resultMetadata.recoveredFromStorage ? "El MP4 apareció en la biblioteca tras perderse la conexión. Reprodúcelo completo para comprobar el resultado." : "El MP4 pasó una comprobación inicial de video y audio. Revísalo completo antes de publicarlo."}</p>{!resultMetadata.recoveredFromStorage && <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-zinc-300"><span>{resultStyle}</span><span>· {Number(resultMetadata.duration_seconds || 0).toFixed(1)} s finales</span><span>· {Number(resultMetadata.caption_count || 0)} subtítulos</span><span>· {Number(resultMetadata.effect_count || 0)} efectos</span><span>· {Number(resultMetadata.removed_silence_seconds || 0).toFixed(1)} s de silencio retirado</span></div>}</div><div className="flex w-full flex-wrap gap-2 sm:w-auto"><button onClick={() => { setPreviewMode("original"); document.getElementById("editor-workbench")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} className="flex-1 rounded-xl bg-violet-500 px-3 py-2 text-xs font-semibold text-white sm:flex-none">Seguir editando</button><button onClick={() => setPreviewMode("final")} className="flex-1 rounded-xl bg-emerald-400 px-3 py-2 text-xs font-semibold text-black sm:flex-none">Ver resultado</button><a href={`${resultSrc}?download=1`} className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-emerald-300/30 px-3 py-2 text-xs text-emerald-100 sm:flex-none"><Download size={14} />Descargar</a></div></div>}
+    {selectedSession?.title?.startsWith("Copia del MP4 ·") && <div className="border-b border-amber-300/20 bg-amber-300/[.06] px-4 py-3 text-xs leading-5 text-amber-100 sm:px-6">Estás editando una copia del MP4 exportado. Puedes recortar, ajustar audio/color y añadir nuevos elementos; los subtítulos, sonidos y efectos ya incrustados no se pueden separar. Los subtítulos nuevos empiezan desactivados hasta que escribas el texto hablado.</div>}
     {job?.status === "failed" && <div className="border-b border-red-400/20 bg-red-400/[.08] px-4 py-4 text-sm text-red-100 sm:px-6"><strong>La edición no se completó. No existe un MP4 final de este intento.</strong><p className="mt-1 text-xs text-red-200/80">{job.error || error || "Revisa el mensaje y vuelve a intentar el render."}</p></div>}
     {job?.status === "unconfirmed" && <div className="border-b border-amber-300/20 bg-amber-300/[.07] px-4 py-4 text-sm text-amber-100 sm:px-6"><strong>No pudimos confirmar el resultado de este intento.</strong><p className="mt-1 text-xs text-amber-100/80">{job.error || "Abre Mis videos para ver si apareció el MP4 antes de reintentar."}</p></div>}
     {job?.ephemeral && <div className="border-b border-amber-300/15 bg-amber-300/[.04] px-4 py-2.5 text-[11px] text-amber-100/80 sm:px-6">El plan y el progreso de esta edición solo se conservan en este navegador. El MP4 terminado aparecerá en Mis videos de esta misma sesión.</div>}
