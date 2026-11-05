@@ -17,7 +17,7 @@ function networkCode(error: unknown) {
   return nested && typeof nested === "object" && "code" in nested ? String(nested.code).slice(0, 40) : null;
 }
 
-export async function POST(request: Request) {
+async function executeRender(request: Request, onProgress: (progress: number, stage: string) => void = () => undefined) {
   const user = await getRequestUser();
   if (!user) return unauthorized();
   const supabase = await createClient();
@@ -52,9 +52,11 @@ export async function POST(request: Request) {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) return unauthorized();
     const update = async (progress: number, stage: string) => {
-      if (ephemeral) return;
-      const result = await supabase.from("kiko_edit_jobs").update({ status: "processing", progress, stage, error: null, updated_at: new Date().toISOString() }).eq("id", jobId).eq("owner_id", user.userId);
-      if (result.error) throw result.error;
+      if (!ephemeral) {
+        const result = await supabase.from("kiko_edit_jobs").update({ status: "processing", progress, stage, error: null, updated_at: new Date().toISOString() }).eq("id", jobId).eq("owner_id", user.userId);
+        if (result.error) throw result.error;
+      }
+      onProgress(progress, stage);
     };
     outputObjectKey = `${user.userId}/renders/${jobId}.mp4`;
     phase = "renderizando y subiendo el MP4";
@@ -106,4 +108,49 @@ export async function POST(request: Request) {
     }
     return Response.json({ error: message }, { status: 500 });
   }
+}
+
+export async function POST(request: Request) {
+  if (!request.headers.get("accept")?.includes("application/x-ndjson")) return executeRender(request);
+
+  const encoder = new TextEncoder();
+  let cancelled = false;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const write = (line: string) => {
+        if (cancelled) return;
+        try { controller.enqueue(encoder.encode(line)); }
+        catch { cancelled = true; }
+      };
+      const send = (event: Record<string, unknown>) => {
+        write(`${JSON.stringify(event)}\n`);
+      };
+      send({ type: "progress", progress: 1, stage: "Iniciando la edición" });
+      // A blank line keeps the HTTP connection alive during long FFmpeg stages.
+      heartbeat = setInterval(() => write("\n"), 15_000);
+      void (async () => {
+        try {
+          const response = await executeRender(request, (progress, stage) => send({ type: "progress", progress, stage }));
+          const payload = await response.json() as { job?: unknown; error?: string };
+          if (response.ok && payload.job) send({ type: "done", job: payload.job });
+          else send({ type: "error", error: payload.error || "No se pudo completar la edición.", status: response.status });
+        } catch (error) {
+          console.error("cloud render stream failed", { message: safeErrorMessage(error), code: networkCode(error) });
+          send({ type: "error", error: `Error al transmitir el render: ${safeErrorMessage(error)}` });
+        } finally {
+          if (heartbeat) clearInterval(heartbeat);
+          if (!cancelled) controller.close();
+        }
+      })();
+    },
+    cancel() { cancelled = true; if (heartbeat) clearInterval(heartbeat); },
+  });
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "private, no-store, no-transform",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
 }

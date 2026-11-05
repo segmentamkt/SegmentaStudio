@@ -21,6 +21,45 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return data as T;
 }
 
+async function streamRender(job: Row, onProgress: (progress: number, stage: string) => void): Promise<Row> {
+  const response = await fetch("/api/editor/render", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/x-ndjson" },
+    body: JSON.stringify({ jobId: job.id, job: job.ephemeral ? job : undefined }),
+  });
+  if (!response.ok || !response.body) {
+    const data = await response.json().catch(() => ({})) as { job?: Row; error?: string };
+    if (!response.ok) throw new Error(data.error || "No se pudo renderizar el video.");
+    if (data.job) return data.job;
+    throw new Error("El servidor no devolvió el resultado del render.");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let remaining = "";
+  let completed: Row | null = null;
+  const consume = (line: string) => {
+    if (!line.trim()) return;
+    const event = JSON.parse(line) as { type: string; progress?: number; stage?: string; job?: Row; error?: string };
+    if (event.type === "progress") onProgress(Number(event.progress || 0), String(event.stage || "Procesando video"));
+    if (event.type === "done" && event.job) completed = event.job;
+    if (event.type === "error") throw new Error(event.error || "El render se detuvo.");
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    remaining += decoder.decode(value, { stream: !done });
+    let newline = remaining.indexOf("\n");
+    while (newline !== -1) {
+      consume(remaining.slice(0, newline));
+      remaining = remaining.slice(newline + 1);
+      newline = remaining.indexOf("\n");
+    }
+    if (done) break;
+  }
+  if (remaining.trim()) consume(remaining);
+  if (!completed) throw new Error("El render terminó sin confirmar un MP4. Revisa Mis videos antes de reintentar.");
+  return completed;
+}
+
 function seconds(milliseconds: unknown) {
   const value = Math.max(0, Number(milliseconds || 0) / 1000);
   return `${Math.floor(value / 60)}:${String(Math.floor(value % 60)).padStart(2, "0")}`;
@@ -102,6 +141,7 @@ export function EditorStudio(props: {
   }, [lastResult, resultStorageKey, sessionId]);
 
   const chooseStyle = (nextStyle: EditorStyleId) => {
+    if (busy) return;
     const preset = EDITOR_STYLES.find((item) => item.id === nextStyle) || EDITOR_STYLES[0];
     setStyle(nextStyle);
     setSettings({ subtitleSize: preset.subtitle.size, subtitlePosition: preset.subtitle.position, silenceThresholdMs: preset.execution.silenceThresholdMs, transition: preset.transition, soundEffectVolume: preset.execution.soundEffectVolume });
@@ -109,11 +149,13 @@ export function EditorStudio(props: {
   };
 
   const changeOptions = (next: Partial<typeof options>) => {
+    if (busy) return;
     setOptions((current) => ({ ...current, ...next }));
     setJob(null);
   };
 
   const changeSettings = (next: Partial<typeof settings>) => {
+    if (busy) return;
     setSettings((current) => ({ ...current, ...next }));
     setJob(null);
   };
@@ -137,7 +179,8 @@ export function EditorStudio(props: {
     try {
       const result = await request<{ job: Row }>("/api/editor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, style, objective, options, settings, skillProfiles: loadSkillProfiles(props.portfolioId) }) });
       setJob(result.job);
-      await props.onRefresh();
+      if (result.job.ephemeral) window.localStorage.setItem(ephemeralStorageKey, JSON.stringify(result.job));
+      else await props.onRefresh();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo crear el plan."); }
     finally { setBusy(""); }
   };
@@ -145,26 +188,23 @@ export function EditorStudio(props: {
   const render = async () => {
     if (!job) return;
     setBusy("render"); setError("");
-    const fallbackStages = ["Analizando voz y silencios", "Recortando tiempos muertos", "Aplicando estilo y subtítulos", "Mezclando audio y transiciones", "Validando el MP4 final"];
-    const progressTimer = job.ephemeral ? window.setInterval(() => setJob((current) => {
-      if (!current || current.status === "ready" || current.status === "failed") return current;
-      const progress = Math.min(92, Number(current.progress || 8) + 5);
-      return { ...current, status: "processing", progress, stage: fallbackStages[Math.min(fallbackStages.length - 1, Math.floor(progress / 20))] };
-    }), 1400) : 0;
-    const poll = job.ephemeral ? 0 : window.setInterval(async () => {
-      try { setJob((await request<{ job: Row }>(`/api/editor?id=${job.id}`)).job); } catch { /* La petición principal reportará el error. */ }
-    }, 1500);
+    setJob({ ...job, status: "processing", progress: 0, stage: "Enviando el plan al servidor", error: null });
     try {
-      const result = await request<{ job: Row }>("/api/editor/render", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jobId: job.id, job: job.ephemeral ? job : undefined }) });
-      setJob(result.job);
-      if (result.job.status === "ready") { setLastResult(result.job); setPreviewMode("final"); }
-      await props.onRefresh();
+      const completedJob = await streamRender(job, (progress, stage) => setJob((current) => ({ ...(current || job), status: "processing", progress, stage, error: null })));
+      setJob(completedJob);
+      if (completedJob.ephemeral) window.localStorage.setItem(ephemeralStorageKey, JSON.stringify(completedJob));
+      if (completedJob.status === "ready") {
+        window.localStorage.setItem(resultStorageKey, JSON.stringify(completedJob));
+        setLastResult(completedJob);
+        setPreviewMode("final");
+      }
+      if (!completedJob.ephemeral) await props.onRefresh();
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "No se pudo renderizar el video.";
       setError(message);
       setJob((current) => ({ ...(current || job), status: "failed", stage: "Render falló", progress: 0, error: message }));
     }
-    finally { if (poll) window.clearInterval(poll); if (progressTimer) window.clearInterval(progressTimer); setBusy(""); }
+    finally { setBusy(""); }
   };
 
   const togglePlayback = async () => {
@@ -219,8 +259,9 @@ export function EditorStudio(props: {
 
       <aside className="order-4 border-t border-white/8 bg-[#0c0f17] p-4 lg:order-none lg:border-l lg:border-t-0">
         <PanelTitle icon={Settings2} title="Director de edición" text="Describe el resultado" />
-        <textarea value={objective} onChange={(event) => { setObjective(event.target.value); setJob(null); }} rows={5} className="mt-4 w-full resize-none rounded-xl border border-white/8 bg-black/20 p-3 text-xs leading-5 text-zinc-300 outline-none focus:border-violet-400/40" placeholder="Ej. Quiero un reel energético, directo y con pausas mínimas…" />
+        <textarea value={objective} onChange={(event) => { setObjective(event.target.value); setJob(null); }} disabled={Boolean(busy)} rows={5} className="mt-4 w-full resize-none rounded-xl border border-white/8 bg-black/20 p-3 text-xs leading-5 text-zinc-300 outline-none focus:border-violet-400/40 disabled:opacity-50" placeholder="Ej. Quiero un reel energético, directo y con pausas mínimas…" />
         <div className="mt-4 rounded-xl border border-white/7 bg-black/15 p-3"><p className="text-[10px] font-medium text-zinc-300">Ajustes actuales de edición</p><div className="mt-3 space-y-2 text-[9px] text-zinc-500"><p className="flex justify-between"><span>Estilo</span><b className="text-zinc-300">{selectedStyle.name}</b></p><p className="flex justify-between"><span>Escenas</span><b className="text-zinc-300">{approvedScenes.length}</b></p><p className="flex justify-between"><span>Silencios</span><b className="text-zinc-300">{options.deadAir ? `${settings.silenceThresholdMs} ms` : "No"}</b></p><p className="flex justify-between"><span>Subtítulos</span><b className="text-zinc-300">{options.captions && hasTranscript ? "Sí" : "No"}</b></p></div></div>
+        {approvedScenes.length > 0 && !hasTranscript && <div className="mt-3 rounded-xl border border-amber-300/20 bg-amber-300/[.06] p-3 text-[10px] leading-4 text-amber-100"><strong className="block">Este proyecto saldrá sin subtítulos.</strong><p className="mt-1 text-amber-100/70">Añade el texto hablado de cada escena para incluirlos en el próximo render.</p><button onClick={() => props.onAddToCurrent(sessionId)} className="mt-2 font-semibold underline underline-offset-2">Añadir texto a las escenas</button></div>}
         {job && <div className={`mt-4 rounded-xl border p-3 ${ready ? "border-emerald-400/20 bg-emerald-400/6" : job.status === "failed" ? "border-red-400/20 bg-red-400/6" : "border-violet-400/20 bg-violet-400/6"}`}><div className="flex items-center justify-between text-[10px]"><span>{ready ? "MP4 generado" : job.status === "failed" ? "Render falló" : job.stage}</span><b>{job.status === "failed" ? "Error" : `${job.progress || 0}%`}</b></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/8"><div className={`h-full transition-all ${job.status === "failed" ? "bg-red-400" : "bg-gradient-to-r from-violet-500 to-cyan-400"}`} style={{ width: `${job.status === "failed" ? 0 : Math.max(2, Number(job.progress || 0))}%` }} /></div>{job.error && <p className="mt-2 text-[9px] leading-4 text-red-200">{job.error}</p>}</div>}
         {job?.contract?.skill_manifest?.decisions && <details className="mt-4 rounded-xl border border-white/8 bg-black/15 p-3"><summary className="cursor-pointer text-xs text-zinc-300">Decisiones de las skills ({job.contract.skill_manifest.decisions.length})</summary><div className="mt-3 max-h-52 space-y-2 overflow-y-auto">{job.contract.skill_manifest.decisions.map((decision: Row) => <p key={decision.skillId} className="border-t border-white/5 pt-2 text-[10px] leading-4 text-zinc-500"><strong className="block text-zinc-300">{decision.skillId} · {decision.execution === "render" ? "render" : decision.execution === "pending" ? "pendiente" : decision.execution === "plan" ? "plan" : "parcial"}</strong>{decision.summary}</p>)}</div></details>}
         {!ready && <button onClick={available.length ? (job ? render : plan) : props.onUpload} disabled={busy !== ""} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-500 to-indigo-500 px-4 py-3 text-xs font-semibold disabled:opacity-40">{busy ? <LoaderCircle className="animate-spin" size={15} /> : available.length ? (job ? <Film size={15} /> : <Sparkles size={15} />) : <Plus size={15} />}{busy === "plan" ? "Creando edición…" : busy === "render" ? "Renderizando…" : available.length ? (job ? "Renderizar MP4" : "Crear edición") : "Subir videos"}</button>}
