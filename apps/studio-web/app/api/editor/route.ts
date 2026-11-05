@@ -123,6 +123,12 @@ export async function POST(request: Request) {
       quality_gates: { portrait: true, audio: true, captions: normalizedOptions.captions, effects: normalizedOptions.transitions || normalizedOptions.labels },
     };
     const contractWithSkills = applySkillProfilesToContract(contract, payload.skillProfiles);
+    if (!ordered.some(({ scene }) => String(scene.script || "").trim())) {
+      contractWithSkills.captions.enabled = false;
+      contractWithSkills.quality_gates.captions = false;
+      const subtitleDecision = contractWithSkills.skill_manifest.decisions.find((item) => item.skillId === "subtitulos");
+      if (subtitleDecision) subtitleDecision.summary = "Sin libreto o transcripción, no se generarán subtítulos.";
+    }
     const inserted = await supabase.from("kiko_edit_jobs").insert({
       id: crypto.randomUUID(), owner_id: user.userId, session_id: sessionId, style: style.id,
       objective, status: "planned", stage: "Plan editorial listo", progress: 8, contract: contractWithSkills,

@@ -69,12 +69,25 @@ export async function POST(request: Request) {
       if (!owned.data) return Response.json({ error: "Ese portafolio no está disponible." }, { status: 404 });
       const title = clean(payload.title, "Nueva producción");
       const script = clean(payload.script);
+      if (title.length > 160) return Response.json({ error: "El nombre del proyecto admite hasta 160 caracteres." }, { status: 400 });
+      const hasSceneCount = payload.sceneCount !== undefined;
+      const sceneCount = hasSceneCount ? Number(payload.sceneCount) : 0;
+      if (hasSceneCount && (!Number.isInteger(sceneCount) || sceneCount < 1 || sceneCount > 12)) return Response.json({ error: "Puedes subir hasta 12 videos por proyecto." }, { status: 400 });
+      if (script.length > 6_000) return Response.json({ error: "El libreto admite hasta 6.000 caracteres." }, { status: 400 });
+      const providedScripts = script ? scriptScenes(script) : [];
+      if (sceneCount && providedScripts.length > sceneCount) return Response.json({ error: "Hay más fragmentos de libreto que videos seleccionados." }, { status: 400 });
+      const sceneScripts = sceneCount ? Array.from({ length: sceneCount }, (_, index) => providedScripts[index] || "") : scriptScenes(script);
+      if (sceneScripts.some((item) => item.length > 1_000)) return Response.json({ error: "Cada escena admite hasta 1.000 caracteres de libreto." }, { status: 400 });
+      const sceneTitles = Array.isArray(payload.sceneTitles) ? payload.sceneTitles : [];
       const id = crypto.randomUUID();
       const sessionResult = await supabase.from("kiko_recording_sessions").insert({ id, owner_id: user.userId, portfolio_id: portfolioId, title, script, status: "recording" }).select().single();
       if (sessionResult.error) throw sessionResult.error;
-      const sceneValues = scriptScenes(script).map((sceneScript, position) => ({ id: crypto.randomUUID(), owner_id: user.userId, session_id: id, position, title: `Escena ${position + 1}`, script: sceneScript }));
+      const sceneValues = sceneScripts.map((sceneScript, position) => ({ id: crypto.randomUUID(), owner_id: user.userId, session_id: id, position, title: clean(sceneTitles[position], `Escena ${position + 1}`).slice(0, 80), script: sceneScript }));
       const scenesResult = await supabase.from("kiko_scenes").insert(sceneValues).select();
-      if (scenesResult.error) throw scenesResult.error;
+      if (scenesResult.error) {
+        await supabase.from("kiko_recording_sessions").delete().eq("id", id).eq("owner_id", user.userId);
+        throw scenesResult.error;
+      }
       return Response.json({ session: toSession(sessionResult.data), scenes: (scenesResult.data || []).map(toScene) }, { status: 201 });
     }
     if (action === "complete_session") {
@@ -82,6 +95,29 @@ export async function POST(request: Request) {
       if (result.error) throw result.error;
       if (!result.data) return Response.json({ error: "No encontramos esa producción." }, { status: 404 });
       return Response.json({ session: toSession(result.data) });
+    }
+    if (action === "update_scene_script") {
+      const sceneId = clean(payload.sceneId);
+      const script = clean(payload.script);
+      if (script.length > 1_000) return Response.json({ error: "El texto de esta escena admite hasta 1.000 caracteres." }, { status: 400 });
+      const result = await supabase.from("kiko_scenes").update({ script }).eq("id", sceneId).eq("owner_id", user.userId).select().maybeSingle();
+      if (result.error) throw result.error;
+      if (!result.data) return Response.json({ error: "No encontramos esa escena." }, { status: 404 });
+      return Response.json({ scene: toScene(result.data) });
+    }
+    if (action === "add_scene") {
+      const sessionId = clean(payload.sessionId);
+      const owned = await supabase.from("kiko_recording_sessions").select("id").eq("id", sessionId).eq("owner_id", user.userId).maybeSingle();
+      if (owned.error) throw owned.error;
+      if (!owned.data) return Response.json({ error: "No encontramos esa producción." }, { status: 404 });
+      const existing = await supabase.from("kiko_scenes").select("position").eq("session_id", sessionId).eq("owner_id", user.userId).order("position");
+      if (existing.error) throw existing.error;
+      if ((existing.data || []).length >= 12) return Response.json({ error: "Esta edición admite hasta 12 escenas." }, { status: 400 });
+      const position = (existing.data || []).reduce((maximum, scene) => Math.max(maximum, Number(scene.position)), -1) + 1;
+      const title = clean(payload.title, `Escena ${position + 1}`).slice(0, 80);
+      const inserted = await supabase.from("kiko_scenes").insert({ id: crypto.randomUUID(), owner_id: user.userId, session_id: sessionId, position, title, script: "" }).select().single();
+      if (inserted.error) throw inserted.error;
+      return Response.json({ scene: toScene(inserted.data) }, { status: 201 });
     }
     return Response.json({ error: "Acción no reconocida." }, { status: 400 });
   } catch (error) {
