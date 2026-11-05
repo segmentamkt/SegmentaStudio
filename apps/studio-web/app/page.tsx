@@ -32,8 +32,8 @@ const accentClasses: Record<string, string> = {
 
 type StudioView = "record" | "library" | "edit" | WorkspaceView;
 const STUDIO_NAV: Array<{ id: StudioView; label: string }> = [
-  { id: "summary", label: "Resumen" }, { id: "record", label: "Estudio de video" },
-  { id: "library", label: "Grabación móvil" }, { id: "edit", label: "Editar IA" },
+  { id: "summary", label: "Inicio" }, { id: "record", label: "Crear video" },
+  { id: "library", label: "Mis videos" }, { id: "edit", label: "Editor" },
   ...WORKSPACE_NAV.filter((item) => item.id !== "summary"),
 ];
 
@@ -370,7 +370,7 @@ export default function Home() {
           </div>
         </section>
 
-        {WORKSPACE_NAV.some((item) => item.id === view) ? <WorkspaceStudio view={view as WorkspaceView} portfolioId={portfolioId} portfolio={currentPortfolio} sessions={data?.sessions || []} scenes={data?.scenes || []} editJobs={data?.editJobs || []} onOpenEditor={() => setView("edit")} /> : view === "edit" ? <EditorStudio portfolioId={portfolioId} sessions={data?.sessions || []} scenes={data?.scenes || []} takes={data?.takes || []} editJobs={data?.editJobs || []} onRefresh={refresh} onBack={() => setView("library")} /> : view === "record" ? (
+        {WORKSPACE_NAV.some((item) => item.id === view) ? <WorkspaceStudio view={view as WorkspaceView} portfolioId={portfolioId} portfolio={currentPortfolio} sessions={data?.sessions || []} scenes={data?.scenes || []} editJobs={data?.editJobs || []} onOpenEditor={() => setView("edit")} /> : view === "edit" ? <EditorStudio portfolioId={portfolioId} sessions={data?.sessions || []} scenes={data?.scenes || []} takes={data?.takes || []} editJobs={data?.editJobs || []} onRefresh={refresh} onBack={() => setView("record")} /> : view === "record" ? (
           !sessions.length ? <section className="overflow-hidden rounded-2xl border border-white/8 bg-white/[.025] sm:rounded-3xl">
             <div className="bg-[radial-gradient(circle_at_100%_0%,rgba(124,58,237,.18),transparent_42%)] p-5 sm:p-10">
               <span className="grid h-11 w-11 place-items-center rounded-2xl bg-violet-400/12 text-violet-200"><Video size={20} /></span>

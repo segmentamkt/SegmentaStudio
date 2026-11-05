@@ -1,10 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { Captions, Check, ChevronRight, Clapperboard, Download, Film, Gauge, ImageIcon, LoaderCircle, Music2, Scissors, SlidersHorizontal, Sparkles, Tags, Volume2, WandSparkles, Zap } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Captions, Check, ChevronLeft, Clapperboard, Download, Film, ImageIcon, Layers3,
+  LoaderCircle, Music2, Pause, Play, Plus, Scissors, Settings2, Sparkles, Tags,
+  Type, UploadCloud, Volume2, WandSparkles, Zap,
+} from "lucide-react";
 import { EDITOR_STYLES, type EditorStyleId } from "../lib/editor-presets";
 
 type Row = Record<string, any>;
+type ToolTab = "media" | "styles" | "text" | "effects" | "audio";
 
 async function request<T = any>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, options);
@@ -13,16 +18,17 @@ async function request<T = any>(path: string, options: RequestInit = {}): Promis
   return data as T;
 }
 
-const TOOLS = [
-  { key: "deadAir", title: "Cortar tiempos muertos", text: "Detecta pausas largas y conserva aire natural.", icon: Scissors },
-  { key: "captions", title: "Subtítulos dinámicos", text: "Tarjetas cortas, legibles y adaptadas al estilo.", icon: Captions },
-  { key: "transitions", title: "Transiciones", text: "Cortes o disolvencias entre escenas.", icon: Zap },
-  { key: "soundEffects", title: "Efectos de sonido", text: "Golpes discretos en los cambios importantes.", icon: Volume2 },
-  { key: "labels", title: "Etiquetas y títulos", text: "Gancho y conceptos clave sobre el video.", icon: Tags },
-] as const;
+function seconds(milliseconds: unknown) {
+  const value = Math.max(0, Number(milliseconds || 0) / 1000);
+  return `${Math.floor(value / 60)}:${String(Math.floor(value % 60)).padStart(2, "0")}`;
+}
 
-function StyleGallery({ value, onChange, disabled = false }: { value: EditorStyleId; onChange: (style: EditorStyleId) => void; disabled?: boolean }) {
-  return <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-5">{EDITOR_STYLES.map((item) => <button key={item.id} disabled={disabled} onClick={() => onChange(item.id)} className={`overflow-hidden rounded-2xl border text-left transition disabled:cursor-default ${value === item.id ? "border-violet-300/60 bg-violet-400/10 ring-1 ring-violet-400/25" : "border-white/8 bg-white/[.025] hover:border-white/15"}`}><div className="relative aspect-[9/12] overflow-hidden bg-[#090b12] p-3"><div className="absolute inset-0 opacity-35" style={{ background: `radial-gradient(circle at 50% 18%, ${item.palette[0]}, transparent 45%), linear-gradient(155deg, #090b12, ${item.palette[1]}22)` }} /><div className="relative flex h-full flex-col justify-between"><div className="flex items-center justify-between"><span className="rounded-full bg-black/50 px-2 py-1 text-[7px]">00:12</span><span className="h-2 w-2 rounded-full" style={{ backgroundColor: item.palette[2] }} /></div><div className="mx-auto h-24 w-16 rounded-t-full border border-white/10 bg-gradient-to-t from-zinc-800 to-zinc-600 opacity-80" /><div className="rounded-lg px-2 py-2 text-center text-[9px] font-black leading-3" style={{ color: item.palette[2], backgroundColor: `${item.palette[0]}dd` }}>{item.caption}</div></div></div><div className="p-3"><div className="flex items-start justify-between gap-2"><strong className="text-xs">{item.name}</strong>{value === item.id && <Check className="shrink-0 text-violet-300" size={14} />}</div><p className="mt-1 text-[9px] text-zinc-600">{item.reference}</p><p className="mt-2 line-clamp-3 text-[10px] leading-4 text-zinc-400">{item.description}</p><p className="mt-2 text-[9px] text-zinc-600">{item.pace}</p></div></button>)}</div>;
+function ToolButton({ active, icon: Icon, label, onClick }: { active: boolean; icon: typeof Film; label: string; onClick: () => void }) {
+  return <button onClick={onClick} className={`flex min-w-[68px] flex-col items-center gap-1.5 rounded-xl px-2 py-2.5 text-[10px] transition ${active ? "bg-violet-500 text-white" : "text-zinc-500 hover:bg-white/5 hover:text-zinc-200"}`}><Icon size={17} /><span>{label}</span></button>;
+}
+
+function Toggle({ enabled, label, detail, onChange }: { enabled: boolean; label: string; detail: string; onChange: () => void }) {
+  return <button onClick={onChange} className={`flex w-full items-center justify-between gap-3 rounded-xl border p-3 text-left ${enabled ? "border-violet-400/20 bg-violet-400/8" : "border-white/7 bg-black/15"}`}><span><strong className="block text-xs font-medium">{label}</strong><small className="mt-1 block leading-4 text-zinc-600">{detail}</small></span><span className={`relative h-5 w-9 shrink-0 rounded-full transition ${enabled ? "bg-violet-500" : "bg-zinc-800"}`}><i className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition ${enabled ? "left-[18px]" : "left-0.5"}`} /></span></button>;
 }
 
 export function EditorStudio(props: {
@@ -37,6 +43,7 @@ export function EditorStudio(props: {
   const available = useMemo(() => props.sessions.filter((session) => session.portfolioId === props.portfolioId && props.scenes.some((scene) => scene.sessionId === session.id && scene.selectedTakeId)), [props.sessions, props.scenes, props.portfolioId]);
   const [sessionId, setSessionId] = useState(available[0]?.id || "");
   const [style, setStyle] = useState<EditorStyleId>("kiko-impacto");
+  const [tool, setTool] = useState<ToolTab>("media");
   const [objective, setObjective] = useState("Reel vertical profesional: gancho fuerte, ritmo claro y cierre con autoridad.");
   const [options, setOptions] = useState({ captions: true, deadAir: true, transitions: true, soundEffects: true, labels: true, broll: false });
   const initialStyle = EDITOR_STYLES[0];
@@ -44,6 +51,9 @@ export function EditorStudio(props: {
   const [job, setJob] = useState<Row | null>(null);
   const [busy, setBusy] = useState<"plan" | "render" | "">("");
   const [error, setError] = useState("");
+  const [selectedTakeId, setSelectedTakeId] = useState("");
+  const [playing, setPlaying] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
     if (!available.some((item) => item.id === sessionId)) setSessionId(available[0]?.id || "");
@@ -51,7 +61,7 @@ export function EditorStudio(props: {
 
   useEffect(() => {
     const latest = props.editJobs.find((item) => item.sessionId === sessionId);
-    if (latest) setJob(latest);
+    setJob(latest || null);
   }, [props.editJobs, sessionId]);
 
   useEffect(() => {
@@ -61,9 +71,16 @@ export function EditorStudio(props: {
   }, [style]);
 
   const selectedSession = available.find((item) => item.id === sessionId);
-  const approvedScenes = props.scenes.filter((scene) => scene.sessionId === sessionId && scene.selectedTakeId);
-  const approvedTakes = approvedScenes.map((scene) => props.takes.find((take) => take.id === scene.selectedTakeId)).filter(Boolean);
+  const approvedScenes = props.scenes.filter((scene) => scene.sessionId === sessionId && scene.selectedTakeId).sort((a, b) => a.position - b.position);
+  const approvedTakes = approvedScenes.map((scene) => props.takes.find((take) => take.id === scene.selectedTakeId)).filter(Boolean) as Row[];
   const selectedStyle = EDITOR_STYLES.find((item) => item.id === style) || EDITOR_STYLES[0];
+  const selectedTake = approvedTakes.find((take) => take.id === selectedTakeId) || approvedTakes[0];
+  const ready = job?.status === "ready";
+  const previewSrc = ready ? (job.resultUrl || `/api/editor/output/${job.id}`) : selectedTake ? `/api/media/${selectedTake.id}` : "";
+
+  useEffect(() => {
+    if (approvedTakes.length && !approvedTakes.some((take) => take.id === selectedTakeId)) setSelectedTakeId(approvedTakes[0].id);
+  }, [approvedTakes, selectedTakeId]);
 
   const plan = async () => {
     setBusy("plan"); setError("");
@@ -82,56 +99,81 @@ export function EditorStudio(props: {
     const progressTimer = job.ephemeral ? window.setInterval(() => setJob((current) => {
       if (!current || current.status === "ready") return current;
       const progress = Math.min(92, Number(current.progress || 8) + 5);
-      const stageIndex = Math.min(fallbackStages.length - 1, Math.floor(progress / 20));
-      return { ...current, status: "processing", progress, stage: fallbackStages[stageIndex] };
+      return { ...current, status: "processing", progress, stage: fallbackStages[Math.min(fallbackStages.length - 1, Math.floor(progress / 20))] };
     }), 1400) : 0;
     const poll = job.ephemeral ? 0 : window.setInterval(async () => {
-      try {
-        const result = await request<{ job: Row }>(`/api/editor?id=${job.id}`);
-        setJob(result.job);
-      } catch { /* La petición principal mostrará el fallo. */ }
+      try { setJob((await request<{ job: Row }>(`/api/editor?id=${job.id}`)).job); } catch { /* La petición principal reportará el error. */ }
     }, 1500);
     try {
       const result = await request<{ job: Row }>("/api/editor/render", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jobId: job.id, job: job.ephemeral ? job : undefined }) });
-      setJob(result.job);
-      await props.onRefresh();
+      setJob(result.job); await props.onRefresh();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo renderizar el video."); }
     finally { if (poll) window.clearInterval(poll); if (progressTimer) window.clearInterval(progressTimer); setBusy(""); }
   };
 
-  return (
-    <section className="space-y-5">
-      <div className="flex flex-col gap-4 rounded-3xl border border-violet-400/20 bg-[radial-gradient(circle_at_20%_0%,rgba(124,58,237,.2),transparent_45%),rgba(255,255,255,.025)] p-5 sm:flex-row sm:items-center sm:justify-between">
-        <div><p className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[.2em] text-violet-300"><WandSparkles size={14} />Centro de edición</p><h2 className="mt-2 text-2xl font-semibold">Director automático + render real</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-400">Selecciona una producción, define el estilo y Segmenta arma cortes, silencios, subtítulos, transiciones, audio y etiquetas en un MP4 verificable.</p></div>
-        <button onClick={props.onBack} className="rounded-xl border border-white/10 px-4 py-2.5 text-sm text-zinc-300">Volver a tomas</button>
-      </div>
+  const togglePlayback = async () => {
+    if (!videoRef.current) return;
+    if (videoRef.current.paused) { await videoRef.current.play(); setPlaying(true); }
+    else { videoRef.current.pause(); setPlaying(false); }
+  };
 
-      {!available.length ? <div className="space-y-5"><div><div className="mb-3"><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Biblioteca de estilos</p><h3 className="mt-1 text-xl font-semibold">Así se verá la edición</h3><p className="mt-1 text-xs text-zinc-500">Puedes explorar los lenguajes visuales incluso antes de grabar.</p></div><StyleGallery value={style} onChange={setStyle} /></div><div className="grid min-h-[260px] place-items-center rounded-3xl border border-dashed border-white/10 bg-white/[.02] p-8 text-center"><div><Clapperboard className="mx-auto text-zinc-700" size={42} /><h3 className="mt-4 text-lg font-medium">Primero aprueba tus tomas</h3><p className="mt-2 max-w-md text-sm leading-6 text-zinc-500">El editor usa las tomas aprobadas y las organiza según el libreto. Regresa a Grabar, aprueba al menos una y vuelve aquí.</p></div></div></div> : <>
-        <div className="grid gap-5 xl:grid-cols-[340px_minmax(0,1fr)]">
-          <aside className="space-y-4">
-            <div className="rounded-3xl border border-white/8 bg-white/[.03] p-5">
-              <p className="text-[10px] font-bold uppercase tracking-[.18em] text-zinc-500">1. Material</p>
-              <select value={sessionId} onChange={(event) => { setSessionId(event.target.value); setJob(null); }} className="mt-3 w-full rounded-xl border border-white/10 bg-[#111521] px-3 py-3 text-sm outline-none">{available.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select>
-              <div className="mt-4 grid grid-cols-2 gap-2"><div className="rounded-xl bg-black/20 p-3"><strong className="block text-lg">{approvedScenes.length}</strong><span className="text-[10px] text-zinc-500">escenas aprobadas</span></div><div className="rounded-xl bg-black/20 p-3"><strong className="block text-lg">{approvedTakes.length}</strong><span className="text-[10px] text-zinc-500">tomas en montaje</span></div></div>
-            </div>
-            <div className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><p className="text-[10px] font-bold uppercase tracking-[.18em] text-zinc-500">2. Instrucción al director</p><textarea value={objective} onChange={(event) => setObjective(event.target.value)} rows={6} className="mt-3 w-full resize-none rounded-xl border border-white/10 bg-black/25 p-4 text-sm leading-6 outline-none focus:border-violet-400/40" placeholder="Explícale qué quieres conseguir con este video…" /><p className="mt-2 text-[10px] leading-4 text-zinc-600">El libreto conserva prioridad sobre las decisiones automáticas.</p></div>
-          </aside>
+  if (!available.length) return <section className="overflow-hidden rounded-3xl border border-white/8 bg-[#0b0e16]"><div className="flex items-center justify-between border-b border-white/8 px-4 py-3"><button onClick={props.onBack} className="flex items-center gap-2 text-xs text-zinc-400"><ChevronLeft size={16} />Volver</button><span className="text-xs font-medium">Editor de video</span><span className="rounded-full bg-amber-300/10 px-3 py-1 text-[10px] text-amber-200">Sin material</span></div><div className="grid min-h-[620px] place-items-center p-6 text-center"><div className="max-w-xl"><span className="mx-auto grid h-16 w-16 place-items-center rounded-3xl bg-violet-400/10 text-violet-200"><UploadCloud size={28} /></span><h2 className="mt-5 text-2xl font-semibold">Añade tu primer video</h2><p className="mt-3 text-sm leading-6 text-zinc-500">Crea una producción, sube o graba tus tomas y aprueba las que quieres usar. Después volverás aquí para editarlas visualmente.</p><button onClick={props.onBack} className="mt-6 inline-flex items-center gap-2 rounded-2xl bg-violet-500 px-5 py-3 text-sm font-semibold"><Plus size={17} />Añadir material</button><div className="mt-8 grid grid-cols-3 gap-2 text-[10px] text-zinc-500"><span className="rounded-xl bg-white/[.03] p-3">1 · Sube</span><span className="rounded-xl bg-white/[.03] p-3">2 · Personaliza</span><span className="rounded-xl bg-white/[.03] p-3">3 · Exporta</span></div></div></div></section>;
 
-          <div className="space-y-5">
-            <div><div className="mb-3 flex items-end justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">3. Estilo visual</p><h3 className="mt-1 text-xl font-semibold">Escoge cómo se va a sentir</h3></div><span className="hidden text-xs text-zinc-600 sm:block">Los ejemplos son una vista del lenguaje visual</span></div>
-              <StyleGallery value={style} onChange={setStyle} />
-            </div>
+  return <section className="overflow-hidden rounded-2xl border border-white/8 bg-[#0a0c12] shadow-2xl sm:rounded-3xl">
+    <header className="flex flex-wrap items-center gap-3 border-b border-white/8 bg-[#0d1018] px-3 py-2.5 sm:px-4">
+      <button onClick={props.onBack} className="grid h-9 w-9 place-items-center rounded-xl text-zinc-500 hover:bg-white/5 hover:text-white"><ChevronLeft size={18} /></button>
+      <div className="min-w-0"><p className="truncate text-sm font-medium">{selectedSession?.title}</p><p className="text-[9px] text-zinc-600">Guardado automáticamente</p></div>
+      <select value={sessionId} onChange={(event) => { setSessionId(event.target.value); setJob(null); }} className="ml-auto max-w-[170px] rounded-xl border border-white/8 bg-white/5 px-3 py-2 text-[11px] text-zinc-300 outline-none">{available.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select>
+      <span className="hidden rounded-xl border border-white/8 px-3 py-2 text-[10px] text-zinc-500 sm:inline">9:16 · 1080p</span>
+      {ready ? <a href={previewSrc} className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-black"><Download size={14} />Exportar</a> : <button onClick={job ? render : plan} disabled={busy !== ""} className="flex items-center gap-2 rounded-xl bg-violet-500 px-3 py-2 text-xs font-semibold disabled:opacity-50">{busy ? <LoaderCircle className="animate-spin" size={14} /> : <Sparkles size={14} />}{busy === "render" ? "Exportando…" : job ? "Renderizar" : "Editar con IA"}</button>}
+    </header>
 
-            <div className="rounded-3xl border border-cyan-400/15 bg-cyan-400/[.035] p-5"><div className="flex items-center gap-2"><SlidersHorizontal className="text-cyan-300" size={18} /><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-cyan-300">Ajuste profesional</p><h3 className="mt-1 font-medium">Personaliza cómo se ejecutará el estilo</h3></div></div><div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-5"><label className="text-[10px] text-zinc-500">Tamaño de subtítulo<input type="range" min="38" max="100" value={settings.subtitleSize} onChange={(event) => setSettings({ ...settings, subtitleSize: Number(event.target.value) })} className="mt-2 w-full accent-violet-500" /><span className="mt-1 block text-xs text-zinc-300">{settings.subtitleSize}px</span></label><label className="text-[10px] text-zinc-500">Posición<select value={settings.subtitlePosition} onChange={(event) => setSettings({ ...settings, subtitlePosition: event.target.value as typeof settings.subtitlePosition })} className="mt-2 w-full rounded-xl border border-white/10 bg-[#111521] px-3 py-2 text-xs text-zinc-200"><option value="top">Arriba</option><option value="center">Centro</option><option value="bottom">Abajo</option></select></label><label className="text-[10px] text-zinc-500">Corte de silencios<input type="range" min="350" max="1500" step="50" value={settings.silenceThresholdMs} onChange={(event) => setSettings({ ...settings, silenceThresholdMs: Number(event.target.value) })} className="mt-2 w-full accent-violet-500" /><span className="mt-1 block text-xs text-zinc-300">{(settings.silenceThresholdMs / 1000).toFixed(2)} s</span></label><label className="text-[10px] text-zinc-500">Transición<select value={settings.transition} onChange={(event) => setSettings({ ...settings, transition: event.target.value as typeof settings.transition })} className="mt-2 w-full rounded-xl border border-white/10 bg-[#111521] px-3 py-2 text-xs text-zinc-200"><option value="cut">Corte</option><option value="fade">Fundido</option><option value="dissolve">Disolvencia</option></select></label><label className="text-[10px] text-zinc-500">Golpe sonoro<input type="range" min="0" max="1" step="0.05" value={settings.soundEffectVolume} onChange={(event) => setSettings({ ...settings, soundEffectVolume: Number(event.target.value) })} className="mt-2 w-full accent-violet-500" /><span className="mt-1 block text-xs text-zinc-300">{Math.round(settings.soundEffectVolume * 100)}%</span></label></div><p className="mt-4 text-[10px] leading-4 text-zinc-500">Estos valores viajan al contrato y modifican el render final: no son una vista decorativa.</p></div>
+    <div className="grid min-h-[670px] lg:grid-cols-[78px_250px_minmax(320px,1fr)_260px]">
+      <nav className="order-2 flex overflow-x-auto border-t border-white/8 bg-[#0d1018] p-1.5 lg:order-none lg:flex-col lg:border-r lg:border-t-0 lg:p-2">
+        <ToolButton active={tool === "media"} icon={Film} label="Medios" onClick={() => setTool("media")} />
+        <ToolButton active={tool === "styles"} icon={WandSparkles} label="Estilos" onClick={() => setTool("styles")} />
+        <ToolButton active={tool === "text"} icon={Type} label="Texto" onClick={() => setTool("text")} />
+        <ToolButton active={tool === "effects"} icon={Zap} label="Efectos" onClick={() => setTool("effects")} />
+        <ToolButton active={tool === "audio"} icon={Volume2} label="Audio" onClick={() => setTool("audio")} />
+      </nav>
 
-            <div className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><div className="flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-cyan-300">4. Herramientas</p><h3 className="mt-1 font-medium">Qué debe aplicar el motor</h3></div><Gauge className="text-zinc-600" size={20} /></div><div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">{TOOLS.map((tool) => { const Icon = tool.icon; const enabled = options[tool.key]; return <button key={tool.key} onClick={() => setOptions({ ...options, [tool.key]: !enabled })} className={`flex items-start gap-3 rounded-2xl border p-3 text-left ${enabled ? "border-emerald-400/20 bg-emerald-400/7" : "border-white/7 bg-black/15"}`}><span className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl ${enabled ? "bg-emerald-400 text-black" : "bg-white/5 text-zinc-600"}`}><Icon size={16} /></span><span><strong className="block text-xs font-medium">{tool.title}</strong><small className="mt-1 block leading-4 text-zinc-600">{tool.text}</small></span></button>; })}<div className="flex items-start gap-3 rounded-2xl border border-dashed border-white/8 p-3 opacity-55"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-white/5 text-zinc-500"><ImageIcon size={16} /></span><span><strong className="block text-xs">B-roll e imágenes</strong><small className="mt-1 block leading-4 text-zinc-600">Visible; se activa al conectar la biblioteca de recursos.</small></span></div><div className="flex items-start gap-3 rounded-2xl border border-dashed border-white/8 p-3 opacity-55"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-white/5 text-zinc-500"><Music2 size={16} /></span><span><strong className="block text-xs">Música</strong><small className="mt-1 block leading-4 text-zinc-600">Pendiente de que elijas pistas con licencia.</small></span></div></div></div>
+      <aside className="order-3 max-h-[430px] overflow-y-auto border-t border-white/8 bg-[#0c0f17] p-4 lg:order-none lg:max-h-none lg:border-r lg:border-t-0">
+        {tool === "media" && <><PanelTitle icon={Layers3} title="Tus escenas" text={`${approvedTakes.length} clips listos`} /><button onClick={props.onBack} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-violet-400/25 bg-violet-400/5 px-3 py-3 text-xs text-violet-200"><Plus size={15} />Añadir material</button><div className="mt-4 grid grid-cols-2 gap-2">{approvedTakes.map((take, index) => <button key={take.id} onClick={() => setSelectedTakeId(take.id)} className={`overflow-hidden rounded-xl border text-left ${selectedTake?.id === take.id ? "border-violet-400" : "border-white/8"}`}><div className="relative aspect-[9/12] bg-black"><video src={`/api/media/${take.id}`} muted preload="metadata" className="h-full w-full object-cover" /><span className="absolute bottom-1 right-1 rounded bg-black/75 px-1.5 py-0.5 text-[8px]">{seconds(take.durationMs)}</span></div><p className="truncate px-2 py-2 text-[9px] text-zinc-400">{approvedScenes[index]?.title || `Clip ${index + 1}`}</p></button>)}</div></>}
+        {tool === "styles" && <><PanelTitle icon={WandSparkles} title="Estilos" text="Cambia toda la edición" /><div className="mt-4 space-y-2">{EDITOR_STYLES.map((item) => <button key={item.id} onClick={() => setStyle(item.id)} className={`flex w-full items-center gap-3 rounded-xl border p-2.5 text-left ${style === item.id ? "border-violet-400/40 bg-violet-400/10" : "border-white/7 bg-black/15"}`}><span className="h-12 w-9 shrink-0 rounded-lg" style={{ background: `linear-gradient(145deg,${item.palette[0]},${item.palette[1]})` }} /><span className="min-w-0"><strong className="block truncate text-xs">{item.name}</strong><small className="mt-1 block truncate text-[9px] text-zinc-600">{item.reference}</small></span>{style === item.id && <Check className="ml-auto text-violet-300" size={14} />}</button>)}</div></>}
+        {tool === "text" && <><PanelTitle icon={Captions} title="Subtítulos" text="Legibles y sincronizados" /><div className="mt-4 space-y-4"><Toggle enabled={options.captions} label="Subtítulos automáticos" detail="Usa el libreto de cada escena" onChange={() => setOptions({ ...options, captions: !options.captions })} /><Range label="Tamaño" value={settings.subtitleSize} min={38} max={100} suffix="px" onChange={(value) => setSettings({ ...settings, subtitleSize: value })} /><Select label="Posición" value={settings.subtitlePosition} onChange={(value) => setSettings({ ...settings, subtitlePosition: value as typeof settings.subtitlePosition })} options={[['top','Arriba'],['center','Centro'],['bottom','Abajo']]} /><Toggle enabled={options.labels} label="Título inicial" detail="Muestra el nombre del proyecto" onChange={() => setOptions({ ...options, labels: !options.labels })} /></div></>}
+        {tool === "effects" && <><PanelTitle icon={Zap} title="Efectos" text="Movimiento sin complicaciones" /><div className="mt-4 space-y-3"><Toggle enabled={options.deadAir} label="Cortar silencios" detail="Elimina pausas largas" onChange={() => setOptions({ ...options, deadAir: !options.deadAir })} />{options.deadAir && <Range label="Pausa máxima" value={settings.silenceThresholdMs} min={350} max={1500} step={50} suffix=" ms" onChange={(value) => setSettings({ ...settings, silenceThresholdMs: value })} />}<Toggle enabled={options.transitions} label="Transiciones" detail="Entre escenas" onChange={() => setOptions({ ...options, transitions: !options.transitions })} />{options.transitions && <Select label="Tipo" value={settings.transition} onChange={(value) => setSettings({ ...settings, transition: value as typeof settings.transition })} options={[['cut','Corte'],['fade','Fundido'],['dissolve','Disolvencia']]} />}<div className="rounded-xl border border-dashed border-white/8 p-3 opacity-60"><p className="flex items-center gap-2 text-xs"><ImageIcon size={14} />B-roll e imágenes</p><small className="mt-1 block text-[9px] text-zinc-600">Se habilitará al conectar la biblioteca visual.</small></div></div></>}
+        {tool === "audio" && <><PanelTitle icon={Volume2} title="Audio" text="Voz clara y golpes precisos" /><div className="mt-4 space-y-4"><Toggle enabled={options.soundEffects} label="Efectos sonoros" detail="En cambios importantes" onChange={() => setOptions({ ...options, soundEffects: !options.soundEffects })} />{options.soundEffects && <Range label="Intensidad" value={Math.round(settings.soundEffectVolume * 100)} min={0} max={100} suffix="%" onChange={(value) => setSettings({ ...settings, soundEffectVolume: value / 100 })} />}<div className="rounded-xl border border-dashed border-white/8 p-3 opacity-60"><p className="flex items-center gap-2 text-xs"><Music2 size={14} />Música</p><small className="mt-1 block text-[9px] text-zinc-600">Pendiente de pistas con licencia.</small></div></div></>}
+      </aside>
 
-            {!job ? <button onClick={plan} disabled={busy !== "" || !sessionId} className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 to-cyan-500 px-5 py-4 text-sm font-semibold disabled:opacity-40">{busy === "plan" ? <LoaderCircle className="animate-spin" size={18} /> : <Sparkles size={18} />}Crear plan de edición</button> : <div className="rounded-3xl border border-violet-400/20 bg-violet-400/7 p-5"><div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Trabajo de edición</p><h3 className="mt-1 font-medium">{selectedSession?.title} · {selectedStyle.name}</h3><p className="mt-1 text-xs text-zinc-500">{job.stage || "Plan editorial listo"}</p></div><span className={`rounded-full px-3 py-1.5 text-xs ${job.status === "ready" ? "bg-emerald-400/15 text-emerald-300" : job.status === "failed" ? "bg-red-400/15 text-red-300" : "bg-violet-400/15 text-violet-200"}`}>{job.status === "ready" ? "Verificado" : job.status === "failed" ? "Requiere corrección" : busy === "render" ? "Procesando" : "Plan listo"}</span></div><div className="mt-5 h-2 overflow-hidden rounded-full bg-white/8"><div className="h-full bg-gradient-to-r from-violet-500 to-cyan-400 transition-all duration-500" style={{ width: `${Math.max(2, Number(job.progress || 0))}%` }} /></div><div className="mt-2 flex justify-between text-[10px] text-zinc-600"><span>{job.stage}</span><span>{job.progress || 0}%</span></div>{job.error && <p className="mt-4 rounded-xl bg-red-500/10 p-3 text-xs text-red-200">{job.error}</p>}{job.status === "ready" ? <div className="mt-5 grid gap-4 lg:grid-cols-[220px_1fr]"><video src={job.resultUrl || `/api/editor/output/${job.id}`} controls playsInline className="aspect-[9/16] w-full rounded-2xl bg-black object-contain" /><div className="flex flex-col justify-center"><p className="flex items-center gap-2 text-sm font-medium text-emerald-300"><Check size={16} />MP4 renderizado y aprobado</p><p className="mt-2 text-xs leading-5 text-zinc-500">{job.resultMetadata?.duration_seconds}s · 1080×1920 · {job.resultMetadata?.caption_count || 0} subtítulos · {job.resultMetadata?.removed_silence_seconds || 0}s de silencio removido.</p><a href={job.resultUrl || `/api/editor/output/${job.id}`} className="mt-4 inline-flex w-fit items-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-semibold text-black"><Download size={16} />Descargar video</a></div></div> : <div className="mt-5 flex flex-col gap-2 sm:flex-row"><button onClick={render} disabled={busy !== ""} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-semibold text-black disabled:opacity-40">{busy === "render" ? <LoaderCircle className="animate-spin" size={17} /> : <Film size={17} />}{busy === "render" ? "Editando video…" : job.status === "failed" ? "Corregir y repetir render" : "Aprobar y renderizar"}</button><button onClick={() => setJob(null)} disabled={busy !== ""} className="rounded-xl border border-white/10 px-4 py-3 text-sm text-zinc-400">Cambiar estilo</button></div>}</div>}
+      <main className="order-1 flex min-h-[540px] flex-col bg-[#07090e] lg:order-none">
+        <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
+          <div className="relative aspect-[9/16] h-[430px] max-h-[58vh] overflow-hidden rounded-2xl border border-white/10 bg-black shadow-[0_30px_100px_rgba(0,0,0,.65)] sm:h-[520px]">
+            {previewSrc ? <video key={previewSrc} ref={videoRef} src={previewSrc} controls={ready} playsInline preload="metadata" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} className="h-full w-full object-contain" /> : <div className="grid h-full place-items-center text-zinc-700"><Clapperboard size={42} /></div>}
+            {!ready && options.captions && <div className={`pointer-events-none absolute inset-x-5 flex justify-center ${settings.subtitlePosition === "top" ? "top-[12%]" : settings.subtitlePosition === "center" ? "top-1/2 -translate-y-1/2" : "bottom-[10%]"}`}><span className="rounded-lg px-3 py-2 text-center font-black shadow-xl" style={{ color: selectedStyle.subtitle.text, backgroundColor: selectedStyle.subtitle.box, fontSize: `${Math.max(15, settings.subtitleSize * .3)}px`, textTransform: selectedStyle.subtitle.uppercase ? "uppercase" : "none" }}>{selectedStyle.caption}</span></div>}
+            {!ready && <span className="absolute left-3 top-3 rounded-full bg-black/70 px-2.5 py-1 text-[8px] text-zinc-300">VISTA PREVIA</span>}
           </div>
         </div>
-        <div className="grid gap-4 md:grid-cols-2"><div className="rounded-3xl border border-white/8 bg-white/[.025] p-5"><p className="flex items-center gap-2 text-sm font-medium"><Clapperboard size={16} className="text-violet-300" />Línea de tiempo prevista</p><div className="mt-4 flex gap-1 overflow-hidden rounded-xl">{approvedScenes.map((scene, index) => <div key={scene.id} className="min-w-12 flex-1 p-2 text-center text-[9px]" style={{ backgroundColor: `${selectedStyle.palette[index % selectedStyle.palette.length]}33`, color: selectedStyle.palette[index % selectedStyle.palette.length] }}>{index + 1}<span className="mt-1 block truncate text-[8px] text-zinc-500">{scene.title}</span></div>)}</div></div><div className="rounded-3xl border border-white/8 bg-white/[.025] p-5"><p className="flex items-center gap-2 text-sm font-medium"><Sparkles size={16} className="text-cyan-300" />Clips automáticos tipo Opus</p><p className="mt-2 text-xs leading-5 text-zinc-500">El espacio ya está contemplado: puntuará ganchos, ideas completas y potencial de retención para sacar clips verticales. Se habilita después de validar el primer render largo.</p><span className="mt-3 inline-flex items-center gap-1 text-[10px] text-zinc-600">Siguiente fase <ChevronRight size={12} /></span></div></div>
-      </>}
-      {error && <div className="rounded-2xl border border-red-400/20 bg-red-400/8 p-4 text-sm text-red-100">{error}</div>}
-    </section>
-  );
+        <div className="flex items-center justify-center gap-4 border-t border-white/8 px-4 py-3"><button onClick={togglePlayback} disabled={!previewSrc} className="grid h-9 w-9 place-items-center rounded-full bg-white text-black disabled:opacity-30">{playing ? <Pause size={15} fill="currentColor" /> : <Play size={15} fill="currentColor" />}</button><span className="text-[10px] text-zinc-600">{selectedTake ? seconds(selectedTake.durationMs) : ready ? `${job.resultMetadata?.duration_seconds || 0}s` : "0:00"}</span><span className="rounded-lg bg-white/5 px-2 py-1 text-[9px] text-zinc-500">{selectedStyle.name}</span></div>
+      </main>
+
+      <aside className="order-4 border-t border-white/8 bg-[#0c0f17] p-4 lg:order-none lg:border-l lg:border-t-0">
+        <PanelTitle icon={Settings2} title="Director IA" text="Describe el resultado" />
+        <textarea value={objective} onChange={(event) => { setObjective(event.target.value); setJob(null); }} rows={5} className="mt-4 w-full resize-none rounded-xl border border-white/8 bg-black/20 p-3 text-xs leading-5 text-zinc-300 outline-none focus:border-violet-400/40" placeholder="Ej. Quiero un reel energético, directo y con pausas mínimas…" />
+        <div className="mt-4 rounded-xl border border-white/7 bg-black/15 p-3"><p className="text-[10px] font-medium text-zinc-300">Aplicado al render</p><div className="mt-3 space-y-2 text-[9px] text-zinc-500"><p className="flex justify-between"><span>Estilo</span><b className="text-zinc-300">{selectedStyle.name}</b></p><p className="flex justify-between"><span>Escenas</span><b className="text-zinc-300">{approvedScenes.length}</b></p><p className="flex justify-between"><span>Silencios</span><b className="text-zinc-300">{options.deadAir ? `${settings.silenceThresholdMs} ms` : "No"}</b></p><p className="flex justify-between"><span>Subtítulos</span><b className="text-zinc-300">{options.captions ? "Sí" : "No"}</b></p></div></div>
+        {job && <div className={`mt-4 rounded-xl border p-3 ${ready ? "border-emerald-400/20 bg-emerald-400/6" : job.status === "failed" ? "border-red-400/20 bg-red-400/6" : "border-violet-400/20 bg-violet-400/6"}`}><div className="flex items-center justify-between text-[10px]"><span>{ready ? "Exportación verificada" : job.status === "failed" ? "Requiere corrección" : job.stage}</span><b>{job.progress || 0}%</b></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/8"><div className="h-full bg-gradient-to-r from-violet-500 to-cyan-400 transition-all" style={{ width: `${Math.max(2, Number(job.progress || 0))}%` }} /></div>{job.error && <p className="mt-2 text-[9px] leading-4 text-red-200">{job.error}</p>}</div>}
+        {!ready && <button onClick={job ? render : plan} disabled={busy !== ""} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-500 to-indigo-500 px-4 py-3 text-xs font-semibold disabled:opacity-40">{busy ? <LoaderCircle className="animate-spin" size={15} /> : job ? <Film size={15} /> : <Sparkles size={15} />}{busy === "plan" ? "Creando edición…" : busy === "render" ? "Renderizando…" : job ? "Renderizar MP4" : "Crear edición"}</button>}
+        {ready && <a href={previewSrc} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-white px-4 py-3 text-xs font-semibold text-black"><Download size={15} />Descargar MP4</a>}
+        {error && <p className="mt-4 rounded-xl bg-red-400/8 p-3 text-[10px] leading-4 text-red-200">{error}</p>}
+      </aside>
+    </div>
+
+    <div className="border-t border-white/8 bg-[#0b0e15] p-3 sm:p-4">
+      <div className="mb-3 flex items-center justify-between"><div><p className="text-[10px] font-medium">Línea de tiempo</p><p className="text-[8px] text-zinc-600">Haz clic en un clip para verlo</p></div><span className="rounded-lg bg-white/5 px-2 py-1 text-[9px] text-zinc-500">{approvedTakes.length} clips</span></div>
+      <div className="grid grid-cols-[58px_minmax(0,1fr)] gap-x-2 gap-y-1.5 text-[8px] text-zinc-600"><span className="pt-3">VIDEO</span><div className="flex min-w-0 gap-1 overflow-x-auto">{approvedTakes.map((take, index) => <button key={take.id} onClick={() => setSelectedTakeId(take.id)} className={`min-w-[100px] flex-1 overflow-hidden rounded-lg border ${selectedTake?.id === take.id ? "border-violet-400 bg-violet-400/15" : "border-white/8 bg-white/[.03]"}`}><div className="flex items-center gap-2 p-2"><span className="grid h-7 w-7 place-items-center rounded bg-violet-500/20 text-violet-200">{index + 1}</span><span className="min-w-0 text-left"><strong className="block truncate text-[9px] text-zinc-300">{approvedScenes[index]?.title}</strong><small>{seconds(take.durationMs)}</small></span></div></button>)}</div><span className="pt-2">TEXTO</span><div className="flex gap-1 overflow-hidden">{options.captions && approvedScenes.map((scene) => <span key={scene.id} className="min-w-[100px] flex-1 truncate rounded-md bg-cyan-400/10 px-2 py-2 text-[8px] text-cyan-200">{scene.script}</span>)}</div><span className="pt-2">AUDIO</span><div className="h-7 rounded-md bg-[repeating-linear-gradient(90deg,rgba(167,139,250,.25)_0_2px,transparent_2px_6px)] opacity-70" /></div>
+    </div>
+  </section>;
 }
+
+function PanelTitle({ icon: Icon, title, text }: { icon: typeof Film; title: string; text: string }) { return <div className="flex items-center gap-3"><span className="grid h-9 w-9 place-items-center rounded-xl bg-white/5 text-violet-300"><Icon size={16} /></span><span><strong className="block text-sm font-medium">{title}</strong><small className="text-[9px] text-zinc-600">{text}</small></span></div>; }
+function Range({ label, value, min, max, step = 1, suffix, onChange }: { label: string; value: number; min: number; max: number; step?: number; suffix: string; onChange: (value: number) => void }) { return <label className="block text-[10px] text-zinc-500"><span className="flex justify-between"><span>{label}</span><b className="text-zinc-300">{value}{suffix}</b></span><input type="range" min={min} max={max} step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} className="mt-2 w-full accent-violet-500" /></label>; }
+function Select({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: Array<[string, string]> }) { return <label className="block text-[10px] text-zinc-500">{label}<select value={value} onChange={(event) => onChange(event.target.value)} className="mt-2 w-full rounded-xl border border-white/8 bg-[#111521] px-3 py-2.5 text-xs text-zinc-300 outline-none">{options.map(([key, name]) => <option key={key} value={key}>{name}</option>)}</select></label>; }
