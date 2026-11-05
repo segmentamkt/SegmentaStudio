@@ -153,6 +153,8 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
   const subtitleUppercase = flag(requestedSubtitle.uppercase, style.subtitle.uppercase, "Las mayúsculas de subtítulos");
   const maxWords = bounded(requestedCaptions.max_words_per_card, style.subtitle.maxWords, 2, 8, "Las palabras por subtítulo");
   const silenceThresholdMs = bounded(requestedExecution.silenceThresholdMs ?? requestedDeadAir.threshold_ms, style.execution.silenceThresholdMs, 350, 1_500, "El umbral de silencio");
+  const noiseDb = bounded(requestedDeadAir.noise_db, -30, -35, -25, "La sensibilidad de silencio");
+  if (![-35, -30, -25].includes(noiseDb)) throw new Error("La sensibilidad de silencio no es válida.");
   const soundEffectVolume = bounded(requestedExecution.soundEffectVolume, style.execution.soundEffectVolume, 0, 1, "El volumen de efectos");
   const soundPreset = oneOf(requestedExecution.soundPreset, "auto", ["auto", "none", "soft", "kinetic", "cinematic", "pop"] as const, "El tipo de efecto sonoro");
   const zoomPercent = bounded(requestedExecution.zoomPercent, style.execution.zoomPercent, 0, 10, "El acercamiento");
@@ -167,6 +169,9 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
     execution: { ...style.execution, silenceThresholdMs, soundEffectVolume, soundPreset, zoomPercent, contrast, saturation, framing, titleCards },
   };
   const captionsEnabled = flag(requestedCaptions.enabled, true, "Los subtítulos");
+  if (captionsEnabled && clips.some((clip) => !clip.transcript)) {
+    throw new Error("Falta el texto hablado de una o más tomas para generar todos los subtítulos.");
+  }
   const removeDeadAir = flag(requestedDeadAir.remove, true, "El corte de silencios");
   const transitions = flag(requestedEffects.transitions, true, "Las transiciones");
   const soundEffects = flag(requestedEffects.sound_effects, true, "Los efectos sonoros");
@@ -188,13 +193,13 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
     style_snapshot: styleSnapshot,
     target_duration_seconds: null,
     captions: { enabled: captionsEnabled, language: "es" as const, max_words_per_card: maxWords, emphasis: true },
-    dead_air: { remove: removeDeadAir, threshold_ms: silenceThresholdMs },
+    dead_air: { remove: removeDeadAir, threshold_ms: silenceThresholdMs, noise_db: noiseDb },
     effects: { transitions, sound_effects: soundEffects, labels, images_or_broll: false, music: false },
     quality_gates: {
       portrait: true,
       audio: true,
       captions: captionsEnabled,
-      effects: (transitions && transition !== "cut" && clips.length > 1) || (labels && (titleCards || clips.some((clip) => clip.label))),
+      effects: (transitions && transition !== "cut" && clips.length > 1) || (labels && (clips.some((clip) => clip.label) || (titleCards && !/^edici[oó]n de \d+ videos?$/i.test(String(dbSession.title))))),
     },
   };
   return applySkillProfilesToContract(baseContract, contract.skill_profiles);

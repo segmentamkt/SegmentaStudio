@@ -17,6 +17,7 @@ type EditSettings = {
   subtitleSize?: number;
   subtitlePosition?: "top" | "center" | "bottom";
   silenceThresholdMs?: number;
+  silenceNoiseDb?: number;
   transition?: "cut" | "fade" | "dissolve";
   soundEffectVolume?: number;
   soundPreset?: "auto" | "none" | "soft" | "kinetic" | "cinematic" | "pop";
@@ -91,6 +92,17 @@ export async function POST(request: Request) {
     const ordered = timeline ? timeline.filter((item) => item.included !== false).map((item) => ({ ...byTakeId.get(item.takeId)!, edit: item })) : source.map((item) => ({ ...item, edit: null as TimelineItem | null }));
     if (!ordered.length) return Response.json({ error: "Aprueba al menos una toma antes de planificar la edición." }, { status: 400 });
     if (ordered.length > 12) return Response.json({ error: "Este render cloud admite hasta 12 tomas aprobadas por edición." }, { status: 400 });
+    for (const { take, edit } of ordered) {
+      const duration = Number(take.duration_ms || 0) / 1000;
+      const start = edit?.trimStartSeconds ?? 0;
+      const end = edit?.trimEndSeconds ?? duration;
+      if (typeof start !== "number" || typeof end !== "number" || !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end > duration || end - start < .2) {
+        return Response.json({ error: "Revisa el inicio y el final del recorte de cada toma." }, { status: 400 });
+      }
+      if (edit && (typeof edit.transcript !== "string" || typeof edit.label !== "string" || edit.label.length > 120 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(edit.transcript + edit.label))) {
+        return Response.json({ error: "El texto o rótulo de una toma no es válido." }, { status: 400 });
+      }
+    }
     if (ordered.reduce((total, item) => total + Number(item.take?.duration_ms || 0), 0) > 120_000) return Response.json({ error: "Este render cloud procesa hasta 2 minutos de material por edición." }, { status: 400 });
     if (ordered.some((item) => String(item.edit?.transcript ?? item.scene.script ?? "").length > 1_000) || ordered.reduce((total, item) => total + String(item.edit?.transcript ?? item.scene.script ?? "").length, 0) > 5_000) return Response.json({ error: "Acorta el texto hablado: hasta 1.000 caracteres por escena y 5.000 en total." }, { status: 400 });
     const normalizedOptions = {
@@ -139,7 +151,7 @@ export async function POST(request: Request) {
       style_snapshot: styleSnapshot,
       target_duration_seconds: null,
       captions: { enabled: normalizedOptions.captions, language: "es", max_words_per_card: styleSnapshot.subtitle.maxWords, emphasis: true },
-      dead_air: { remove: normalizedOptions.deadAir, threshold_ms: styleSnapshot.execution.silenceThresholdMs },
+      dead_air: { remove: normalizedOptions.deadAir, threshold_ms: styleSnapshot.execution.silenceThresholdMs, noise_db: [-35, -30, -25].includes(Number(settings.silenceNoiseDb)) ? Number(settings.silenceNoiseDb) : -30 },
       effects: {
         transitions: normalizedOptions.transitions,
         sound_effects: normalizedOptions.soundEffects,

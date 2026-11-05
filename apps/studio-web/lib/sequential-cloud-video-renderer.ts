@@ -25,8 +25,9 @@ type EditContract = {
     };
   };
   captions: { enabled: boolean; max_words_per_card: number };
-  dead_air: { remove: boolean; threshold_ms: number };
+  dead_air: { remove: boolean; threshold_ms: number; noise_db?: number };
   effects: { transitions: boolean; sound_effects: boolean; labels: boolean };
+  quality_gates?: { effects?: boolean };
 };
 type Analysis = { duration: number; ranges: Range[]; removed: number; hasAudio: boolean };
 type Progress = (progress: number, stage: string) => Promise<void>;
@@ -43,7 +44,7 @@ type RenderInput = {
 const safeSeconds = (value: number) => Math.max(0, Number.isFinite(value) ? value : 0);
 const fixed = (value: number) => safeSeconds(value).toFixed(3);
 
-export async function analyzeSequentialClip(command: string, url: string, durationHint: number, remove: boolean, thresholdMs: number): Promise<Analysis> {
+export async function analyzeSequentialClip(command: string, url: string, durationHint: number, remove: boolean, thresholdMs: number, noiseDb = -35): Promise<Analysis> {
   const threshold = Math.max(.35, thresholdMs / 1000);
   const limit = Math.min(120, Math.max(1, safeSeconds(durationHint) + .5));
   const events: Range[] = [];
@@ -52,7 +53,7 @@ export async function analyzeSequentialClip(command: string, url: string, durati
   const result = await capture(command, [
     "-hide_banner", "-nostdin", "-nostats", "-threads", "1", "-filter_threads", "1", "-i", url,
     "-map", "0:a:0?", "-vn", "-sn", "-dn",
-    ...(remove ? ["-af", `silencedetect=noise=-35dB:d=${threshold}`] : []),
+    ...(remove ? ["-af", `silencedetect=noise=${[-35, -30, -25].includes(noiseDb) ? noiseDb : -30}dB:d=${threshold}`] : []),
     "-t", fixed(limit), "-f", "null", "-",
   ], {
     timeoutMs: Math.min(45_000, 15_000 + durationHint * 3_000),
@@ -252,7 +253,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
   await input.onProgress(14, "Analizando voz y silencios");
   const analyses: Analysis[] = [];
   for (const [index, clip] of input.contract.clips.entries()) {
-    const result = await analyzeSequentialClip(command, input.signedUrls[index], clip.duration_seconds, input.contract.dead_air.remove, input.contract.dead_air.threshold_ms);
+    const result = await analyzeSequentialClip(command, input.signedUrls[index], clip.duration_seconds, input.contract.dead_air.remove, input.contract.dead_air.threshold_ms, input.contract.dead_air.noise_db ?? -30);
     analyses.push(trimSequentialAnalysis(result, clip));
     await input.onProgress(14 + Math.round((index + 1) / input.contract.clips.length * 20), `Analizando toma ${index + 1} de ${input.contract.clips.length}`);
   }
@@ -299,7 +300,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
       zoom_percent: Math.max(0, Math.min(10, Number(input.contract.style_snapshot.execution?.zoomPercent || 0))),
       transition: transitionSeconds ? "fade" : "cut",
       transition_fallback: transitionSeconds > 0 && input.contract.style_snapshot.transition === "dissolve" ? "dip-to-black" : null,
-      release_gate: { passed: totalDuration > 0 && (!input.contract.captions.enabled || captions > 0) },
+      release_gate: { passed: totalDuration > 0 && (!input.contract.captions.enabled || captions > 0) && (!input.contract.quality_gates?.effects || effects > 0) },
     };
   } finally {
     await rm(directory, { recursive: true, force: true });

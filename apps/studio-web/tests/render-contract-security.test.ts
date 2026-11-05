@@ -154,3 +154,17 @@ test("rejects duplicate, foreign and invalid manual edits", () => {
   Object.assign(input.raw.clips[0], { trim_start_seconds: 8, trim_end_seconds: 8.1 });
   assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /0,2 segundos/);
 });
+
+test("does not silently export a partially captioned video", () => {
+  const input = fixture(2);
+  input.raw.clips[1].transcript = "";
+  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /Falta el texto hablado/);
+});
+
+test("only accepts the supported silence sensitivity levels", () => {
+  const input = fixture(2);
+  Object.assign(input.raw.dead_air, { noise_db: -25 });
+  assert.equal(normalizeRenderContract(input.raw, input.session, input.scenes, input.takes).dead_air.noise_db, -25);
+  Object.assign(input.raw.dead_air, { noise_db: -21 });
+  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /sensibilidad de silencio/);
+});
