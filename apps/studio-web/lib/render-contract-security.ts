@@ -70,6 +70,9 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
   const ownerId = text(dbSession.owner_id, "El dueño de la producción", 128);
   const rawSession = row(contract.session, "La producción del contrato");
   if (rawSession.id !== sessionId) throw new Error("El plan no pertenece a esta producción.");
+  const currentScript = text(dbSession.script, "El libreto de la producción", 6_000, true);
+  if (!currentScript) throw new Error("Sube el libreto completo antes de renderizar.");
+  if (rawSession.script !== currentScript) throw new Error("El libreto cambió. Vuelve a preparar la edición antes de renderizar.");
 
   const dbScenes = rowList(scenes, "Las escenas");
   const dbTakes = rowList(takes, "Las tomas");
@@ -101,6 +104,7 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
   const sceneByTake = new Map(selectedScenes.map((scene) => [scene.selected_take_id, scene]));
   let knownDurationMs = 0;
   let captionCharacters = 0;
+  let cueCharacters = 0;
   const clips = rawClips.map((requestedClip, index) => {
     const scene = sceneByTake.get(rawIds[index]);
     if (!scene) throw new Error("El plan cambió o contiene una toma no autorizada. Vuelve a crear la edición.");
@@ -126,6 +130,17 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
     const trimStart = bounded(requestedClip.trim_start_seconds, 0, 0, Math.max(0, measuredMs / 1_000 - .2), "El inicio del recorte");
     const trimEnd = bounded(requestedClip.trim_end_seconds, measuredMs / 1_000, .2, measuredMs / 1_000, "El final del recorte");
     if (trimEnd - trimStart < .2) throw new Error("Cada toma debe conservar al menos 0,2 segundos.");
+    const rawCues = requestedClip.caption_cues ?? [];
+    if (!Array.isArray(rawCues) || rawCues.length > 100) throw new Error("Hay demasiados subtítulos temporizados en una toma.");
+    const captionCues = rowList(rawCues, "Los subtítulos temporizados").map((item) => {
+      const startSeconds = bounded(item.startSeconds, 0, 0, measuredMs / 1_000, "El inicio de un subtítulo");
+      const endSeconds = bounded(item.endSeconds, 0, 0, measuredMs / 1_000, "El final de un subtítulo");
+      if (endSeconds - startSeconds < .1) throw new Error("Un subtítulo temporizado no tiene duración válida.");
+      const cueText = text(item.text, "El texto de un subtítulo", 250);
+      cueCharacters += cueText.length;
+      if (cueCharacters > 5_000) throw new Error("Los subtítulos temporizados son demasiado largos.");
+      return { startSeconds, endSeconds, text: cueText };
+    });
     return {
       id: takeId,
       scene_id: sceneId,
@@ -136,6 +151,7 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
       trim_start_seconds: trimStart,
       trim_end_seconds: trimEnd,
       label: text(requestedClip.label ?? "", "El rótulo de una escena", 120, true),
+      caption_cues: captionCues,
     };
   });
 

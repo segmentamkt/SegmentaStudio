@@ -74,9 +74,9 @@ export async function POST(request: Request) {
       const sceneCount = hasSceneCount ? Number(payload.sceneCount) : 0;
       if (hasSceneCount && (!Number.isInteger(sceneCount) || sceneCount < 1 || sceneCount > 12)) return Response.json({ error: "Puedes subir hasta 12 videos por proyecto." }, { status: 400 });
       if (script.length > 6_000) return Response.json({ error: "El libreto admite hasta 6.000 caracteres." }, { status: 400 });
-      const providedScripts = script ? scriptScenes(script) : [];
-      if (sceneCount && providedScripts.length > sceneCount) return Response.json({ error: "Hay más fragmentos de libreto que videos seleccionados." }, { status: 400 });
-      const sceneScripts = sceneCount ? Array.from({ length: sceneCount }, (_, index) => providedScripts[index] || "") : scriptScenes(script);
+      // Uploaded clips may arrive in any order: the complete script is a reference,
+      // never a guessed transcript assigned to a file by its upload position.
+      const sceneScripts = sceneCount ? Array.from({ length: sceneCount }, () => "") : scriptScenes(script);
       if (sceneScripts.some((item) => item.length > 1_000)) return Response.json({ error: "Cada escena admite hasta 1.000 caracteres de libreto." }, { status: 400 });
       const sceneTitles = Array.isArray(payload.sceneTitles) ? payload.sceneTitles : [];
       const id = crypto.randomUUID();
@@ -92,6 +92,17 @@ export async function POST(request: Request) {
     }
     if (action === "complete_session") {
       const result = await supabase.from("kiko_recording_sessions").update({ status: "ready_for_edit", updated_at: new Date().toISOString() }).eq("id", clean(payload.sessionId)).eq("owner_id", user.userId).select().maybeSingle();
+      if (result.error) throw result.error;
+      if (!result.data) return Response.json({ error: "No encontramos esa producción." }, { status: 404 });
+      return Response.json({ session: toSession(result.data) });
+    }
+    if (action === "update_session_script") {
+      const sessionId = clean(payload.sessionId);
+      const script = clean(payload.script);
+      if (!script || script.length > 6_000) return Response.json({ error: "Sube o escribe un libreto de hasta 6.000 caracteres." }, { status: 400 });
+      const result = await supabase.from("kiko_recording_sessions")
+        .update({ script, updated_at: new Date().toISOString() })
+        .eq("id", sessionId).eq("owner_id", user.userId).select().maybeSingle();
       if (result.error) throw result.error;
       if (!result.data) return Response.json({ error: "No encontramos esa producción." }, { status: 404 });
       return Response.json({ session: toSession(result.data) });

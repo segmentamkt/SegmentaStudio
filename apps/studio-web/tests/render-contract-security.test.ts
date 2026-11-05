@@ -161,6 +161,25 @@ test("does not silently export a partially captioned video", () => {
   assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /Falta el texto hablado/);
 });
 
+test("keeps timed subtitles and rejects timestamps beyond the approved take", () => {
+  const input = fixture();
+  Object.assign(input.raw.clips[0], { caption_cues: [{ startSeconds: 1, endSeconds: 2.5, text: "Una idea clara" }] });
+  const output = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.deepEqual(output.clips[0].caption_cues, [{ startSeconds: 1, endSeconds: 2.5, text: "Una idea clara" }]);
+  Object.assign(input.raw.clips[0], { caption_cues: [{ startSeconds: 9, endSeconds: 11, text: "Fuera de toma" }] });
+  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /final de un subtítulo/);
+});
+
+test("requires the saved script and invalidates an older plan when it changes", () => {
+  const input = fixture();
+  input.session.script = "Nuevo libreto";
+  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /libreto cambió/);
+  input.raw.session.script = "Nuevo libreto";
+  assert.equal(normalizeRenderContract(input.raw, input.session, input.scenes, input.takes).session.script, "Nuevo libreto");
+  input.session.script = "";
+  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /libreto completo/);
+});
+
 test("only accepts the supported silence sensitivity levels", () => {
   const input = fixture(2);
   Object.assign(input.raw.dead_air, { noise_db: -25 });

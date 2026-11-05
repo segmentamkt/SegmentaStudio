@@ -8,9 +8,10 @@ import { MAX_RENDER_BYTES, uploadRenderedMp4 } from "./cloud-render-upload";
 import { capture } from "./cloud-video-renderer";
 import { buildSoundDesignGraph, planCutSoundCues } from "./sound-design";
 import { renderTextOverlay } from "./video-text-overlay";
+import { mapCaptionCues, type CaptionCue } from "./caption-cues";
 
 type Range = { start: number; end: number };
-type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string; trim_start_seconds?: number; trim_end_seconds?: number; label?: string };
+type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string; trim_start_seconds?: number; trim_end_seconds?: number; label?: string; caption_cues?: CaptionCue[] };
 type EditContract = {
   objective: string;
   session: { title: string };
@@ -206,10 +207,14 @@ export async function renderSequentialClip(input: {
   }
   if (contract.captions.enabled) {
     const position = contract.style_snapshot.subtitle.position === "top" ? "H*0.11" : contract.style_snapshot.subtitle.position === "center" ? "(H-h)/2" : "H-h-H*0.10";
-    const items = cards(contract.clips[index].transcript, contract.captions.max_words_per_card || 5, contract.style_snapshot.subtitle.uppercase);
-    for (const [cardIndex, text] of items.entries()) {
-      await addOverlay(text, duration * cardIndex / items.length, duration * (cardIndex + 1) / items.length, position);
-      captionCount += 1;
+    const clip = contract.clips[index];
+    const sourceCues = clip.caption_cues?.length ? clip.caption_cues : [{ startSeconds: 0, endSeconds: analysis.duration, text: clip.transcript }];
+    for (const cue of mapCaptionCues(sourceCues, analysis.ranges)) {
+      const items = cards(cue.text, contract.captions.max_words_per_card || 5, contract.style_snapshot.subtitle.uppercase);
+      for (const [cardIndex, text] of items.entries()) {
+        await addOverlay(text, cue.startSeconds + (cue.endSeconds - cue.startSeconds) * cardIndex / items.length, cue.startSeconds + (cue.endSeconds - cue.startSeconds) * (cardIndex + 1) / items.length, position);
+        captionCount += 1;
+      }
     }
   }
   let audioLabel = "abase";
@@ -266,6 +271,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
   try {
     const clips: string[] = [];
     let captions = 0;
+    let captionedClips = 0;
     let effects = 0;
     for (const [index, analysis] of analyses.entries()) {
       const path = join(directory, `clip-${index}.mp4`);
@@ -275,6 +281,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
       });
       clips.push(path);
       captions += rendered.captionCount;
+      if (rendered.captionCount > 0) captionedClips += 1;
       effects += rendered.cueCount + rendered.labelCount + (index > 0 && transitionSeconds > 0 ? 1 : 0);
       await input.onProgress(36 + Math.round((index + 1) / analyses.length * 42), `Editando toma ${index + 1} de ${analyses.length}`);
     }
@@ -300,7 +307,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
       zoom_percent: Math.max(0, Math.min(10, Number(input.contract.style_snapshot.execution?.zoomPercent || 0))),
       transition: transitionSeconds ? "fade" : "cut",
       transition_fallback: transitionSeconds > 0 && input.contract.style_snapshot.transition === "dissolve" ? "dip-to-black" : null,
-      release_gate: { passed: totalDuration > 0 && (!input.contract.captions.enabled || captions > 0) && (!input.contract.quality_gates?.effects || effects > 0) },
+      release_gate: { passed: totalDuration > 0 && (!input.contract.captions.enabled || captionedClips === input.contract.clips.length) && (!input.contract.quality_gates?.effects || effects > 0) },
     };
   } finally {
     await rm(directory, { recursive: true, force: true });

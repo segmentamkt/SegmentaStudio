@@ -3,6 +3,8 @@ import { getRequestUser, unauthorized } from "../../../lib/request-user";
 import { getEditorStyle } from "../../../lib/editor-presets";
 import { clean, toEditJob } from "../../../lib/studio-data";
 import { applySkillProfilesToContract } from "../../../lib/studio-skills";
+import { planFromScript } from "../../../lib/editorial-director";
+import type { CaptionCue } from "../../../lib/caption-cues";
 
 type EditOptions = {
   captions?: boolean;
@@ -30,6 +32,7 @@ type TimelineItem = {
   trimEndSeconds?: number;
   transcript?: string;
   label?: string;
+  captionCues?: CaptionCue[];
 };
 
 function bounded(value: unknown, fallback: number, min: number, max: number) {
@@ -72,6 +75,7 @@ export async function POST(request: Request) {
     if (session.error) throw session.error;
     if (!session.data) return Response.json({ error: "No encontramos esa producción." }, { status: 404 });
     if (String(session.data.title || "").length > 160 || String(session.data.script || "").length > 6_000) return Response.json({ error: "Acorta el título o el libreto de esta producción antes de editarla." }, { status: 400 });
+    if (!String(session.data.script || "").trim()) return Response.json({ error: "Sube o pega el libreto completo antes de preparar la edición." }, { status: 400 });
     const [scenes, takes] = await Promise.all([
       supabase.from("kiko_scenes").select("*").eq("session_id", sessionId).eq("owner_id", user.userId).order("position"),
       supabase.from("kiko_takes").select("*").eq("session_id", sessionId).eq("owner_id", user.userId).eq("status", "approved"),
@@ -101,6 +105,9 @@ export async function POST(request: Request) {
       }
       if (edit && (typeof edit.transcript !== "string" || typeof edit.label !== "string" || edit.label.length > 120 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(edit.transcript + edit.label))) {
         return Response.json({ error: "El texto o rótulo de una toma no es válido." }, { status: 400 });
+      }
+      if (edit?.captionCues !== undefined && (!Array.isArray(edit.captionCues) || edit.captionCues.length > 100 || edit.captionCues.some((cue) => !cue || typeof cue.text !== "string" || cue.text.length > 250 || typeof cue.startSeconds !== "number" || typeof cue.endSeconds !== "number" || !Number.isFinite(cue.startSeconds) || !Number.isFinite(cue.endSeconds) || cue.startSeconds < 0 || cue.endSeconds > duration || cue.endSeconds <= cue.startSeconds))) {
+        return Response.json({ error: "Los tiempos de subtítulos de una toma no son válidos." }, { status: 400 });
       }
     }
     if (ordered.reduce((total, item) => total + Number(item.take?.duration_ms || 0), 0) > 120_000) return Response.json({ error: "Este render cloud procesa hasta 2 minutos de material por edición." }, { status: 400 });
@@ -146,6 +153,7 @@ export async function POST(request: Request) {
         trim_start_seconds: edit?.trimStartSeconds ?? 0,
         trim_end_seconds: edit?.trimEndSeconds ?? Number(take.duration_ms || 0) / 1000,
         label: edit?.label ?? "",
+        caption_cues: edit?.captionCues ?? [],
       })),
       style: style.id,
       style_snapshot: styleSnapshot,
@@ -160,6 +168,7 @@ export async function POST(request: Request) {
         music: false,
       },
       quality_gates: { portrait: true, audio: true, captions: normalizedOptions.captions, effects: normalizedOptions.transitions || normalizedOptions.labels },
+      editorial_plan: planFromScript(String(session.data.script), ordered.map(({ scene, take, edit }) => ({ id: take.id, title: String(scene.title || ""), transcript: String(edit?.transcript ?? scene.script ?? "") }))),
     };
     const contractWithSkills = applySkillProfilesToContract(contract, payload.skillProfiles);
     const inserted = await supabase.from("kiko_edit_jobs").insert({

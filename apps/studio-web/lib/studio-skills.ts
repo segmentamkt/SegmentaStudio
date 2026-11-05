@@ -130,8 +130,8 @@ export const SKILL_CATALOG: SkillDefinition[] = [
   },
   {
     id: "subtitulos", name: "Subtítulos", icon: "💬", category: "texto", execution: "partial",
-    description: "Dibuja tarjetas de texto a partir del libreto de cada escena.",
-    capability: "El texto se superpone con reparto uniforme por toma; la sincronía palabra a palabra requiere alineación de voz.",
+    description: "Dibuja subtítulos por toma; acepta archivos SRT y VTT con tiempos.",
+    capability: "SRT y VTT conservan sus tiempos tras recortes y silencios. El texto sin tiempos se distribuye de forma aproximada; no hay alineación automática de voz.",
     defaultEnabled: true,
     defaultInstruction: "Subtítulos breves, legibles y ubicados lejos del rostro.",
     settings: [
@@ -151,9 +151,9 @@ export const SKILL_CATALOG: SkillDefinition[] = [
     settings: [{ key: "contrast", label: "Contraste", kind: "range", defaultValue: 1.04, min: 0.8, max: 1.3, step: 0.01 }],
   },
   {
-    id: "narrativa", name: "Narrativa", icon: "📖", category: "dirección", execution: "plan",
-    description: "Guarda la intención narrativa y respeta el orden de escenas aprobado.",
-    capability: "El contrato conserva el orden del libreto; una selección semántica automática de tomas aún no existe en la nube.",
+    id: "narrativa", name: "Narrativa", icon: "📖", category: "dirección", execution: "partial",
+    description: "Compara el libreto completo con el texto hablado de cada toma y propone su orden.",
+    capability: "Propone un orden cuando la coincidencia es suficiente y señala huecos o repeticiones. Debes aplicarlo antes del render; el análisis no escucha el audio automáticamente.",
     defaultEnabled: true,
     defaultInstruction: "Abre con la idea principal y conserva la progresión del libreto.",
     settings: [{ key: "structure", label: "Estructura buscada", kind: "select", defaultValue: "libreto", options: choice([["libreto", "Orden del libreto"], ["gancho", "Gancho primero"], ["problema", "Problema y solución"]]), plannedOnly: true }],

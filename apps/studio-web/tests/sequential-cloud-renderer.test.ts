@@ -36,7 +36,10 @@ test("sequential HEVC clips normalize to a playable joined portrait MP4 with tex
       objective: "Prueba de edición en serie",
       session: { title: "Demo Segmenta" },
       clips: [
-        { id: "1", name: "uno", object_key: "uno", duration_seconds: 1.2, transcript: "HOLA UNO" },
+        { id: "1", name: "uno", object_key: "uno", duration_seconds: 1.2, transcript: "HOLA UNO", caption_cues: [
+          { startSeconds: .1, endSeconds: .5, text: "HOLA" },
+          { startSeconds: .6, endSeconds: 1.1, text: "UNO" },
+        ] },
         { id: "2", name: "dos", object_key: "dos", duration_seconds: 1.2, transcript: "HOLA DOS" },
       ],
       style_snapshot: {
@@ -55,7 +58,7 @@ test("sequential HEVC clips normalize to a playable joined portrait MP4 with tex
         url: source, index, output: outputs[index], videoKbps: 2500, transitionSeconds: .12,
         deadline: Date.now() + 60_000,
       });
-      assert.equal(result.captionCount, 1);
+      assert.equal(result.captionCount, index === 0 ? 2 : 1);
       if (index === 0) assert.equal(result.labelCount, 1);
       if (index === 1) assert.ok(result.cueCount > 0);
     }
