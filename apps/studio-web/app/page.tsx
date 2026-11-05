@@ -211,7 +211,7 @@ export default function Home() {
     const original = output.sessionId && sessions.find((item) => item.id === output.sessionId);
     const hasEditableSources = Boolean(original
       && (data?.scenes || []).some((scene) => scene.sessionId === original.id && scene.selectedTakeId)
-      && (data?.editJobs || []).some((job) => job.id === output.id && job.sessionId === original.id && Array.isArray(job.contract?.clips) && job.contract.clips.length));
+      && (data?.editJobs || []).some((job) => job.id === output.id && job.sessionId === original.id && job.status === "ready" && Array.isArray(job.contract?.clips) && job.contract.clips.length));
     if (original && hasEditableSources) {
       setPortfolioId(original.portfolioId);
       setEditorSessionId(original.id);
