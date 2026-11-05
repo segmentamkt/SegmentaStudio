@@ -2,6 +2,7 @@ import { createClient } from "../../../lib/supabase/server";
 import { getRequestUser, unauthorized } from "../../../lib/request-user";
 import { getEditorStyle } from "../../../lib/editor-presets";
 import { clean, toEditJob } from "../../../lib/studio-data";
+import { applySkillProfilesToContract } from "../../../lib/studio-skills";
 
 type EditOptions = {
   captions?: boolean;
@@ -51,6 +52,7 @@ export async function POST(request: Request) {
     const payload = await request.json() as Record<string, unknown>;
     const sessionId = clean(payload.sessionId);
     const objective = clean(payload.objective, "Crear un video vertical claro, dinámico y profesional.");
+    if (objective.length > 500) return Response.json({ error: "La indicación de edición admite hasta 500 caracteres." }, { status: 400 });
     const style = getEditorStyle(payload.style);
     const options = (payload.options || {}) as EditOptions;
     const settings = (payload.settings || {}) as EditSettings;
@@ -58,6 +60,7 @@ export async function POST(request: Request) {
     const session = await supabase.from("kiko_recording_sessions").select("*").eq("id", sessionId).eq("owner_id", user.userId).maybeSingle();
     if (session.error) throw session.error;
     if (!session.data) return Response.json({ error: "No encontramos esa producción." }, { status: 404 });
+    if (String(session.data.title || "").length > 160 || String(session.data.script || "").length > 6_000) return Response.json({ error: "Acorta el título o el libreto de esta producción antes de editarla." }, { status: 400 });
     const [scenes, takes] = await Promise.all([
       supabase.from("kiko_scenes").select("*").eq("session_id", sessionId).eq("owner_id", user.userId).order("position"),
       supabase.from("kiko_takes").select("*").eq("session_id", sessionId).eq("owner_id", user.userId).eq("status", "approved"),
@@ -67,6 +70,9 @@ export async function POST(request: Request) {
     const approved = new Map((takes.data || []).map((take) => [take.id, take]));
     const ordered = (scenes.data || []).map((scene) => ({ scene, take: approved.get(scene.selected_take_id) })).filter((item) => item.take);
     if (!ordered.length) return Response.json({ error: "Aprueba al menos una toma antes de planificar la edición." }, { status: 400 });
+    if (ordered.length > 12) return Response.json({ error: "Este render cloud admite hasta 12 tomas aprobadas por edición." }, { status: 400 });
+    if (ordered.reduce((total, item) => total + Number(item.take?.duration_ms || 0), 0) > 120_000) return Response.json({ error: "Este render cloud procesa hasta 2 minutos de material por edición." }, { status: 400 });
+    if (ordered.some((item) => String(item.scene.script || "").length > 1_000) || ordered.reduce((total, item) => total + String(item.scene.script || "").length, 0) > 5_000) return Response.json({ error: "Acorta el libreto antes de renderizar: hasta 1.000 caracteres por escena y 5.000 en total." }, { status: 400 });
     const normalizedOptions = {
       captions: options.captions !== false,
       deadAir: options.deadAir !== false,
@@ -116,13 +122,14 @@ export async function POST(request: Request) {
       },
       quality_gates: { portrait: true, audio: true, captions: normalizedOptions.captions, effects: normalizedOptions.transitions || normalizedOptions.labels },
     };
+    const contractWithSkills = applySkillProfilesToContract(contract, payload.skillProfiles);
     const inserted = await supabase.from("kiko_edit_jobs").insert({
       id: crypto.randomUUID(), owner_id: user.userId, session_id: sessionId, style: style.id,
-      objective, status: "planned", stage: "Plan editorial listo", progress: 8, contract,
+      objective, status: "planned", stage: "Plan editorial listo", progress: 8, contract: contractWithSkills,
     }).select().single();
     if (inserted.error) {
       if (inserted.error.code === "42P01" || inserted.error.message.includes("kiko_edit_jobs")) {
-        return Response.json({ job: { id: crypto.randomUUID(), ownerId: user.userId, sessionId, style: style.id, objective, status: "planned", stage: "Plan editorial listo", progress: 8, contract, resultMetadata: {}, error: null, ephemeral: true } }, { status: 201 });
+        return Response.json({ job: { id: crypto.randomUUID(), ownerId: user.userId, sessionId, style: style.id, objective, status: "planned", stage: "Plan editorial listo", progress: 8, contract: contractWithSkills, resultMetadata: {}, error: null, ephemeral: true } }, { status: 201 });
       }
       throw inserted.error;
     }

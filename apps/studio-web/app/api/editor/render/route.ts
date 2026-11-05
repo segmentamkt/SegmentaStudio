@@ -1,6 +1,7 @@
 import { createClient } from "../../../../lib/supabase/server";
 import { getRequestUser, unauthorized } from "../../../../lib/request-user";
-import { renderCloudEdit } from "../../../../lib/cloud-video-renderer";
+import { renderCloudEdit, verifyCloudRender } from "../../../../lib/cloud-video-renderer";
+import { normalizeRenderContract } from "../../../../lib/render-contract-security";
 import { clean, toEditJob } from "../../../../lib/studio-data";
 
 export const maxDuration = 300;
@@ -13,20 +14,22 @@ export async function POST(request: Request) {
   try {
     const payload = await request.json() as Record<string, unknown>;
     jobId = clean(payload.jobId);
-    const temporaryJob = payload.job && typeof payload.job === "object" ? payload.job as Record<string, any> : null;
+    const temporaryJob = payload.job && typeof payload.job === "object" ? payload.job as Record<string, unknown> : null;
     const ephemeral = temporaryJob?.ephemeral === true && temporaryJob.ownerId === user.userId && temporaryJob.id === jobId;
     const job = ephemeral ? null : await supabase.from("kiko_edit_jobs").select("*").eq("id", jobId).eq("owner_id", user.userId).maybeSingle();
     if (job?.error) throw job.error;
     if (!ephemeral && !job?.data) return Response.json({ error: "No encontramos ese trabajo de edición." }, { status: 404 });
-    const contract = (ephemeral ? temporaryJob?.contract : job?.data.contract) as any;
-    const objectKeys = (contract.clips || []).map((clip: { object_key: string }) => clip.object_key);
-    if (!objectKeys.length) return Response.json({ error: "El trabajo no tiene tomas aprobadas." }, { status: 400 });
-    if (ephemeral) {
-      const takeIds = (contract.clips || []).map((clip: { id: string }) => clip.id);
-      const ownership = await supabase.from("kiko_takes").select("id").eq("owner_id", user.userId).in("id", takeIds);
-      if (ownership.error) throw ownership.error;
-      if ((ownership.data || []).length !== takeIds.length) return Response.json({ error: "Una toma no pertenece a esta sesión." }, { status: 403 });
-    }
+    const sessionId = clean(ephemeral ? temporaryJob?.sessionId : job?.data?.session_id);
+    if (!sessionId) return Response.json({ error: "El plan no identifica una producción." }, { status: 400 });
+    const [production, scenes, takes] = await Promise.all([
+      supabase.from("kiko_recording_sessions").select("*").eq("id", sessionId).eq("owner_id", user.userId).maybeSingle(),
+      supabase.from("kiko_scenes").select("*").eq("session_id", sessionId).eq("owner_id", user.userId).order("position"),
+      supabase.from("kiko_takes").select("*").eq("session_id", sessionId).eq("owner_id", user.userId).eq("status", "approved"),
+    ]);
+    if (production.error || scenes.error || takes.error) throw production.error || scenes.error || takes.error;
+    if (!production.data) return Response.json({ error: "La producción ya no existe." }, { status: 404 });
+    const contract = normalizeRenderContract(ephemeral ? temporaryJob?.contract : job?.data?.contract, production.data, scenes.data, takes.data);
+    const objectKeys = contract.clips.map((clip) => clip.object_key);
     const signed = await supabase.storage.from("kiko-videos").createSignedUrls(objectKeys, 3600);
     if (signed.error) throw signed.error;
     const signedUrls = (signed.data || []).map((item) => item.signedUrl).filter((url): url is string => Boolean(url));
@@ -49,14 +52,18 @@ export async function POST(request: Request) {
       onProgress: update,
     });
     if (!evidence.release_gate.passed) throw new Error("El control de calidad rechazó el render porque faltan elementos solicitados.");
+    const link = await supabase.storage.from("kiko-videos").createSignedUrl(outputObjectKey, 3600);
+    if (link.error) throw link.error;
+    await update(96, "Comprobando video y audio del MP4");
+    const verification = await verifyCloudRender(link.data.signedUrl);
+    if (verification.width !== 1080 || verification.height !== 1920) throw new Error("El MP4 final no conserva el formato vertical 1080 × 1920.");
+    const verifiedEvidence = { ...evidence, ...verification, release_gate: { passed: true } };
     if (ephemeral) {
-      const link = await supabase.storage.from("kiko-videos").createSignedUrl(outputObjectKey, 3600);
-      if (link.error) throw link.error;
-      return Response.json({ job: { ...temporaryJob, status: "ready", stage: "Edición verificada", progress: 100, resultObjectKey: outputObjectKey, resultMetadata: evidence, resultUrl: link.data.signedUrl, error: null } });
+      return Response.json({ job: { ...temporaryJob, status: "ready", stage: "Edición verificada", progress: 100, resultObjectKey: outputObjectKey, resultMetadata: verifiedEvidence, resultUrl: link.data.signedUrl, error: null } });
     }
     const completed = await supabase.from("kiko_edit_jobs").update({
       status: "ready", stage: "Edición verificada", progress: 100,
-      result_object_key: outputObjectKey, result_metadata: evidence, error: null,
+      result_object_key: outputObjectKey, result_metadata: verifiedEvidence, error: null,
       updated_at: new Date().toISOString(),
     }).eq("id", jobId).eq("owner_id", user.userId).select().single();
     if (completed.error) throw completed.error;

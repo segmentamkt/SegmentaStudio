@@ -12,6 +12,8 @@ import { EditorStudio } from "../components/editor-studio";
 import { WORKSPACE_NAV, WorkspaceStudio, type WorkspaceView } from "../components/workspace-studio";
 import { createClient as createSupabaseClient } from "../lib/supabase/browser";
 
+// The studio API combines several database-backed row shapes in one dashboard.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>;
 type Dashboard = {
   user: Row;
@@ -37,7 +39,7 @@ const STUDIO_NAV: Array<{ id: StudioView; label: string }> = [
   ...WORKSPACE_NAV.filter((item) => item.id !== "summary"),
 ];
 
-async function api<T = any>(path: string, options: RequestInit = {}): Promise<T> {
+async function api<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, options);
   const data = await response.json().catch(() => ({})) as T & { error?: string };
   if (!response.ok) throw new Error(data.error || "No se pudo completar la acción.");
@@ -88,11 +90,12 @@ export default function Home() {
   const [scrollSpeed, setScrollSpeed] = useState(2);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [importQueue, setImportQueue] = useState<File[]>([]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const next: Dashboard = await api("/api/studio");
+      const next = await api<Dashboard>("/api/studio");
       setData(next);
       setPortfolioId((current) => current && next.portfolios.some((item) => item.id === current) ? current : next.portfolios[0]?.id || "");
       setSessionId((current) => current && next.sessions.some((item) => item.id === current) ? current : next.sessions[0]?.id || "");
@@ -137,15 +140,8 @@ export default function Home() {
   const activeSession = sessions.find((item) => item.id === sessionId) || sessions[0];
   const sessionScenes = useMemo(() => (data?.scenes || []).filter((item) => item.sessionId === activeSession?.id).sort((a, b) => a.position - b.position), [data, activeSession]);
   const activeScene = sessionScenes[Math.min(sceneIndex, Math.max(0, sessionScenes.length - 1))];
-  const sessionTakes = useMemo(() => (data?.takes || []).filter((item) => item.sessionId === activeSession?.id), [data, activeSession]);
   const currentPortfolio = portfolios.find((item) => item.id === portfolioId) || portfolios[0];
   const approvedCount = sessionScenes.filter((scene) => scene.selectedTakeId).length;
-
-  useEffect(() => {
-    const valid = sessions.some((item) => item.id === sessionId);
-    if (!valid) setSessionId(sessions[0]?.id || "");
-    setSceneIndex(0);
-  }, [portfolioId, sessions, sessionId]);
 
   const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -156,6 +152,7 @@ export default function Home() {
 
   const startCamera = useCallback(async (nextFacing = facing) => {
     setError("");
+    setImportQueue([]);
     stopCamera();
     if (!navigator.mediaDevices?.getUserMedia) {
       setError("Este navegador no permite usar la cámara. Abre la aplicación desde Safari o Chrome actualizado.");
@@ -277,10 +274,26 @@ export default function Home() {
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     stopCamera();
     setRecordedBlob(file);
-    setPreviewUrl(URL.createObjectURL(file));
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
     setElapsed(0);
     setUploadProgress(0);
     setError("");
+    const probe = document.createElement("video");
+    probe.preload = "metadata";
+    probe.onloadedmetadata = () => {
+      if (Number.isFinite(probe.duration)) setElapsed(Math.round(probe.duration * 1000));
+      probe.removeAttribute("src");
+      probe.load();
+    };
+    probe.src = url;
+  };
+
+  const importVideos = (files: FileList | null) => {
+    const selected = Array.from(files || []).filter((file) => file.type.startsWith("video/"));
+    if (!selected.length) return setError("Selecciona al menos un archivo de video.");
+    setImportQueue(selected.slice(1));
+    importVideo(selected[0]);
   };
 
   const classifyRecording = async (status: "approved" | "blooper") => {
@@ -290,6 +303,11 @@ export default function Home() {
       await refresh();
       clearRecording();
       if (status === "approved" && sceneIndex < sessionScenes.length - 1) setSceneIndex((value) => value + 1);
+      if (importQueue.length) {
+        const [next, ...remaining] = importQueue;
+        setImportQueue(remaining);
+        importVideo(next);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "No se pudo guardar la toma.");
     } finally { setUploading(false); }
@@ -299,7 +317,7 @@ export default function Home() {
     if (!portfolioId) return;
     setSaving(true); setError("");
     try {
-      const result = await api("/api/studio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "create_session", portfolioId, title, script }) });
+      const result = await api<{ session: { id: string } }>("/api/studio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "create_session", portfolioId, title, script }) });
       setSessionId(result.session.id); setTitle(""); setScript(""); setShowNewSession(false); setSceneIndex(0);
       await refresh();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo crear la grabación."); }
@@ -309,8 +327,8 @@ export default function Home() {
   const createPortfolio = async () => {
     setSaving(true); setError("");
     try {
-      const result = await api("/api/studio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "create_portfolio", ...portfolioForm }) });
-      setPortfolioId(result.portfolio.id); setPortfolioForm({ name: "", niche: "", essence: "", accent: "violet" }); setShowNewPortfolio(false);
+      const result = await api<{ portfolio: { id: string } }>("/api/studio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "create_portfolio", ...portfolioForm }) });
+      setPortfolioId(result.portfolio.id); setSessionId(""); setSceneIndex(0); setPortfolioForm({ name: "", niche: "", essence: "", accent: "violet" }); setShowNewPortfolio(false);
       await refresh();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo crear el portafolio."); }
     finally { setSaving(false); }
@@ -338,18 +356,18 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-[#070910] text-white">
       <header className="sticky top-0 z-40 border-b border-white/8 bg-[#070910]/88 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-[1500px] items-center gap-3 px-4 py-3 sm:px-7">
-          <div className="flex min-w-0 items-center gap-3">
+        <div className="mx-auto flex max-w-[1500px] flex-wrap items-center gap-2 px-4 py-3 sm:flex-nowrap sm:gap-3 sm:px-7">
+          <div className="flex w-full min-w-0 items-center gap-3 sm:w-auto">
             <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-violet-500 to-cyan-400"><Film size={19} /></span>
-            <div className="hidden sm:block"><p className="font-semibold">Segmenta Studio</p><p className="text-[9px] uppercase tracking-[.22em] text-zinc-500">Cloud Camera</p></div>
+            <div><p className="text-sm font-semibold sm:text-base">Segmenta Studio</p><p className="text-[9px] uppercase tracking-[.22em] text-zinc-500">Editor cloud</p></div>
           </div>
-          <div className="ml-auto flex min-w-0 items-center gap-2">
+          <div className="flex w-full min-w-0 items-center gap-2 sm:ml-auto sm:w-auto">
             <InstallAppButton />
-            <div className="hidden items-center gap-2 rounded-full border border-emerald-400/15 bg-emerald-400/8 px-3 py-2 text-xs text-emerald-300 md:flex"><Cloud size={13} />Sincronizado</div>
-            <select value={portfolioId} onChange={(event) => setPortfolioId(event.target.value)} className="max-w-[180px] rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-xs outline-none sm:max-w-[260px] sm:text-sm">
+            <div className="hidden items-center gap-2 rounded-full border border-emerald-400/15 bg-emerald-400/8 px-3 py-2 text-xs text-emerald-300 md:flex"><Cloud size={13} />Guardado en nube</div>
+            <select value={portfolioId} onChange={(event) => { setPortfolioId(event.target.value); setSessionId(""); setSceneIndex(0); }} className="min-w-0 flex-1 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-xs outline-none sm:max-w-[260px] sm:flex-none sm:text-sm">
               {portfolios.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
-            <button onClick={() => setShowNewPortfolio(true)} className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-300" aria-label="Nuevo portafolio"><Plus size={17} /></button>
+            <button onClick={() => setShowNewPortfolio(true)} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-300" aria-label="Nuevo portafolio"><Plus size={17} /></button>
           </div>
         </div>
       </header>
@@ -359,13 +377,13 @@ export default function Home() {
         <div className="min-w-0">
         <nav className="mb-3 flex gap-1 overflow-x-auto rounded-2xl border border-white/8 bg-white/[.025] p-1.5 lg:hidden">{STUDIO_NAV.map((item) => <button key={item.id} onClick={() => setView(item.id)} className={`shrink-0 rounded-xl px-3 py-2 text-[10px] ${view === item.id ? "bg-violet-500 text-white" : "text-zinc-500"}`}>{item.label}</button>)}</nav>
         {error && <div className="mb-5 flex items-start justify-between rounded-2xl border border-red-400/20 bg-red-400/8 p-4 text-sm text-red-100"><span>{error}</span><button onClick={() => setError("")}><X size={16} /></button></div>}
-        <section className={`mb-3 overflow-hidden rounded-2xl bg-gradient-to-r sm:mb-5 sm:rounded-3xl ${accentClasses[currentPortfolio?.accent] || accentClasses.violet} p-[1px]`}>
+        <section className={`mb-3 overflow-hidden rounded-2xl bg-gradient-to-r sm:mb-5 sm:rounded-3xl ${view === "record" || view === "edit" ? "hidden sm:block" : ""} ${accentClasses[currentPortfolio?.accent] || accentClasses.violet} p-[1px]`}>
           <div className="flex flex-col justify-between gap-3 rounded-[15px] bg-[#0c0f18]/95 p-3.5 sm:gap-4 sm:rounded-[23px] sm:p-5 sm:flex-row sm:items-center">
             <div className="min-w-0"><p className="truncate text-[9px] font-bold uppercase tracking-[.18em] text-violet-300 sm:text-[10px]">{currentPortfolio?.niche}</p><h1 className="mt-0.5 truncate text-lg font-semibold sm:mt-1 sm:text-2xl">{currentPortfolio?.name || "Tu portafolio"}</h1><p className="mt-0.5 truncate text-xs text-zinc-500 sm:mt-1 sm:text-sm">{currentPortfolio?.essence}</p></div>
-            <div className="flex rounded-2xl border border-white/8 bg-black/25 p-1">
+            <div className="flex w-full min-w-0 rounded-2xl border border-white/8 bg-black/25 p-1 sm:w-auto">
               <button onClick={() => setView("record")} className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs sm:gap-2 sm:px-4 sm:text-sm ${view === "record" ? "bg-white text-black" : "text-zinc-400"}`}><Camera size={15} />Grabar</button>
               <button onClick={() => setView("library")} className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs sm:gap-2 sm:px-4 sm:text-sm ${view === "library" ? "bg-white text-black" : "text-zinc-400"}`}><Library size={15} />Tomas</button>
-              <button onClick={() => setView("edit")} className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs sm:gap-2 sm:px-4 sm:text-sm ${view === "edit" ? "bg-white text-black" : "text-zinc-400"}`}><Sparkles size={15} />Editar IA</button>
+              <button onClick={() => setView("edit")} className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs sm:gap-2 sm:px-4 sm:text-sm ${view === "edit" ? "bg-white text-black" : "text-zinc-400"}`}><Sparkles size={15} />Editor</button>
             </div>
           </div>
         </section>
@@ -402,13 +420,13 @@ export default function Home() {
               {activeSession && activeScene ? <>
                 <div className="relative mx-auto aspect-[9/16] max-h-[76vh] w-full max-w-[480px] overflow-hidden rounded-[2rem] border border-white/10 bg-black shadow-2xl">
                   {previewUrl ? <video src={previewUrl} controls playsInline className="h-full w-full object-contain" /> : <video ref={videoRef} muted playsInline className={`h-full w-full object-cover ${facing === "user" ? "-scale-x-100" : ""}`} />}
-                  {!cameraReady && !previewUrl && <div className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_50%_25%,rgba(124,58,237,.22),transparent_55%)]"><div className="max-w-sm px-7 text-center"><span className="mx-auto grid h-16 w-16 place-items-center rounded-full border border-white/10 bg-white/5"><Camera size={28} className="text-violet-200" /></span><h2 className="mt-5 text-xl font-semibold">Graba o importa tu video</h2><p className="mt-2 text-sm leading-6 text-zinc-500">Puedes grabar desde el celular o subir el video que ya tienes. La carga se reanuda si tu conexión se interrumpe.</p><div className="mt-6 grid gap-2 sm:grid-cols-2"><button onClick={() => startCamera()} className="rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-black">Activar cámara</button><button onClick={() => fileInputRef.current?.click()} className="rounded-2xl border border-violet-300/30 bg-violet-400/10 px-4 py-3 text-sm font-semibold text-violet-100"><UploadCloud className="mr-2 inline" size={16} />Subir video</button></div><input ref={fileInputRef} type="file" accept="video/mp4,video/webm,video/quicktime,video/*" className="hidden" onChange={(event) => { importVideo(event.target.files?.[0]); event.currentTarget.value = ""; }} /></div></div>}
+                  {!cameraReady && !previewUrl && <div className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_50%_25%,rgba(124,58,237,.22),transparent_55%)]"><div className="max-w-sm px-7 text-center"><span className="mx-auto grid h-16 w-16 place-items-center rounded-full border border-white/10 bg-white/5"><Camera size={28} className="text-violet-200" /></span><h2 className="mt-5 text-xl font-semibold">Graba o importa tu video</h2><p className="mt-2 text-sm leading-6 text-zinc-500">Puedes grabar desde el celular o subir el video que ya tienes. La carga se reanuda si tu conexión se interrumpe.</p><div className="mt-6 grid gap-2 sm:grid-cols-2"><button onClick={() => startCamera()} className="rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-black">Activar cámara</button><button onClick={() => fileInputRef.current?.click()} className="rounded-2xl border border-violet-300/30 bg-violet-400/10 px-4 py-3 text-sm font-semibold text-violet-100"><UploadCloud className="mr-2 inline" size={16} />Subir video</button></div><input ref={fileInputRef} type="file" accept="video/mp4,video/webm,video/quicktime,video/*" multiple className="hidden" onChange={(event) => { importVideos(event.target.files); event.currentTarget.value = ""; }} /></div></div>}
                   {cameraReady && !previewUrl && teleprompter && <div className="pointer-events-none absolute inset-x-5 top-[15%] h-[42%] overflow-hidden rounded-2xl bg-black/48 px-5 py-6 text-center backdrop-blur-sm"><div ref={prompterRef} className="h-full overflow-hidden scroll-smooth"><div className="h-[35%]" /><p className="text-xl font-semibold leading-8 text-white drop-shadow sm:text-2xl sm:leading-10">{activeScene.script}</p><div className="h-[70%]" /></div></div>}
                   {cameraReady && !previewUrl && <div className="absolute inset-x-0 top-0 flex items-center justify-between p-4"><span className={`rounded-full px-3 py-1.5 text-xs font-medium backdrop-blur ${recording ? "bg-red-500 text-white" : "bg-black/45 text-zinc-200"}`}>{recording ? `● REC ${formatTime(elapsed)}` : activeScene.title}</span><button onClick={toggleCamera} disabled={recording} className="grid h-10 w-10 place-items-center rounded-full bg-black/45 backdrop-blur disabled:opacity-40"><FlipHorizontal2 size={17} /></button></div>}
                   {countdown > 0 && <div className="absolute inset-0 grid place-items-center bg-black/30 text-8xl font-black">{countdown}</div>}
                   {uploading && <div className="absolute inset-0 grid place-items-center bg-black/80 p-8 text-center"><div className="w-full max-w-xs"><UploadCloud className="mx-auto text-violet-300" size={32} /><p className="mt-4 font-medium">Guardando la toma en la nube</p><div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-gradient-to-r from-violet-500 to-cyan-400 transition-all" style={{ width: `${uploadProgress}%` }} /></div><p className="mt-2 text-xs text-zinc-500">{uploadProgress}% · no cierres esta pantalla</p></div></div>}
                   {cameraReady && !previewUrl && <div className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-6 bg-gradient-to-t from-black via-black/65 to-transparent px-5 pb-7 pt-16"><button onClick={() => setTeleprompter((value) => !value)} className={`grid h-11 w-11 place-items-center rounded-full border ${teleprompter ? "border-violet-300 bg-violet-400/20" : "border-white/15 bg-black/30"}`}><Sparkles size={17} /></button><button onClick={recording ? stopRecording : beginRecording} className={`grid h-20 w-20 place-items-center rounded-full border-4 border-white shadow-xl ${recording ? "bg-red-500" : "bg-white"}`}>{recording ? <Square size={25} fill="white" /> : <Circle size={54} className="text-red-500" fill="currentColor" />}</button><span className="grid h-11 w-11 place-items-center rounded-full border border-white/15 bg-black/30"><Mic size={17} /></span></div>}
-                  {previewUrl && !uploading && <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/80 to-transparent p-5 pt-20"><p className="mb-4 text-center text-sm font-medium">¿Qué hacemos con esta toma?</p><div className="grid grid-cols-3 gap-2"><button onClick={clearRecording} className="rounded-xl border border-white/15 bg-black/50 px-2 py-3 text-xs"><RotateCcw size={16} className="mx-auto mb-1" />Repetir</button><button onClick={() => classifyRecording("blooper")} className="rounded-xl border border-amber-300/25 bg-amber-300/10 px-2 py-3 text-xs text-amber-200"><Aperture size={16} className="mx-auto mb-1" />Blooper</button><button onClick={() => classifyRecording("approved")} className="rounded-xl bg-emerald-400 px-2 py-3 text-xs font-semibold text-black"><Check size={16} className="mx-auto mb-1" />Aprobar</button></div></div>}
+                  {previewUrl && !uploading && <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/80 to-transparent p-5 pt-20"><p className="mb-4 text-center text-sm font-medium">¿Qué hacemos con esta toma?</p>{importQueue.length > 0 && <p className="mb-3 text-center text-xs text-violet-200">Quedan {importQueue.length} videos por revisar.</p>}<div className="grid grid-cols-3 gap-2"><button onClick={clearRecording} className="rounded-xl border border-white/15 bg-black/50 px-2 py-3 text-xs"><RotateCcw size={16} className="mx-auto mb-1" />Repetir</button><button onClick={() => classifyRecording("blooper")} className="rounded-xl border border-amber-300/25 bg-amber-300/10 px-2 py-3 text-xs text-amber-200"><Aperture size={16} className="mx-auto mb-1" />Blooper</button><button onClick={() => classifyRecording("approved")} className="rounded-xl bg-emerald-400 px-2 py-3 text-xs font-semibold text-black"><Check size={16} className="mx-auto mb-1" />Aprobar</button></div></div>}
                 </div>
                 <div className="mx-auto mt-4 flex max-w-[480px] items-center justify-between gap-4 rounded-2xl border border-white/8 bg-white/[.03] p-3"><label className="text-xs text-zinc-500">Velocidad del libreto</label><input type="range" min="1" max="6" value={scrollSpeed} onChange={(event) => setScrollSpeed(Number(event.target.value))} className="accent-violet-500" /><span className="text-xs text-zinc-500">{scrollSpeed}x</span></div>
               </> : <div className="grid min-h-[320px] place-items-center rounded-3xl border border-dashed border-white/10 bg-white/[.02] p-6 text-center sm:min-h-[560px] sm:p-8"><div><FolderOpen className="mx-auto text-zinc-700" size={36} /><h2 className="mt-4 text-lg font-semibold sm:mt-5 sm:text-xl">Elige una grabación</h2><p className="mt-2 max-w-sm text-sm leading-6 text-zinc-500">Selecciona una producción para continuar con sus escenas.</p></div></div>}
@@ -420,8 +438,8 @@ export default function Home() {
           </div>
         ) : (
           <section>
-            <div className="mb-5 flex items-end justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Biblioteca cloud</p><h2 className="mt-1 text-2xl font-semibold">Tomas de {currentPortfolio?.name}</h2></div><div className="hidden gap-2 sm:flex"><button onClick={() => setView("edit")} className="flex items-center gap-2 rounded-xl bg-violet-500 px-4 py-2.5 text-sm font-semibold"><Sparkles size={15} />Editar con IA</button><button onClick={() => setView("record")} className="flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2.5 text-sm"><ArrowLeft size={15} />Volver a grabar</button></div></div>
-            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{sessions.map((session) => { const sceneRows = (data?.scenes || []).filter((scene) => scene.sessionId === session.id); const takeRows = sessionTakes.filter((take) => take.sessionId === session.id); const allTakes = (data?.takes || []).filter((take) => take.sessionId === session.id); return <article key={session.id} className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><div className="flex items-start justify-between"><div><span className={`rounded-full px-2.5 py-1 text-[10px] ${session.status === "ready_for_edit" ? "bg-emerald-400/10 text-emerald-300" : "bg-violet-400/10 text-violet-300"}`}>{session.status === "ready_for_edit" ? "Lista para edición" : "En grabación"}</span><h3 className="mt-3 font-medium">{session.title}</h3><p className="mt-1 text-xs text-zinc-600">{sceneRows.filter((scene) => scene.selectedTakeId).length}/{sceneRows.length} escenas aprobadas · {allTakes.filter((take) => take.status === "blooper").length} bloopers</p></div><button onClick={() => removeSession(session.id)} className="text-zinc-700 hover:text-red-300"><Trash2 size={16} /></button></div><div className="mt-5 grid grid-cols-3 gap-2">{allTakes.slice(0, 6).map((take) => <div key={take.id} className="group relative aspect-[9/16] overflow-hidden rounded-xl bg-black"><video src={`/api/media/${take.id}`} className="h-full w-full object-cover" preload="metadata" /><span className={`absolute bottom-1.5 left-1.5 rounded-full bg-black/70 px-2 py-1 text-[8px] ${take.status === "approved" ? "text-emerald-300" : take.status === "blooper" ? "text-amber-200" : "text-zinc-300"}`}>{statusLabel(take.status)}</span><button onClick={() => removeTake(take.id)} className="absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-full bg-black/70 opacity-0 transition group-hover:opacity-100"><Trash2 size={11} /></button></div>)}</div><button onClick={() => { setSessionId(session.id); setView("record"); }} className="mt-5 flex w-full items-center justify-between rounded-xl border border-white/8 bg-black/20 px-4 py-3 text-sm">Abrir producción <ChevronRight size={15} /></button></article>; })}</div>
+            <div className="mb-5 flex items-end justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Biblioteca cloud</p><h2 className="mt-1 text-2xl font-semibold">Tomas de {currentPortfolio?.name}</h2></div><div className="hidden gap-2 sm:flex"><button onClick={() => setView("edit")} className="flex items-center gap-2 rounded-xl bg-violet-500 px-4 py-2.5 text-sm font-semibold"><Sparkles size={15} />Abrir editor</button><button onClick={() => setView("record")} className="flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2.5 text-sm"><ArrowLeft size={15} />Volver a grabar</button></div></div>
+            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{sessions.map((session) => { const sceneRows = (data?.scenes || []).filter((scene) => scene.sessionId === session.id); const allTakes = (data?.takes || []).filter((take) => take.sessionId === session.id); return <article key={session.id} className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><div className="flex items-start justify-between"><div><span className={`rounded-full px-2.5 py-1 text-[10px] ${session.status === "ready_for_edit" ? "bg-emerald-400/10 text-emerald-300" : "bg-violet-400/10 text-violet-300"}`}>{session.status === "ready_for_edit" ? "Lista para edición" : "En grabación"}</span><h3 className="mt-3 font-medium">{session.title}</h3><p className="mt-1 text-xs text-zinc-600">{sceneRows.filter((scene) => scene.selectedTakeId).length}/{sceneRows.length} escenas aprobadas · {allTakes.filter((take) => take.status === "blooper").length} bloopers</p></div><button onClick={() => removeSession(session.id)} className="text-zinc-700 hover:text-red-300"><Trash2 size={16} /></button></div><div className="mt-5 grid grid-cols-3 gap-2">{allTakes.slice(0, 6).map((take) => <div key={take.id} className="group relative aspect-[9/16] overflow-hidden rounded-xl bg-black"><video src={`/api/media/${take.id}`} className="h-full w-full object-cover" preload="metadata" /><span className={`absolute bottom-1.5 left-1.5 rounded-full bg-black/70 px-2 py-1 text-[8px] ${take.status === "approved" ? "text-emerald-300" : take.status === "blooper" ? "text-amber-200" : "text-zinc-300"}`}>{statusLabel(take.status)}</span><button onClick={() => removeTake(take.id)} aria-label="Eliminar toma" className="absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-full bg-black/70 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100"><Trash2 size={11} /></button></div>)}</div><button onClick={() => { setSessionId(session.id); setView("record"); }} className="mt-5 flex w-full items-center justify-between rounded-xl border border-white/8 bg-black/20 px-4 py-3 text-sm">Abrir producción <ChevronRight size={15} /></button></article>; })}</div>
             {!sessions.length && <div className="grid min-h-[420px] place-items-center rounded-3xl border border-dashed border-white/10 text-center"><div><Library className="mx-auto text-zinc-700" size={40} /><p className="mt-4 text-zinc-500">Todavía no hay tomas en este portafolio.</p></div></div>}
           </section>
         )}

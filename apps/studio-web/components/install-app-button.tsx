@@ -16,7 +16,7 @@ export function InstallAppButton() {
   useEffect(() => {
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => undefined);
     const standalone = window.matchMedia("(display-mode: standalone)").matches || Boolean((navigator as Navigator & { standalone?: boolean }).standalone);
-    setInstalled(standalone);
+    const frame = window.requestAnimationFrame(() => setInstalled(standalone));
     const onPrompt = (event: Event) => {
       event.preventDefault();
       setPrompt(event as InstallPromptEvent);
@@ -25,6 +25,7 @@ export function InstallAppButton() {
     window.addEventListener("beforeinstallprompt", onPrompt);
     window.addEventListener("appinstalled", onInstalled);
     return () => {
+      window.cancelAnimationFrame(frame);
       window.removeEventListener("beforeinstallprompt", onPrompt);
       window.removeEventListener("appinstalled", onInstalled);
     };

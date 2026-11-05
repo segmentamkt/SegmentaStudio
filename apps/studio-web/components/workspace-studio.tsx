@@ -1,8 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { BookOpen, Bot, Check, Circle, ExternalLink, FolderKanban, Lightbulb, ListChecks, Plus, RotateCcw, Save, Sparkles, Trash2, WandSparkles } from "lucide-react";
+import { BookOpen, Check, Circle, ExternalLink, FolderKanban, Lightbulb, Plus, RotateCcw, Save, Trash2, WandSparkles } from "lucide-react";
+import { SkillsStudio } from "./skills-studio";
 
+// Workspace cards display several heterogeneous studio row shapes.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>;
 export type WorkspaceView = "summary" | "semantic" | "skills" | "projects" | "trends" | "style" | "team" | "tasks";
 
@@ -10,19 +13,9 @@ type WorkspaceState = {
   references: Array<{ id: string; title: string; url: string; creator: string; topic: string; idea: string }>;
   preferences: Array<{ id: string; key: string; value: string; rationale: string }>;
   tasks: Array<{ id: string; title: string; done: boolean }>;
-  skills: Array<{ id: string; name: string; icon: string; enabled: boolean; instruction: string }>;
 };
 
-const defaultSkills: WorkspaceState["skills"] = [
-  { id: "director", name: "Director", icon: "🧠", enabled: true, instruction: "Ordena el relato y coordina las demás skills." },
-  { id: "silences", name: "Ritmo y silencios", icon: "✂️", enabled: true, instruction: "Elimina tiempos muertos conservando pausas con intención." },
-  { id: "captions", name: "Subtítulos", icon: "💬", enabled: true, instruction: "Crea tarjetas cortas, legibles y sincronizadas." },
-  { id: "sound", name: "Diseño sonoro", icon: "🔊", enabled: true, instruction: "Añade efectos selectivos sin competir con la voz." },
-  { id: "visuals", name: "Imágenes y B-roll", icon: "🖼️", enabled: false, instruction: "Propone recursos visuales que expliquen o demuestren." },
-  { id: "clips", name: "Clips virales", icon: "⚡", enabled: false, instruction: "Detecta ideas completas con gancho y potencial de retención." },
-];
-
-const emptyState: WorkspaceState = { references: [], preferences: [], tasks: [], skills: defaultSkills };
+const emptyState: WorkspaceState = { references: [], preferences: [], tasks: [] };
 
 function storageKey(portfolioId: string) { return `segmenta-workspace-v2:${portfolioId || "default"}`; }
 
@@ -37,22 +30,25 @@ export function WorkspaceStudio({ view, portfolioId, portfolio, sessions, scenes
   view: WorkspaceView; portfolioId: string; portfolio?: Row; sessions: Row[]; scenes: Row[]; editJobs: Row[]; onOpenEditor: () => void;
 }) {
   const [workspace, setWorkspace] = useState<WorkspaceState>(emptyState);
-  const [ready, setReady] = useState(false);
+  const [loadedPortfolioId, setLoadedPortfolioId] = useState<string | null>(null);
   const [reference, setReference] = useState({ title: "", url: "", creator: "", topic: "" });
   const [preference, setPreference] = useState({ key: "", value: "", rationale: "" });
   const [task, setTask] = useState("");
 
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(storageKey(portfolioId));
-      setWorkspace(saved ? { ...emptyState, ...JSON.parse(saved) } : emptyState);
-    } catch { setWorkspace(emptyState); }
-    setReady(true);
+    const frame = window.requestAnimationFrame(() => {
+      try {
+        const saved = localStorage.getItem(storageKey(portfolioId));
+        setWorkspace(saved ? { ...emptyState, ...JSON.parse(saved) } : emptyState);
+      } catch { setWorkspace(emptyState); }
+      setLoadedPortfolioId(portfolioId);
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [portfolioId]);
 
   useEffect(() => {
-    if (ready) localStorage.setItem(storageKey(portfolioId), JSON.stringify(workspace));
-  }, [workspace, portfolioId, ready]);
+    if (loadedPortfolioId === portfolioId) localStorage.setItem(storageKey(portfolioId), JSON.stringify(workspace));
+  }, [workspace, portfolioId, loadedPortfolioId]);
 
   const portfolioSessions = useMemo(() => sessions.filter((item) => item.portfolioId === portfolioId), [sessions, portfolioId]);
   const approved = scenes.filter((scene) => portfolioSessions.some((session) => session.id === scene.sessionId) && scene.selectedTakeId).length;
@@ -80,7 +76,7 @@ export function WorkspaceStudio({ view, portfolioId, portfolio, sessions, scenes
 
   if (view === "semantic") return <section className="space-y-5"><Heading eyebrow="EDICIÓN SEMÁNTICA" title="Editor semántico" text="Compara el libreto con las tomas aprobadas, conserva el orden narrativo y entrega el contrato al motor de edición." /><div className="grid gap-4 lg:grid-cols-2">{portfolioSessions.map((session) => { const sessionScenes = scenes.filter((scene) => scene.sessionId === session.id).sort((a,b) => a.position-b.position); return <article key={session.id} className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><div className="flex items-start justify-between"><div><p className="text-[10px] uppercase tracking-[.18em] text-violet-300">Producción</p><h3 className="mt-1 font-medium">{session.title}</h3></div><span className="rounded-full bg-white/5 px-3 py-1 text-[10px] text-zinc-400">{sessionScenes.filter((item) => item.selectedTakeId).length}/{sessionScenes.length} aprobadas</span></div><div className="mt-4 space-y-2">{sessionScenes.map((scene,index) => <div key={scene.id} className="flex items-center gap-3 rounded-xl bg-black/20 p-3"><span className={`grid h-7 w-7 place-items-center rounded-full text-xs ${scene.selectedTakeId ? "bg-emerald-400 text-black" : "bg-white/5 text-zinc-600"}`}>{scene.selectedTakeId ? <Check size={13}/> : index+1}</span><span className="min-w-0"><strong className="block truncate text-xs">{scene.title}</strong><small className="block truncate text-zinc-600">{scene.script}</small></span></div>)}</div><button onClick={onOpenEditor} disabled={!sessionScenes.some((item) => item.selectedTakeId)} className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-violet-500 px-4 py-3 text-sm font-semibold disabled:opacity-30"><WandSparkles size={16}/>Planificar y editar</button></article>; })}{!portfolioSessions.length && <Empty icon={<BookOpen/>} title="Crea una producción con libreto" text="Cuando grabes y apruebes las tomas, aparecerán aquí en orden." />}</div></section>;
 
-  if (view === "skills") return <section className="space-y-5"><Heading eyebrow="SKILLS DE EDICIÓN" title="Skills" text="Activa las especialidades que el Director debe aplicar en cada edición." /><div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{workspace.skills.map((skill) => <article key={skill.id} className={`rounded-3xl border p-5 ${skill.enabled ? "border-violet-400/20 bg-violet-400/6" : "border-white/8 bg-white/[.02] opacity-65"}`}><div className="flex items-center justify-between"><span className="text-2xl">{skill.icon}</span><button onClick={() => setWorkspace((current) => ({ ...current, skills: current.skills.map((item) => item.id === skill.id ? { ...item, enabled: !item.enabled } : item) }))} className={`rounded-full px-3 py-1 text-[10px] ${skill.enabled ? "bg-emerald-400 text-black" : "bg-white/8 text-zinc-500"}`}>{skill.enabled ? "Activa" : "Apagada"}</button></div><h3 className="mt-4 font-medium">{skill.name}</h3><textarea value={skill.instruction} onChange={(event) => setWorkspace((current) => ({ ...current, skills: current.skills.map((item) => item.id === skill.id ? { ...item, instruction: event.target.value } : item) }))} rows={3} className="mt-3 w-full resize-none rounded-xl border border-white/8 bg-black/20 p-3 text-xs leading-5 text-zinc-400" /></article>)}</div></section>;
+  if (view === "skills") return <SkillsStudio portfolioId={portfolioId} />;
 
   if (view === "projects") return <section className="space-y-5"><Heading eyebrow="PRODUCCIONES" title="Proyectos" text="Cada proyecto conserva libreto, escenas, tomas aprobadas y trabajos de edición." /><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{portfolioSessions.map((session) => { const rows=scenes.filter((scene)=>scene.sessionId===session.id); const done=rows.filter((scene)=>scene.selectedTakeId).length; return <article key={session.id} className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><FolderKanban className="text-violet-300"/><h3 className="mt-4 font-medium">{session.title}</h3><p className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-500">{session.script}</p><div className="mt-5 h-1.5 overflow-hidden rounded-full bg-white/8"><div className="h-full bg-emerald-400" style={{width:`${rows.length ? done/rows.length*100 : 0}%`}}/></div><p className="mt-2 text-[10px] text-zinc-600">{done}/{rows.length} escenas listas</p></article>})}</div></section>;
 

@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import ffmpegPath from "ffmpeg-static";
+import { buildSoundDesignGraph, planCutSoundCues } from "./sound-design";
 
 type ContractClip = {
   id: string;
@@ -28,7 +30,7 @@ type EditContract = {
   effects: { transitions: boolean; sound_effects: boolean; labels: boolean };
 };
 
-type ClipAnalysis = { duration: number; ranges: Array<{ start: number; end: number }>; removed: number };
+type ClipAnalysis = { duration: number; ranges: Array<{ start: number; end: number }>; removed: number; hasAudio: boolean };
 
 function capture(command: string, args: string[]) {
   return new Promise<{ code: number; stderr: string }>((resolve, reject) => {
@@ -46,15 +48,33 @@ function parseDuration(value: string) {
   return match ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) : 0;
 }
 
+/** Decode a sample from the uploaded object, not the local FFmpeg pipe. */
+export async function verifyCloudRender(signedUrl: string) {
+  if (!ffmpegPath) throw new Error("El motor FFmpeg no está disponible para verificar el video.");
+  const result = await capture(ffmpegPath, [
+    "-hide_banner", "-nostdin", "-xerror", "-i", signedUrl,
+    "-map", "0:v:0", "-map", "0:a:0", "-t", "3", "-f", "null", "-",
+  ]);
+  if (result.code !== 0) throw new Error(`El MP4 guardado no pasó la verificación de reproducción: ${result.stderr.slice(-800)}`);
+  const video = result.stderr.match(/Video:[^\n]*?\b(\d{2,5})x(\d{2,5})\b/);
+  const hasAudio = /Audio:[^\n]*/.test(result.stderr);
+  if (!video || !hasAudio) throw new Error("El MP4 guardado no contiene video y audio verificables.");
+  return { width: Number(video[1]), height: Number(video[2]), has_audio: hasAudio, playable: true, verified_sample_seconds: Math.min(3, parseDuration(result.stderr) || 3) };
+}
+
 async function analyzeClip(command: string, url: string, fallbackDuration: number, removeSilence: boolean, thresholdMs: number): Promise<ClipAnalysis> {
   const threshold = Math.max(0.35, thresholdMs / 1000);
-  const args = ["-hide_banner", "-nostdin", "-i", url];
+  const args = ["-hide_banner", "-nostdin", "-i", url, "-vn"];
   if (removeSilence) args.push("-af", `silencedetect=noise=-35dB:d=${threshold}`);
   args.push("-f", "null", "-");
   const result = await capture(command, args);
+  const hasVideo = /Stream #[^\n]*Video:/.test(result.stderr);
+  const hasAudio = /Stream #[^\n]*Audio:/.test(result.stderr);
+  if (!hasVideo) throw new Error(`La toma no contiene una pista de video legible: ${result.stderr.slice(-500)}`);
+  if (result.code !== 0 && hasAudio) throw new Error(`No pudimos analizar una toma: ${result.stderr.slice(-700)}`);
   const duration = parseDuration(result.stderr) || fallbackDuration;
   if (!duration) throw new Error("No pudimos medir la duración de una toma.");
-  if (!removeSilence) return { duration, ranges: [{ start: 0, end: duration }], removed: 0 };
+  if (!hasAudio || !removeSilence) return { duration, ranges: [{ start: 0, end: duration }], removed: 0, hasAudio };
   const lines = result.stderr.split("\n");
   const silences: Array<{ start: number; end: number }> = [];
   let pending: number | null = null;
@@ -81,7 +101,7 @@ async function analyzeClip(command: string, url: string, fallbackDuration: numbe
   }
   if (duration - cursor > 0.16) ranges.push({ start: cursor, end: duration });
   if (!ranges.length) ranges.push({ start: 0, end: duration });
-  return { duration, ranges, removed };
+  return { duration, ranges, removed, hasAudio };
 }
 
 function ffText(value: string) {
@@ -119,15 +139,20 @@ export async function renderCloudEdit(input: {
   for (let index = 0; index < input.contract.clips.length; index += 1) {
     const clip = input.contract.clips[index];
     analyses.push(await analyzeClip(command, input.signedUrls[index], clip.duration_seconds, input.contract.dead_air.remove, input.contract.dead_air.threshold_ms));
+    if (analyses.reduce((total, item) => total + item.duration, 0) > 120) {
+      throw new Error("Esta versión cloud procesa hasta 2 minutos de material por edición. Divide el proyecto en escenas más cortas.");
+    }
     await input.onProgress(14 + Math.round(((index + 1) / input.contract.clips.length) * 20), `Analizando toma ${index + 1} de ${input.contract.clips.length}`);
   }
   const filters: string[] = [];
   const clipDurations: number[] = [];
+  const fontFile = join(process.cwd(), "assets", "fonts", "Inter.ttf");
   const execution = input.contract.style_snapshot.execution || {};
   const zoom = Math.max(0, Math.min(10, Number(execution.zoomPercent || 0)));
   const contrast = Math.max(.8, Math.min(1.3, Number(execution.contrast || 1.04)));
   const saturation = Math.max(.7, Math.min(1.4, Number(execution.saturation || 1.06)));
   const fit = execution.framing === "fit";
+  const silentAudioInput = input.signedUrls.length;
   for (let index = 0; index < analyses.length; index += 1) {
     const analysis = analyses[index];
     const segmentLabels: Array<{ video: string; audio: string }> = [];
@@ -138,7 +163,9 @@ export async function renderCloudEdit(input: {
         ? "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x09090b"
         : `scale=${Math.round(1080 * (1 + zoom / 100))}:${Math.round(1920 * (1 + zoom / 100))}:force_original_aspect_ratio=increase,crop=1080:1920`;
       filters.push(`[${index}:v]trim=start=${range.start.toFixed(3)}:end=${range.end.toFixed(3)},setpts=PTS-STARTPTS,${scale},setsar=1,fps=30,eq=contrast=${contrast}:saturation=${saturation},format=yuv420p[${video}]`);
-      filters.push(`[${index}:a]atrim=start=${range.start.toFixed(3)}:end=${range.end.toFixed(3)},asetpts=PTS-STARTPTS,aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:channel_layouts=stereo,loudnorm=I=-16:LRA=11:TP=-1.5[${audio}]`);
+      const sourceAudio = analysis.hasAudio ? index : silentAudioInput;
+      const voiceProcessing = analysis.hasAudio ? ",loudnorm=I=-16:LRA=11:TP=-1.5" : "";
+      filters.push(`[${sourceAudio}:a]atrim=start=${range.start.toFixed(3)}:end=${range.end.toFixed(3)},asetpts=PTS-STARTPTS,aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:channel_layouts=stereo${voiceProcessing}[${audio}]`);
       segmentLabels.push({ video, audio });
     });
     if (segmentLabels.length === 1) {
@@ -158,7 +185,9 @@ export async function renderCloudEdit(input: {
   for (let index = 1; index < clipDurations.length; index += 1) {
     if (transitionDuration) {
       const offset = Math.max(0, elapsed - transitionDuration);
-      filters.push(`[${videoLabel}][vclip${index}]xfade=transition=${input.contract.style_snapshot.transition}:duration=${transitionDuration}:offset=${offset.toFixed(3)}[vx${index}]`);
+      filters.push(`[${videoLabel}]settb=AVTB[vbase${index}]`);
+      filters.push(`[vclip${index}]settb=AVTB[vnext${index}]`);
+      filters.push(`[vbase${index}][vnext${index}]xfade=transition=${input.contract.style_snapshot.transition}:duration=${transitionDuration}:offset=${offset.toFixed(3)}[vx${index}]`);
       filters.push(`[${audioLabel}][aclip${index}]acrossfade=d=${transitionDuration}[ax${index}]`);
       videoLabel = `vx${index}`;
       audioLabel = `ax${index}`;
@@ -182,7 +211,7 @@ export async function renderCloudEdit(input: {
         const start = clipStarts[clipIndex] + (duration * cardIndex) / Math.max(1, items.length);
         const end = clipStarts[clipIndex] + (duration * (cardIndex + 1)) / Math.max(1, items.length);
         const output = `vsub${captionCount}`;
-        filters.push(`[${videoLabel}]drawtext=text='${ffText(text)}':fontcolor=${ffColor(input.contract.style_snapshot.subtitle.text)}:fontsize=${input.contract.style_snapshot.subtitle.size}:box=1:boxcolor=${ffColor(input.contract.style_snapshot.subtitle.box, "D9")}:boxborderw=24:x=(w-text_w)/2:y=${captionY}:enable='between(t,${start.toFixed(3)},${end.toFixed(3)})'[${output}]`);
+        filters.push(`[${videoLabel}]drawtext=fontfile='${ffText(fontFile)}':text='${ffText(text)}':fontcolor=${ffColor(input.contract.style_snapshot.subtitle.text)}:fontsize=${input.contract.style_snapshot.subtitle.size}:box=1:boxcolor=${ffColor(input.contract.style_snapshot.subtitle.box, "D9")}:boxborderw=24:x=(w-text_w)/2:y=${captionY}:enable='between(t,${start.toFixed(3)},${end.toFixed(3)})'[${output}]`);
         videoLabel = output;
         captionCount += 1;
       });
@@ -191,28 +220,34 @@ export async function renderCloudEdit(input: {
   let effectCount = Math.max(0, input.contract.clips.length - 1) * (transitionDuration ? 1 : 0);
   if (input.contract.effects.labels && execution.titleCards !== false) {
     const output = "vtitle";
-    filters.push(`[${videoLabel}]drawtext=text='${ffText(input.contract.session.title)}':fontcolor=white:fontsize=54:box=1:boxcolor=${ffColor(execution.titleColor || "#09090b", "E6")}:boxborderw=22:x=(w-text_w)/2:y=h*0.08:enable='between(t,0.15,2.6)'[${output}]`);
+    filters.push(`[${videoLabel}]drawtext=fontfile='${ffText(fontFile)}':text='${ffText(input.contract.session.title)}':fontcolor=white:fontsize=54:box=1:boxcolor=${ffColor(execution.titleColor || "#09090b", "E6")}:boxborderw=22:x=(w-text_w)/2:y=h*0.08:enable='between(t,0.15,2.6)'[${output}]`);
     videoLabel = output;
     effectCount += 1;
   }
-  if (input.contract.effects.sound_effects && clipStarts.length > 1) {
-    const soundVolume = Math.max(0, Math.min(1, Number(execution.soundEffectVolume ?? .35))) * .1;
-    const sounds: string[] = [];
-    clipStarts.slice(1).forEach((start, index) => {
-      const label = `sfx${index}`;
-      const delay = Math.round(start * 1000);
-      filters.push(`sine=frequency=880:sample_rate=48000:duration=0.12,volume=${soundVolume.toFixed(3)},adelay=${delay}|${delay}[${label}]`);
-      sounds.push(label);
+  if (input.contract.effects.sound_effects) {
+    const internalCuts = analyses.flatMap((analysis, index) => {
+      let position = clipStarts[index];
+      return analysis.ranges.slice(0, -1).map((range) => {
+        position += range.end - range.start;
+        return position;
+      });
     });
-    if (sounds.length) {
-      filters.push(`[${audioLabel}]${sounds.map((label) => `[${label}]`).join("")}amix=inputs=${sounds.length + 1}:duration=first:normalize=0,alimiter=limit=0.95[audiofx]`);
-      audioLabel = "audiofx";
-      effectCount += sounds.length;
-    }
+    const cues = planCutSoundCues([...clipStarts.slice(1), ...internalCuts], (input.contract.style_snapshot as { id?: string }).id);
+    filters.push(`[${audioLabel}]aresample=48000:async=1:first_pts=0[audio48]`);
+    audioLabel = "audio48";
+    const sound = buildSoundDesignGraph({
+      inputLabel: audioLabel, cues,
+      volume: Number(execution.soundEffectVolume ?? .35),
+      durationSeconds: elapsed, outputLabel: "audiofx",
+    });
+    filters.push(...sound.filters);
+    audioLabel = sound.outputLabel;
+    effectCount += sound.renderedCueCount;
   }
   await input.onProgress(42, "Montando cortes, subtítulos y efectos");
   const args = ["-y", "-hide_banner", "-nostdin", "-loglevel", "error"];
   input.signedUrls.forEach((url) => args.push("-i", url));
+  if (analyses.some((analysis) => !analysis.hasAudio)) args.push("-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
   args.push("-filter_complex", filters.join(";"), "-map", `[${videoLabel}]`, "-map", `[${audioLabel}]`, "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1");
   const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
   let stderr = "";
@@ -242,11 +277,12 @@ export async function renderCloudEdit(input: {
   await input.onProgress(94, "Verificando el archivo final");
   return {
     duration_seconds: Number(elapsed.toFixed(2)), width: 1080, height: 1920,
-    has_audio: true, playable: true, caption_count: captionCount, effect_count: effectCount,
+    caption_count: captionCount, effect_count: effectCount,
     removed_silence_seconds: Number(analyses.reduce((sum, item) => sum + item.removed, 0).toFixed(2)),
+    silent_source_clips: analyses.filter((analysis) => !analysis.hasAudio).length,
     style_applied: true, style_id: (input.contract.style_snapshot as { id?: string }).id || null,
     subtitle_position: input.contract.style_snapshot.subtitle.position || "bottom", zoom_percent: zoom,
     transition: transitionDuration ? input.contract.style_snapshot.transition : "cut",
-    release_gate: { passed: elapsed > 0 && (!input.contract.captions.enabled || captionCount > 0) && (!input.contract.effects.transitions || input.contract.clips.length === 1 || effectCount > 0) },
+    release_gate: { passed: elapsed > 0 && (!input.contract.captions.enabled || captionCount > 0) },
   };
 }
