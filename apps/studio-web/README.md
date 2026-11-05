@@ -7,7 +7,9 @@ Editor de video vertical para [studio.segmenta.online](https://studio.segmenta.o
 - Grabación desde cámara, teleprompter e importación de varios videos con revisión toma por toma.
 - Portafolios, proyectos, escenas, aprobaciones y bloopers guardados en Supabase.
 - Editor con ocho estilos, 14 skills configurables por portafolio y un manifiesto que muestra qué se ejecuta.
-- Render MP4 vertical con recorte de silencios, encuadre, color, transiciones, títulos y tarjetas de subtítulos basadas en el libreto.
+- Libreto completo guardado por proyecto y obligatorio antes de preparar una exportación. El estudio compara sus partes con el texto hablado de cada toma, propone el orden cuando la coincidencia es suficiente y señala huecos o repeticiones.
+- Recomendaciones de planos de apoyo y rótulos basadas en el libreto. Los rótulos sugeridos se pueden aplicar a una toma y aparecen en el MP4; los planos que falten se deben grabar o subir.
+- Render MP4 vertical con recorte de silencios, encuadre, color, transiciones, títulos y subtítulos. Se pueden importar transcripciones SRT o VTT con tiempos por toma; el render conserva esos tiempos tras recortes y eliminación de silencios.
 - Efectos de sonido originales generados con FFmpeg para cortes de escena e internos; el volumen y estilo son configurables.
 - Verificación técnica de video y audio del archivo **después** de subirlo a Storage.
 
@@ -15,7 +17,7 @@ El render actual admite hasta 12 tomas y 120 segundos de material fuente. La fun
 
 ## Límites visibles en la interfaz
 
-Los subtítulos usan el libreto y distribuyen sus tarjetas a lo largo de cada toma. Todavía no transcriben la voz ni tienen sincronía palabra a palabra. Los recortes eliminan silencios medidos por audio, sin identificar errores de contenido. La extracción automática de clips, B-roll, música y el puente cloud con Claude/Gemini están identificados como pendientes en sus skills. No se presentan como efectos ya renderizados.
+El libreto sirve de guía editorial, pero no transcribe el audio por sí solo. Para relacionar tomas y libreto hay que escribir el texto hablado de cada toma o importar una transcripción. SRT/VTT aporta tiempos; el texto plano se reparte de manera aproximada y no tiene sincronía palabra a palabra. Los recortes eliminan silencios medidos por audio, sin identificar errores de contenido. La extracción automática de clips, B-roll, música y el puente cloud con Claude/Gemini están identificados como pendientes en sus skills. No se presentan como efectos ya renderizados.
 
 El acceso actual crea una sesión anónima de Supabase por navegador. Los proyectos quedan aislados por sesión; entrar desde otro dispositivo no recupera automáticamente los mismos datos hasta que se implemente un acceso o vínculo de dispositivos.
 
