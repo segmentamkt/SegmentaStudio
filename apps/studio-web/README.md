@@ -13,6 +13,8 @@ Editor de video vertical para [studio.segmenta.online](https://studio.segmenta.o
 - Efectos de sonido originales generados con FFmpeg para cortes de escena e internos; el volumen y estilo son configurables.
 - Línea de tiempo manual con división y duplicación de tomas, orden, recorte, inclusión/exclusión, deshacer y rehacer. Cada segmento puede tener velocidad de 0,5× a 2×, volumen de voz y ajustes de brillo, contraste y saturación propios; estos valores llegan al MP4, incluidos los tiempos de subtítulos tras cambiar la velocidad.
 - Catálogo consultable de las 244 herramientas de la guía de CapCut enviada por el propietario, organizado en 15 categorías y con estado **Disponible**, **Parcial** o **En desarrollo**. El catálogo no activa funciones que todavía no tienen motor.
+- Pingüino guía en la esquina inferior derecha: ayuda contextual según la etapa del proyecto, preguntas frecuentes y botones que llevan a la acción. Funciona sin claves API y distingue las herramientas disponibles de las pendientes.
+- Ruta visual de cuatro pasos en el editor: tomas aprobadas, libreto y texto, edición preparada y MP4 listo.
 - Verificación técnica de video y audio del archivo **después** de subirlo a Storage.
 
 El render actual admite hasta 12 segmentos, 120 segundos de material fuente aprobado y 120 segundos de salida. La función de Vercel tiene un [límite de ejecución](https://vercel.com/docs/functions/limitations); un video largo necesita un trabajador de procesamiento independiente.
@@ -47,3 +49,4 @@ La aplicación usa Next.js 16, React 19, Supabase Auth/Postgres/Storage y `ffmpe
 Los efectos sonoros se sintetizan dentro del render. Si se añade una biblioteca externa, hay que respetar sus condiciones de redistribución: [Mixkit](https://mixkit.co/license/modal/sfxFree/), [Pixabay](https://pixabay.com/service/license-summary/) y [Freesound](https://freesound.org/help/faq/) tienen reglas distintas.
 
 Las responsabilidades de las 14 skills y su estado real están en [`skills/README.md`](skills/README.md).
+Las etapas para que el editor sea profesional y verificable están en [`docs/PROFESSIONAL_EDITOR_PLAN.md`](docs/PROFESSIONAL_EDITOR_PLAN.md).

@@ -9,9 +9,11 @@ import {
 import { Upload } from "tus-js-client";
 import { InstallAppButton } from "../components/install-app-button";
 import { EditorStudio } from "../components/editor-studio";
+import { PenguinGuide } from "../components/penguin-guide";
 import { RenderResults } from "../components/render-results";
 import { WORKSPACE_NAV, WorkspaceStudio, type WorkspaceView } from "../components/workspace-studio";
 import { createClient as createSupabaseClient, ensureBrowserSession } from "../lib/supabase/browser";
+import type { GuideAction } from "../lib/penguin-guide";
 
 // The studio API combines several database-backed row shapes in one dashboard.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -170,6 +172,18 @@ export default function Home() {
   const activeScene = sessionScenes[Math.min(sceneIndex, Math.max(0, sessionScenes.length - 1))];
   const currentPortfolio = portfolios.find((item) => item.id === portfolioId) || portfolios[0];
   const approvedCount = sessionScenes.filter((scene) => scene.selectedTakeId).length;
+  const guideSessionIds = new Set(sessions.map((item) => item.id));
+  const guideContext = {
+    view,
+    projectCount: sessions.length,
+    approvedCount: (data?.scenes || []).filter((scene) => guideSessionIds.has(scene.sessionId) && scene.selectedTakeId).length,
+    readyCount: (data?.editJobs || []).filter((job) => guideSessionIds.has(job.sessionId) && job.status === "ready").length,
+  };
+
+  const guideAction = (action: GuideAction) => {
+    if (action.destination === "upload") newUploadInputRef.current?.click();
+    else setView(action.destination === "projects" ? "projects" : action.destination);
+  };
 
   const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -457,7 +471,7 @@ export default function Home() {
   if (loading && !data) return <main className="grid min-h-screen place-items-center bg-[#070910] text-white"><div className="text-center"><LoaderCircle className="mx-auto animate-spin text-violet-300" /><p className="mt-3 text-sm text-zinc-500">Abriendo tu estudio en la nube…</p></div></main>;
 
   return (
-    <main className="min-h-screen bg-[#070910] text-white">
+    <main className="min-h-screen bg-[#070910] pb-24 text-white">
       <input ref={newUploadInputRef} type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.mov,.m4v,.webm" multiple className="hidden" aria-label="Seleccionar videos para un proyecto nuevo" onChange={(event) => { beginNewUpload(event.currentTarget.files); event.currentTarget.value = ""; }} />
       <input ref={fileInputRef} type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.mov,.m4v,.webm" multiple className="hidden" aria-label="Seleccionar videos para esta producción" onChange={(event) => { importIntoCurrentSession(event.currentTarget.files); event.currentTarget.value = ""; }} />
       <header className="sticky top-0 z-40 border-b border-white/8 bg-[#070910]/88 backdrop-blur-xl">
@@ -556,6 +570,8 @@ export default function Home() {
         )}
         </div>
       </div>
+
+      <PenguinGuide context={guideContext} onAction={guideAction} />
 
       {showNewSession && <div className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4 backdrop-blur-sm"><div role="dialog" aria-modal="true" aria-labelledby="new-session-title" className="max-h-[90dvh] w-full max-w-xl overflow-y-auto rounded-3xl border border-white/10 bg-[#111521] p-6 shadow-2xl"><div className="flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Nueva producción</p><h2 id="new-session-title" className="mt-1 text-xl font-semibold">{pendingUploadFiles.length ? `Subir ${pendingUploadFiles.length} video${pendingUploadFiles.length === 1 ? "" : "s"}` : "Monta el libreto"}</h2></div><button onClick={closeSessionDialog} aria-label="Cerrar" className="grid h-9 w-9 place-items-center rounded-full bg-white/5"><X size={16} /></button></div><label className="mt-6 block text-xs text-zinc-500">Nombre del proyecto<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={160} placeholder="Ej. 3 errores al usar IA" className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none focus:border-violet-400/40" /></label>{pendingUploadFiles.length > 0 && <div className="mt-4 rounded-xl border border-white/8 bg-black/20 p-3"><p className="text-xs font-medium text-zinc-300">Archivos seleccionados ({pendingUploadFiles.length})</p><ul className="mt-2 max-h-28 space-y-1 overflow-y-auto text-[10px] text-zinc-400">{pendingUploadFiles.map((file, index) => <li key={`${file.name}-${index}`} className="truncate">{index + 1}. {file.name}</li>)}</ul></div>}<label className="mt-4 block text-xs text-zinc-500">{pendingUploadFiles.length ? "Libreto completo (obligatorio antes de exportar)" : "Libreto completo"}<textarea value={script} onChange={(event) => setScript(event.target.value)} rows={pendingUploadFiles.length ? 5 : 9} placeholder={pendingUploadFiles.length ? "Pega aquí la historia en su orden narrativo. No importa en qué orden subas los archivos." : "Separa cada escena con una línea en blanco.\n\nCada párrafo se convertirá en una escena grabable."} className="mt-2 w-full resize-none rounded-xl border border-white/10 bg-black/25 p-4 text-sm leading-6 text-white outline-none focus:border-violet-400/40" /></label><label className="mt-3 inline-flex cursor-pointer rounded-xl border border-violet-400/25 px-3 py-2 text-xs text-violet-200">Subir libreto .txt o .md<input type="file" accept=".txt,.md,text/plain,text/markdown" className="sr-only" onChange={(event) => { void importNewSessionScript(event.target.files?.[0]); event.target.value = ""; }} /></label><p className="mt-3 text-xs leading-5 text-zinc-400">{pendingUploadFiles.length ? `Se creará una escena por cada archivo. Revisarás y aprobarás los ${pendingUploadFiles.length} videos antes de editar. Antes de exportar deberás guardar el libreto y revisar lo dicho en cada toma. No asignaremos subtítulos según el orden de subida. El render cloud procesa hasta 2 minutos.` : "Segmenta Studio mantendrá este orden y solo enviará a edición las tomas que apruebes."}</p><button onClick={createSession} disabled={saving || !title.trim()} className="mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-violet-500 px-4 py-3.5 text-sm font-semibold disabled:opacity-40">{saving ? <LoaderCircle className="animate-spin" size={17} /> : pendingUploadFiles.length ? <UploadCloud size={17} /> : <Video size={17} />}{pendingUploadFiles.length ? "Crear proyecto y revisar videos" : "Preparar grabación"}</button></div></div>}
 
