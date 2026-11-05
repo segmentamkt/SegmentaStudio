@@ -10,7 +10,7 @@ import { Upload } from "tus-js-client";
 import { InstallAppButton } from "../components/install-app-button";
 import { EditorStudio } from "../components/editor-studio";
 import { PenguinGuide } from "../components/penguin-guide";
-import { RenderResults } from "../components/render-results";
+import { RenderResults, type RenderOutput } from "../components/render-results";
 import { WORKSPACE_NAV, WorkspaceStudio, type WorkspaceView } from "../components/workspace-studio";
 import { createClient as createSupabaseClient, ensureBrowserSession } from "../lib/supabase/browser";
 import type { GuideAction } from "../lib/penguin-guide";
@@ -47,6 +47,26 @@ async function api<T = unknown>(path: string, options: RequestInit = {}): Promis
   const data = await response.json().catch(() => ({})) as T & { error?: string };
   if (!response.ok) throw new Error(data.error || "No se pudo completar la acción.");
   return data as T;
+}
+
+function videoDuration(url: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    const timeout = window.setTimeout(() => finish(0), 15_000);
+    const finish = (duration: number) => {
+      window.clearTimeout(timeout);
+      video.onloadedmetadata = null;
+      video.onerror = null;
+      video.removeAttribute("src");
+      video.load();
+      if (Number.isFinite(duration) && duration >= .2) resolve(duration);
+      else reject(new Error("No pudimos leer la duración del MP4. Reprodúcelo y vuelve a intentarlo."));
+    };
+    video.preload = "metadata";
+    video.onloadedmetadata = () => finish(video.duration);
+    video.onerror = () => finish(0);
+    video.src = url;
+  });
 }
 
 function formatTime(milliseconds: number) {
@@ -95,6 +115,8 @@ export default function Home() {
   const [view, setView] = useState<StudioView>("summary");
   const [portfolioId, setPortfolioId] = useState("");
   const [sessionId, setSessionId] = useState("");
+  const [editorSessionId, setEditorSessionId] = useState("");
+  const [editorResultId, setEditorResultId] = useState("");
   const [sceneIndex, setSceneIndex] = useState(0);
   const [showNewSession, setShowNewSession] = useState(false);
   const [showNewPortfolio, setShowNewPortfolio] = useState(false);
@@ -183,6 +205,31 @@ export default function Home() {
   const guideAction = (action: GuideAction) => {
     if (action.destination === "upload") newUploadInputRef.current?.click();
     else setView(action.destination === "projects" ? "projects" : action.destination);
+  };
+
+  const continueOutput = async (output: RenderOutput) => {
+    const original = output.sessionId && sessions.find((item) => item.id === output.sessionId);
+    const hasEditableSources = Boolean(original && (data?.scenes || []).some((scene) => scene.sessionId === original.id && scene.selectedTakeId));
+    if (original && hasEditableSources) {
+      setPortfolioId(original.portfolioId);
+      setEditorSessionId(original.id);
+      setEditorResultId(output.id);
+      setSessionId(original.id);
+      setView("edit");
+      return;
+    }
+    if (!portfolioId) throw new Error("Selecciona un portafolio antes de continuar.");
+    const durationSeconds = await videoDuration(output.previewUrl);
+    const result = await api<{ session: { id: string; portfolioId: string } }>(`/api/editor/outputs/${output.id}/continue`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ portfolioId, sourceSessionId: output.sessionId, durationSeconds }),
+    });
+    await refresh();
+    setPortfolioId(result.session.portfolioId);
+    setSessionId(result.session.id);
+    setEditorSessionId(result.session.id);
+    setEditorResultId("");
+    setView("edit");
   };
 
   const stopCamera = useCallback(() => {
@@ -511,7 +558,7 @@ export default function Home() {
           </div>
         </section>
 
-        {WORKSPACE_NAV.some((item) => item.id === view) ? <WorkspaceStudio view={view as WorkspaceView} portfolioId={portfolioId} portfolio={currentPortfolio} sessions={data?.sessions || []} scenes={data?.scenes || []} onOpenEditor={() => setView("edit")} onOpenResults={() => setView("library")} /> : view === "edit" ? <EditorStudio portfolioId={portfolioId} sessions={data?.sessions || []} scenes={data?.scenes || []} takes={data?.takes || []} editJobs={data?.editJobs || []} onRefresh={refresh} onBack={() => setView("record")} onUpload={() => newUploadInputRef.current?.click()} onAddToCurrent={(id) => { setSessionId(id); setSceneIndex(Math.max(0, (data?.scenes || []).filter((scene) => scene.sessionId === id).length - 1)); setView("record"); }} /> : view === "record" ? (
+        {WORKSPACE_NAV.some((item) => item.id === view) ? <WorkspaceStudio view={view as WorkspaceView} portfolioId={portfolioId} portfolio={currentPortfolio} sessions={data?.sessions || []} scenes={data?.scenes || []} onOpenEditor={() => setView("edit")} onOpenResults={() => setView("library")} /> : view === "edit" ? <EditorStudio initialSessionId={editorSessionId} initialResultId={editorResultId} portfolioId={portfolioId} sessions={data?.sessions || []} scenes={data?.scenes || []} takes={data?.takes || []} editJobs={data?.editJobs || []} onRefresh={refresh} onBack={() => setView("record")} onUpload={() => newUploadInputRef.current?.click()} onAddToCurrent={(id) => { setSessionId(id); setSceneIndex(Math.max(0, (data?.scenes || []).filter((scene) => scene.sessionId === id).length - 1)); setView("record"); }} /> : view === "record" ? (
           !sessions.length ? <section className="overflow-hidden rounded-2xl border border-white/8 bg-white/[.025] sm:rounded-3xl">
             <div className="bg-[radial-gradient(circle_at_100%_0%,rgba(124,58,237,.18),transparent_42%)] p-5 sm:p-10">
               <span className="grid h-11 w-11 place-items-center rounded-2xl bg-violet-400/12 text-violet-200"><Video size={20} /></span>
@@ -562,7 +609,7 @@ export default function Home() {
           </div>
         ) : (
           <section>
-            <RenderResults sessions={sessions} />
+            <RenderResults sessions={sessions} editableSessionIds={sessions.filter((item) => (data?.scenes || []).some((scene) => scene.sessionId === item.id && scene.selectedTakeId)).map((item) => item.id)} onEditOutput={continueOutput} />
             <div className="mb-5 flex items-end justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Biblioteca cloud</p><h2 className="mt-1 text-2xl font-semibold">Tomas de {currentPortfolio?.name}</h2></div><div className="hidden gap-2 sm:flex"><button onClick={() => setView("edit")} className="flex items-center gap-2 rounded-xl bg-violet-500 px-4 py-2.5 text-sm font-semibold"><Sparkles size={15} />Abrir editor</button><button onClick={() => setView("record")} className="flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2.5 text-sm"><ArrowLeft size={15} />Volver a grabar</button></div></div>
             <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{sessions.map((session) => { const sceneRows = (data?.scenes || []).filter((scene) => scene.sessionId === session.id); const allTakes = (data?.takes || []).filter((take) => take.sessionId === session.id); return <article key={session.id} className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><div className="flex items-start justify-between"><div><span className={`rounded-full px-2.5 py-1 text-[10px] ${session.status === "ready_for_edit" ? "bg-emerald-400/10 text-emerald-300" : "bg-violet-400/10 text-violet-300"}`}>{session.status === "ready_for_edit" ? "Lista para edición" : "En grabación"}</span><h3 className="mt-3 font-medium">{session.title}</h3><p className="mt-1 text-xs text-zinc-600">{sceneRows.filter((scene) => scene.selectedTakeId).length}/{sceneRows.length} escenas aprobadas · {allTakes.filter((take) => take.status === "blooper").length} bloopers</p></div><button onClick={() => removeSession(session.id)} className="text-zinc-700 hover:text-red-300"><Trash2 size={16} /></button></div><div className="mt-5 grid grid-cols-3 gap-2">{allTakes.slice(0, 6).map((take) => <div key={take.id} className="group relative aspect-[9/16] overflow-hidden rounded-xl bg-black"><video src={`/api/media/${take.id}`} className="h-full w-full object-cover" preload="metadata" /><span className={`absolute bottom-1.5 left-1.5 rounded-full bg-black/70 px-2 py-1 text-[8px] ${take.status === "approved" ? "text-emerald-300" : take.status === "blooper" ? "text-amber-200" : "text-zinc-300"}`}>{statusLabel(take.status)}</span><button onClick={() => removeTake(take.id)} aria-label="Eliminar toma" className="absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-full bg-black/70 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100"><Trash2 size={11} /></button></div>)}</div><button onClick={() => { setSessionId(session.id); setView("record"); }} className="mt-5 flex w-full items-center justify-between rounded-xl border border-white/8 bg-black/20 px-4 py-3 text-sm">Abrir producción <ChevronRight size={15} /></button></article>; })}</div>
             {!sessions.length && <div className="grid min-h-[420px] place-items-center rounded-3xl border border-dashed border-white/10 text-center"><div><Library className="mx-auto text-zinc-700" size={40} /><p className="mt-4 text-zinc-500">Todavía no hay tomas en este portafolio.</p></div></div>}
