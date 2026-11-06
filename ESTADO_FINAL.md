@@ -14,7 +14,7 @@ Actualizado el 6 de noviembre de 2026. Producción: https://studio.segmenta.onli
 - [ ] Superposiciones de imágenes y B-roll real, música con licencia, composición a varias pistas, pantalla dividida y efectos contextuales.
 - [ ] Evaluación editorial automática del MP4 (calidad narrativa, sincronía y diseño) con revisión humana.
 - [ ] Conexión operativa de Codex, Claude y Gemini de escritorio con la web, sin claves API. Hoy la web no ejecuta esas aplicaciones como agentes.
-- [ ] Reparar el despliegue automático desde GitHub: los dos últimos cambios de código se publicaron manualmente en Vercel porque el push no creó un despliegue nuevo.
+- [x] GitHub está conectado con Vercel. El despliegue automático puede aparecer después de una demora; hubo publicaciones manuales mientras se verificaba.
 
 ## Lo que hacen las skills web ahora
 
@@ -25,7 +25,7 @@ El libreto ordena automáticamente las tomas y añade rótulos breves cuando la 
 ## Evidencia de esta entrega
 
 - Git: `c59c9f4` en `main`.
-- Vercel: `dpl_HHMT1QAdh38MrrNXNAkSo7Kt5iUA` promovido a `studio.segmenta.online`.
+- Vercel: el código se verificó en `studio.segmenta.online`; el dominio respondió HTTP 200 y mostró el editor nuevo. También se observó el despliegue automático de GitHub.
 - `npm run build`, `npm run lint` y 28 pruebas completadas.
 - La ruta de extracción de voz exige acceso al dueño de la toma. La respuesta sin sesión es 401.
 - El MP4 anterior no se modifica automáticamente: hay que preparar y renderizar un trabajo nuevo.
