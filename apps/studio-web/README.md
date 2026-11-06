@@ -23,7 +23,7 @@ El render actual admite hasta 12 segmentos, 120 segundos de material fuente apro
 
 El libreto sirve de guía editorial, pero no transcribe el audio por sí solo. Para relacionar tomas y libreto hay que escribir el texto hablado de cada toma o importar una transcripción. SRT/VTT aporta tiempos; el texto plano se reparte de manera aproximada y no tiene sincronía palabra a palabra. Los recortes eliminan silencios medidos por audio, sin identificar errores de contenido. La extracción automática de clips, B-roll, música y el puente cloud con Claude/Gemini están identificados como pendientes en sus skills. No se presentan como efectos ya renderizados.
 
-El acceso actual crea una sesión anónima de Supabase por navegador. Los proyectos quedan aislados por sesión; entrar desde otro dispositivo no recupera automáticamente los mismos datos hasta que se implemente un acceso o vínculo de dispositivos.
+El enlace del estudio abre primero el inicio de sesión. Solo la cuenta anfitriona configurada en `STUDIO_HOST_EMAIL` puede acceder a proyectos, videos, API y render. La contraseña se administra en Supabase Auth; no se guarda en el repositorio. Los proyectos que se vincularon a esa cuenta antes de activar el filtro conservan su propietario original.
 
 ## Desarrollo y despliegue
 
@@ -32,6 +32,8 @@ Requiere Node.js 22.13 o posterior. Configura las variables de `.env.example` en
 ```text
 NEXT_PUBLIC_SUPABASE_URL
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+STUDIO_HOST_EMAIL
+STUDIO_RECOVERY_SECRET
 ```
 
 Aplica las migraciones de `supabase/migrations` al proyecto correcto de Supabase y verifica que el bucket privado `kiko-videos` y sus políticas estén activos. El repositorio no incluye credenciales ni videos de usuarios.

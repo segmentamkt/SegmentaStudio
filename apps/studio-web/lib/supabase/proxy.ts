@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { isPublicAuthPath, isStudioHost } from "../host-access";
 
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -17,6 +18,22 @@ export async function updateSession(request: NextRequest) {
       },
     },
   );
-  await supabase.auth.getClaims();
-  return response;
+  const { data } = await supabase.auth.getClaims();
+  const pathname = request.nextUrl.pathname;
+  const host = isStudioHost(data?.claims, process.env.STUDIO_HOST_EMAIL);
+  let destination: NextResponse;
+
+  if (pathname === "/login" && host && request.nextUrl.searchParams.get("reset") !== "1") {
+    destination = NextResponse.redirect(new URL("/", request.url));
+  } else if (host || isPublicAuthPath(pathname)) {
+    return response;
+  } else if (pathname.startsWith("/api/")) {
+    destination = NextResponse.json({ error: "Inicia sesión con la cuenta anfitriona." }, { status: 401 });
+  } else {
+    destination = NextResponse.redirect(new URL("/login", request.url));
+  }
+
+  response.cookies.getAll().forEach(({ name, value, ...options }) => destination.cookies.set(name, value, options));
+  destination.headers.set("Cache-Control", "private, no-store");
+  return destination;
 }
