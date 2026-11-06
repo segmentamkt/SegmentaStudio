@@ -15,6 +15,7 @@ Editor de video vertical para [studio.segmenta.online](https://studio.segmenta.o
 - Línea de tiempo manual con división y duplicación de tomas, orden, recorte, inclusión/exclusión, deshacer y rehacer. Cada segmento puede tener velocidad de 0,5× a 2×, volumen de voz y ajustes de brillo, contraste y saturación propios; estos valores llegan al MP4, incluidos los tiempos de subtítulos tras cambiar la velocidad.
 - Catálogo consultable de las 244 herramientas de la guía de CapCut enviada por el propietario, organizado en 15 categorías y con estado **Disponible**, **Parcial** o **En desarrollo**. El catálogo no activa funciones que todavía no tienen motor.
 - Pingüino guía en la esquina inferior derecha: ayuda contextual según la etapa del proyecto, preguntas frecuentes y botones que llevan a la acción. Funciona sin claves API y distingue las herramientas disponibles de las pendientes.
+- Subtítulos automáticos en español: Whisper Base cuantizado en un Worker del navegador (WASM, sin API ni WebGPU obligatorio). Botón visible en el editor, progreso y cancelación, guardado local por toma y reintento de pendientes; las correcciones conservan tiempos. Primera descarga aproximada de 77 MB de pesos más runtime/tokenizador. Límite de audio: 2 minutos por toma; texto válido por segmento hasta 1.000 caracteres.
 - Arrastrar y soltar en «Tus tomas» y «Orden del montaje», con ambas listas sincronizadas, indicador de inserción y alternativa con flechas/teclado. Al confirmar se conserva el orden de todas las tomas, incluidos bloopers y descartadas.
 - Ruta visual de cuatro referencias en el editor: orden y tomas confirmados, detalles opcionales, edición preparada y MP4 listo. Se puede editar y exportar sin libreto ni subtítulos; los subtítulos sincronizados se activan cuando existen tiempos reales.
 - Verificación técnica de video y audio del archivo **después** de subirlo a Storage.
@@ -56,3 +57,7 @@ Los efectos sonoros se sintetizan dentro del render. Si se añade una biblioteca
 
 Las responsabilidades de las 14 skills y su estado real están en [`skills/README.md`](skills/README.md).
 Las etapas para que el editor sea profesional y verificable están en [`docs/PROFESSIONAL_EDITOR_PLAN.md`](docs/PROFESSIONAL_EDITOR_PLAN.md).
+
+### Motor de subtítulos en el navegador
+
+`npm run dev` y `npm run build` usan Webpack para compilar el Worker de reconocimiento como JavaScript. En esta versión de Next, Turbopack emitía el archivo TypeScript sin compilar como recurso estático. Transformers 4.3.2 incluye la corrección del optimizador ONNX/WASM necesaria para los pesos q8; no bajar esa versión sin verificar inferencia real en el navegador.

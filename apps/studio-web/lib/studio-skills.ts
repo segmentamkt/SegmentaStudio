@@ -130,8 +130,8 @@ export const SKILL_CATALOG: SkillDefinition[] = [
   },
   {
     id: "subtitulos", name: "Subtítulos", icon: "💬", category: "texto", execution: "partial",
-    description: "Dibuja subtítulos sincronizados por toma; acepta voz transcrita localmente y archivos SRT/VTT.",
-    capability: "La transcripción local en navegadores compatibles obtiene tiempos de voz. SRT y VTT también conservan sus tiempos tras recortes y silencios. Revisa el texto antes de exportar.",
+    description: "Genera subtítulos automáticos en español desde el audio y los incrusta en el MP4; también acepta SRT/VTT.",
+    capability: "Editor → Texto reconoce la voz en este dispositivo sin claves API ni WebGPU obligatorio. Puedes corregir el texto y reintentar tomas fallidas; los tiempos se adaptan a recortes, silencios y velocidad. Revisa nombres propios antes de exportar.",
     defaultEnabled: true,
     defaultInstruction: "Subtítulos breves, legibles y ubicados lejos del rostro.",
     settings: [
@@ -373,7 +373,7 @@ export function applySkillProfilesToContract<T extends SkillAwareContract>(contr
     if (changed(subtitulos, "position")) updated.style_snapshot.subtitle.position = value(subtitulos, "position");
     if (changed(subtitulos, "uppercase")) updated.style_snapshot.subtitle.uppercase = value(subtitulos, "uppercase");
   }
-  decisions.push(decision("subtitulos", "partial", subtitulos.enabled, subtitulos.enabled ? "Tarjetas de subtítulos basadas en el libreto; sincronía fina pendiente." : "Subtítulos desactivados.", [...(!subtitulos.enabled || changed(subtitulos, "enabled") ? ["captions.enabled"] : []), ...(subtitulos.enabled ? [["maxWords", "captions.max_words_per_card"], ["size", "style_snapshot.subtitle.size"], ["position", "style_snapshot.subtitle.position"], ["uppercase", "style_snapshot.subtitle.uppercase"]].filter(([key]) => changed(subtitulos, key)).map(([, path]) => path) : [])]));
+  decisions.push(decision("subtitulos", "partial", subtitulos.enabled, subtitulos.enabled ? "Subtítulos con tiempos de voz de la transcripción automática o del archivo SRT/VTT; revisa el texto antes de renderizar." : "Subtítulos desactivados.", [...(!subtitulos.enabled || changed(subtitulos, "enabled") ? ["captions.enabled"] : []), ...(subtitulos.enabled ? [["maxWords", "captions.max_words_per_card"], ["size", "style_snapshot.subtitle.size"], ["position", "style_snapshot.subtitle.position"], ["uppercase", "style_snapshot.subtitle.uppercase"]].filter(([key]) => changed(subtitulos, key)).map(([, path]) => path) : [])]));
 
   const retoques = byId.get("retoques")!;
   if (retoques.enabled && changed(retoques, "contrast")) updated.style_snapshot.execution.contrast = value(retoques, "contrast");

@@ -752,9 +752,9 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
     "tools": [
       {
         "name": "Subtítulos automáticos",
-        "description": "Transcribir el diálogo del video mediante reconocimiento de voz.",
+        "description": "Reconocer la voz en español en este navegador, generar subtítulos con tiempos y corregirlos antes del MP4. Disponible en Editor → Texto.",
         "section": "",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Selección de idioma",

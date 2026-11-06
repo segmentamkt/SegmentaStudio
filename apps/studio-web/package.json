@@ -7,8 +7,8 @@
   },
   "scripts": {
     "install:ci": "npm ci",
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "next dev --webpack",
+    "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "test": "tsx --test tests/*.test.ts",
@@ -17,8 +17,7 @@
   "dependencies": {
     "@base-ui/react": "^1.7.0",
     "@hookform/resolvers": "^5.7.1",
-    "@huggingface/transformers": "4.2.0",
-    "@remotion/whisper-webgpu": "4.0.541",
+    "@huggingface/transformers": "4.3.2",
     "@shadcn/react": "^0.3.0",
     "@supabase/ssr": "0.12.7",
     "@supabase/supabase-js": "2.118.0",
