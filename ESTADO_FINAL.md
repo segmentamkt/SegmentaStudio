@@ -1,30 +1,30 @@
-# Estado final
+# Estado de Segmenta Studio
 
-Actualizado el 25 de octubre de 2026.
+Actualizado el 6 de noviembre de 2026. Producción: https://studio.segmenta.online/
 
-## Funcional
+## Etapas
 
-- Panel privado en `http://127.0.0.1:8765` con proyectos, biblioteca de videos, tendencias, ideas, estilo, equipo IA y tareas.
-- Carga real de MP4/MOV desde el navegador, copia intacta del original y rutas aisladas por proyecto.
-- Edición nativa con AVFoundation: exportación vertical 1080 × 1920, marco morado, texto opcional, conservación del audio existente y MP4 H.264 reproducible.
-- Validación del archivo exportado antes de marcarlo como listo, reproducción y apertura del original/resultado desde el panel.
-- Radar manual de referencias con URL verificable, procedencia y métricas solo si llevan evidencia.
-- Generación creativa local de ideas, hooks, guion, notas de grabación y CTA.
-- Preferencias de estilo persistentes, historial y reversión segura.
-- MultiAgent Core con cola durable, router, caché, recuperación, fencing tokens, telemetría y colaboración por propuestas, revisión cruzada e integración.
-- Adaptadores de Codex, Claude y Gemini por CLI o aplicación autorizada. El sistema no cuenta una app instalada como ejecución real.
+- [x] Repositorio y despliegue en Vercel.
+- [x] Carga de varias tomas y exportación MP4 vertical en la versión web.
+- [x] Línea de tiempo con orden, división, recorte, velocidad, volumen, color y edición de texto sobre el video.
+- [x] Libreto para proponer el orden y recursos visuales.
+- [x] Transcripción local en navegadores con WebGPU, tiempos de voz por palabra y corrección de subtítulos sin perder esos tiempos. También acepta SRT/VTT.
+- [x] Rechazo de nuevos planes con subtítulos sin tiempos reales; validación técnica del MP4 al exportar.
+- [ ] Validar una nueva exportación de E01 desde la sesión de Chrome que contiene las tomas del usuario. La sesión de revisión disponible muestra cero proyectos.
+- [ ] Superposiciones de imágenes y B-roll real, música con licencia, composición a varias pistas, pantalla dividida y efectos contextuales.
+- [ ] Evaluación editorial automática del MP4 (calidad narrativa, sincronía y diseño) con revisión humana.
+- [ ] Conexión operativa de Codex, Claude y Gemini de escritorio con la web, sin claves API. Hoy la web no ejecuta esas aplicaciones como agentes.
 
-## Regla de proveedores
+## Lo que hacen las skills web ahora
 
-No se usan claves API ni facturación por tokens. Codex, Claude y Gemini participan mediante sus aplicaciones o sesiones autorizadas en el Mac. La edición mecánica se ejecuta localmente, porque no necesita un modelo de lenguaje.
+Las skills son perfiles de edición y controles del render, no catorce agentes de IA independientes. Algunas se ejecutan, otras son parciales y otras siguen pendientes. La interfaz muestra ese estado. El motor aplica recortes de silencio, compresión de voz, zoom/color, rótulos, subtítulos temporizados, transiciones básicas y acentos sonoros procedimentales en cambios de escena. La disolución solicitada usa un fundido a negro.
 
-## Límites transparentes
+El libreto ordena automáticamente las tomas y añade rótulos breves cuando la coincidencia con el texto hablado es suficientemente clara. Si el orden no es fiable, la persona conserva el control de la línea de tiempo. La transcripción local usa un modelo que se descarga en el navegador; requiere WebGPU, puede cometer errores y debe revisarse antes de exportar.
 
-- La detección automática de silencios requiere FFmpeg, que no está instalado. El resto del flujo usa AVFoundation y funciona sin FFmpeg.
-- La transcripción automática local no está habilitada; el texto en pantalla se proporciona en el formulario. No se envía el video a una API.
-- El panel no publica en redes ni descarga contenido de terceros.
-- No existe un worker nocturno configurado; la cola conserva el estado, pero el Mac debe permanecer activo y la aplicación abierta para ejecutar trabajo.
+## Evidencia de esta entrega
 
-## Resultado probado
-
-Se importó un MP4 real, se procesó desde la misma API del panel, se exportó a 1080 × 1920 con texto, se volvió a descargar y AVFoundation confirmó `playable = true`.
+- Git: `c59c9f4` en `main`.
+- Vercel: `dpl_HHMT1QAdh38MrrNXNAkSo7Kt5iUA` promovido a `studio.segmenta.online`.
+- `npm run build`, `npm run lint` y 28 pruebas completadas.
+- La ruta de extracción de voz exige acceso al dueño de la toma. La respuesta sin sesión es 401.
+- El MP4 anterior no se modifica automáticamente: hay que preparar y renderizar un trabajo nuevo.
