@@ -66,7 +66,7 @@ export const EDITOR_STYLES: EditorStyle[] = [
   },
   {
     id: "ia-en-capas", name: "IA en capas", reference: "Inspirado en el reel de Lucho Rivero",
-    description: "Encabezado oscuro, cortes ágiles y subtítulos grandes con palabras clave en amarillo.", pace: "Muy ágil · demostraciones y negocios",
+    description: "Encabezado oscuro, cortes secos y subtítulos grandes con palabras clave en amarillo.", pace: "Ágil · demostraciones y negocios",
     palette: ["#09090B", "#FFFFFF", "#FACC15"], caption: "UNA IDEA QUE CAMBIA TODO", transition: "cut", transitionDuration: 0,
     subtitle: { text: "#FFFFFF", box: "#09090B", size: 76, uppercase: true, position: "bottom", maxWords: 4 },
     execution: { silenceThresholdMs: 450, zoomPercent: 5, contrast: 1.1, saturation: 1.08, soundEffectVolume: .42, soundPreset: "kinetic", framing: "fill", titleCards: true, titleColor: "#09090B" },
