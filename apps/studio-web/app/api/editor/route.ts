@@ -23,6 +23,7 @@ type EditSettings = {
   transition?: "cut" | "fade" | "dissolve";
   soundEffectVolume?: number;
   soundPreset?: "auto" | "none" | "soft" | "kinetic" | "cinematic" | "pop";
+  noiseReduction?: "off" | "light" | "medium";
 };
 
 type TimelineItem = {
@@ -50,7 +51,7 @@ export async function GET(request: Request) {
   if (!user) return unauthorized();
   const id = new URL(request.url).searchParams.get("id");
   const supabase = await createClient();
-  let query = supabase.from("kiko_edit_jobs").select("*").eq("owner_id", user.userId);
+  let query = supabase.from("kiko_edit_jobs").select("*").eq("owner_id", user.userId).neq("status", "preproduction");
   query = id ? query.eq("id", id) : query.order("updated_at", { ascending: false });
   const result = id ? await query.maybeSingle() : await query;
   if (result.error) {
@@ -71,7 +72,7 @@ export async function POST(request: Request) {
     const payload = await request.json() as Record<string, unknown>;
     const sessionId = clean(payload.sessionId);
     const objective = clean(payload.objective, "Crear un video vertical claro, dinámico y profesional.");
-    if (objective.length > 500) return Response.json({ error: "La indicación de edición admite hasta 500 caracteres." }, { status: 400 });
+    if (objective.length > 2_000) return Response.json({ error: "La indicación de edición admite hasta 2.000 caracteres." }, { status: 400 });
     const style = getEditorStyle(payload.style);
     const options = (payload.options || {}) as EditOptions;
     const settings = (payload.settings || {}) as EditSettings;
@@ -147,6 +148,7 @@ export async function POST(request: Request) {
         silenceThresholdMs: bounded(settings.silenceThresholdMs, style.execution.silenceThresholdMs, 350, 1500),
         soundEffectVolume: bounded(settings.soundEffectVolume, style.execution.soundEffectVolume, 0, 1),
         soundPreset: ["auto", "none", "soft", "kinetic", "cinematic", "pop"].includes(String(settings.soundPreset)) ? settings.soundPreset : "auto",
+        noiseReduction: ["off", "light", "medium"].includes(String(settings.noiseReduction)) ? settings.noiseReduction : "off",
       },
     };
     const contract = {

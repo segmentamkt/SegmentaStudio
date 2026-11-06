@@ -1,6 +1,7 @@
 import { createClient } from "../../../lib/supabase/server";
 import { getRequestUser, unauthorized } from "../../../lib/request-user";
-import { clean, scriptScenes, toAccount, toEditJob, toPortfolio, toScene, toSession, toTake } from "../../../lib/studio-data";
+import { clean, toAccount, toEditJob, toPortfolio, toScene, toSession, toTake } from "../../../lib/studio-data";
+import { preproductionSchema } from "../../../lib/preproduction-plan";
 
 const accents = ["violet", "cyan", "rose", "amber"];
 
@@ -42,7 +43,8 @@ export async function GET() {
     if (failure) throw failure;
     const editJobs = await supabase.from("kiko_edit_jobs").select("*").eq("owner_id", user.userId).order("updated_at", { ascending: false });
     if (editJobs.error) console.warn("edit jobs unavailable; using stateless fallback", editJobs.error.message);
-    return Response.json({ user, accounts: (accounts.data || []).map(toAccount), portfolios: (portfolios.data || []).map(toPortfolio), sessions: (sessions.data || []).map(toSession), scenes: (scenes.data || []).map(toScene), takes: (takes.data || []).map(toTake), editJobs: (editJobs.data || []).map(toEditJob) });
+    const jobs = (editJobs.data || []).map(toEditJob);
+    return Response.json({ user, accounts: (accounts.data || []).map(toAccount), portfolios: (portfolios.data || []).map(toPortfolio), sessions: (sessions.data || []).map(toSession), scenes: (scenes.data || []).map(toScene), takes: (takes.data || []).map(toTake), preproductionPlans: jobs.filter((job) => job.status === "preproduction"), editJobs: jobs.filter((job) => job.status !== "preproduction") });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "No se pudo abrir el estudio." }, { status: 500 });
   }
@@ -64,6 +66,9 @@ export async function POST(request: Request) {
       return Response.json({ portfolio: toPortfolio(result.data) }, { status: 201 });
     }
     if (action === "create_session") {
+      const planResult = preproductionSchema.safeParse(payload.preproductionPlan);
+      if (!planResult.success) return Response.json({ error: "Revisa y aprueba el plan de edición antes de crear el proyecto." }, { status: 400 });
+      const plan = planResult.data;
       const portfolioId = clean(payload.portfolioId);
       const owned = await supabase.from("kiko_portfolios").select("id").eq("id", portfolioId).eq("owner_id", user.userId).maybeSingle();
       if (!owned.data) return Response.json({ error: "Ese portafolio no está disponible." }, { status: 404 });
@@ -76,9 +81,9 @@ export async function POST(request: Request) {
       if (script.length > 6_000) return Response.json({ error: "El libreto admite hasta 6.000 caracteres." }, { status: 400 });
       // Uploaded clips may arrive in any order: the complete script is a reference,
       // never a guessed transcript assigned to a file by its upload position.
-      const sceneScripts = sceneCount ? Array.from({ length: sceneCount }, () => "") : scriptScenes(script);
+      const sceneScripts = sceneCount ? Array.from({ length: sceneCount }, () => "") : plan.scenes.map((scene) => scene.spoken || "Idea por grabar");
       if (sceneScripts.some((item) => item.length > 1_000)) return Response.json({ error: "Cada escena admite hasta 1.000 caracteres de libreto." }, { status: 400 });
-      const sceneTitles = Array.isArray(payload.sceneTitles) ? payload.sceneTitles : [];
+      const sceneTitles = sceneCount && Array.isArray(payload.sceneTitles) ? payload.sceneTitles : plan.scenes.map((scene) => scene.title);
       const id = crypto.randomUUID();
       const sessionResult = await supabase.from("kiko_recording_sessions").insert({ id, owner_id: user.userId, portfolio_id: portfolioId, title, script, status: "recording" }).select().single();
       if (sessionResult.error) throw sessionResult.error;
@@ -88,7 +93,32 @@ export async function POST(request: Request) {
         await supabase.from("kiko_recording_sessions").delete().eq("id", id).eq("owner_id", user.userId);
         throw scenesResult.error;
       }
+      const planSaved = await supabase.from("kiko_edit_jobs").insert({
+        id: crypto.randomUUID(), owner_id: user.userId, session_id: id, style: plan.style,
+        objective: plan.description, status: "preproduction", stage: "Dirección aprobada antes de grabar", progress: 0,
+        contract: plan,
+      });
+      if (planSaved.error) {
+        await supabase.from("kiko_recording_sessions").delete().eq("id", id).eq("owner_id", user.userId);
+        throw planSaved.error;
+      }
       return Response.json({ session: toSession(sessionResult.data), scenes: (scenesResult.data || []).map(toScene) }, { status: 201 });
+    }
+    if (action === "update_preproduction_plan") {
+      const sessionId = clean(payload.sessionId);
+      const parsed = preproductionSchema.safeParse(payload.preproductionPlan);
+      if (!parsed.success) return Response.json({ error: "El plan de edición tiene campos incompletos o inválidos." }, { status: 400 });
+      const owned = await supabase.from("kiko_recording_sessions").select("id").eq("id", sessionId).eq("owner_id", user.userId).maybeSingle();
+      if (!owned.data) return Response.json({ error: "No encontramos esa producción." }, { status: 404 });
+      const existing = await supabase.from("kiko_edit_jobs").select("id").eq("session_id", sessionId).eq("owner_id", user.userId).eq("status", "preproduction").maybeSingle();
+      if (existing.error) throw existing.error;
+      const plan = parsed.data;
+      const values = { style: plan.style, objective: plan.description, contract: plan, updated_at: new Date().toISOString() };
+      const result = existing.data
+        ? await supabase.from("kiko_edit_jobs").update(values).eq("id", existing.data.id).eq("owner_id", user.userId)
+        : await supabase.from("kiko_edit_jobs").insert({ id: crypto.randomUUID(), owner_id: user.userId, session_id: sessionId, status: "preproduction", stage: "Dirección aprobada", progress: 0, ...values });
+      if (result.error) throw result.error;
+      return Response.json({ saved: true });
     }
     if (action === "complete_session") {
       const result = await supabase.from("kiko_recording_sessions").update({ status: "ready_for_edit", updated_at: new Date().toISOString() }).eq("id", clean(payload.sessionId)).eq("owner_id", user.userId).select().maybeSingle();

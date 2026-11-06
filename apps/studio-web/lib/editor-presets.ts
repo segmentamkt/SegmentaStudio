@@ -4,7 +4,7 @@ export type EditorStyle = {
   id: EditorStyleId; name: string; reference: string; description: string; pace: string;
   palette: [string, string, string]; caption: string; transition: "cut" | "fade" | "dissolve"; transitionDuration: number;
   subtitle: { text: string; box: string; size: number; uppercase: boolean; position: "top" | "center" | "bottom"; maxWords: number };
-  execution: { silenceThresholdMs: number; zoomPercent: number; contrast: number; saturation: number; soundEffectVolume: number; soundPreset?: "auto" | "none" | "soft" | "kinetic" | "cinematic" | "pop"; framing: "fill" | "fit"; titleCards: boolean; titleColor: string };
+  execution: { silenceThresholdMs: number; zoomPercent: number; contrast: number; saturation: number; soundEffectVolume: number; soundPreset?: "auto" | "none" | "soft" | "kinetic" | "cinematic" | "pop"; noiseReduction?: "off" | "light" | "medium"; framing: "fill" | "fit"; titleCards: boolean; titleColor: string };
 };
 
 export const EDITOR_STYLES: EditorStyle[] = [

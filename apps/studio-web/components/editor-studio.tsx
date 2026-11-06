@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { EDITOR_STYLES, type EditorStyleId } from "../lib/editor-presets";
 import { loadSkillProfiles } from "../lib/studio-skills";
+import { preproductionSchema } from "../lib/preproduction-plan";
 import { planFromScript } from "../lib/editorial-director";
 import { parseCaptionCues, type CaptionCue } from "../lib/caption-cues";
 import { transcribeTakeInBrowser } from "../lib/browser-transcription";
@@ -150,6 +151,7 @@ export function EditorStudio(props: {
   scenes: Row[];
   takes: Row[];
   editJobs: Row[];
+  preproductionPlans: Row[];
   onRefresh: () => Promise<void>;
   onBack: () => void;
   onUpload: () => void;
@@ -164,7 +166,7 @@ export function EditorStudio(props: {
   const [objective, setObjective] = useState("Reel vertical profesional: gancho fuerte, ritmo claro y cierre con autoridad.");
   const [options, setOptions] = useState({ captions: true, deadAir: true, transitions: true, soundEffects: true, labels: true, broll: false });
   const initialStyle = EDITOR_STYLES[0];
-  const [settings, setSettings] = useState({ subtitleSize: initialStyle.subtitle.size, subtitlePosition: initialStyle.subtitle.position, silenceThresholdMs: initialStyle.execution.silenceThresholdMs, silenceNoiseDb: -30, transition: initialStyle.transition, soundEffectVolume: initialStyle.execution.soundEffectVolume, soundPreset: "auto" as "auto" | "none" | "soft" | "kinetic" | "cinematic" | "pop" });
+  const [settings, setSettings] = useState({ subtitleSize: initialStyle.subtitle.size, subtitlePosition: initialStyle.subtitle.position, silenceThresholdMs: initialStyle.execution.silenceThresholdMs, silenceNoiseDb: -30, noiseReduction: "off" as "off" | "light" | "medium", transition: initialStyle.transition, soundEffectVolume: initialStyle.execution.soundEffectVolume, soundPreset: "auto" as "auto" | "none" | "soft" | "kinetic" | "cinematic" | "pop" });
   const [localJob, setJob] = useState<Row | null | undefined>(undefined);
   const [selectedResultId, setSelectedResultId] = useState(props.initialResultId || "");
   useEffect(() => { setSelectedResultId(props.initialResultId || ""); }, [props.initialResultId]);
@@ -172,6 +174,8 @@ export function EditorStudio(props: {
   const [previewMode, setPreviewMode] = useState<"final" | "original">("final");
   const latestJob = props.editJobs.find((item) => item.id === selectedResultId && item.sessionId === sessionId)
     || props.editJobs.find((item) => item.sessionId === sessionId) || null;
+  const parsedPreproduction = preproductionSchema.safeParse(props.preproductionPlans.find((item) => item.sessionId === sessionId)?.contract);
+  const preproduction = parsedPreproduction.success ? parsedPreproduction.data : null;
   const job = localJob === undefined || (localJob && localJob.sessionId !== sessionId) ? latestJob : localJob;
   const ephemeralStorageKey = `segmenta.edit-job.v1:${props.portfolioId}:${sessionId}`;
   const resultStorageKey = `segmenta.latest-result.v1:${props.portfolioId}:${sessionId}`;
@@ -268,7 +272,7 @@ export function EditorStudio(props: {
       setObjective(String(source.objective || "Reel vertical profesional: gancho fuerte, ritmo claro y cierre con autoridad."));
       if (saved) {
         if (saved.options) setOptions(saved.options);
-        if (saved.settings) setSettings(saved.settings);
+        if (saved.settings) setSettings((current) => ({ ...current, ...saved.settings }));
       } else if (contract) {
         const snapshot = contract.style_snapshot || {};
         setOptions({ captions: contract.captions?.enabled !== false, deadAir: contract.dead_air?.remove !== false,
@@ -278,10 +282,16 @@ export function EditorStudio(props: {
           subtitlePosition: ["top", "center", "bottom"].includes(snapshot.subtitle?.position) ? snapshot.subtitle.position : "bottom",
           silenceThresholdMs: draftNumber(contract.dead_air?.threshold_ms, initialStyle.execution.silenceThresholdMs, 350, 1500),
           silenceNoiseDb: draftNumber(contract.dead_air?.noise_db, -30, -35, -25),
+          noiseReduction: ["off", "light", "medium"].includes(snapshot.execution?.noiseReduction) ? snapshot.execution.noiseReduction : "off",
           transition: ["cut", "fade", "dissolve"].includes(snapshot.transition) ? snapshot.transition : "cut",
           soundEffectVolume: draftNumber(snapshot.execution?.soundEffectVolume, initialStyle.execution.soundEffectVolume, 0, 1),
           soundPreset: ["auto", "none", "soft", "kinetic", "cinematic", "pop"].includes(snapshot.execution?.soundPreset) ? snapshot.execution.soundPreset : "auto" });
       }
+    } else if (preproduction) {
+      setStyle(preproduction.style);
+      setObjective(preproduction.description);
+      setOptions({ captions: preproduction.technical.captions && preproduction.skills.includes("subtitulos"), deadAir: preproduction.technical.removeSilence && preproduction.skills.includes("recortes"), transitions: preproduction.technical.transitions && preproduction.skills.includes("transiciones"), soundEffects: preproduction.technical.soundEffects && preproduction.skills.includes("audio_fx"), labels: preproduction.technical.labels && preproduction.skills.includes("superposiciones"), broll: false });
+      setSettings((current) => ({ ...current, silenceThresholdMs: preproduction.technical.silenceThresholdMs, noiseReduction: preproduction.skills.includes("sonido") ? preproduction.technical.noiseReduction : "off", transition: EDITOR_STYLES.find((item) => item.id === preproduction.style)?.transition || "cut" }));
     } else if (available.find((item) => item.id === sessionId)?.title?.startsWith("Copia del MP4 ·")) {
       setOptions((current) => ({ ...current, captions: false }));
     }
@@ -353,7 +363,7 @@ export function EditorStudio(props: {
     if (busy) return;
     const preset = EDITOR_STYLES.find((item) => item.id === nextStyle) || EDITOR_STYLES[0];
     setStyle(nextStyle);
-    setSettings({ subtitleSize: preset.subtitle.size, subtitlePosition: preset.subtitle.position, silenceThresholdMs: preset.execution.silenceThresholdMs, silenceNoiseDb: -30, transition: preset.transition, soundEffectVolume: preset.execution.soundEffectVolume, soundPreset: "auto" });
+    setSettings((current) => ({ ...current, subtitleSize: preset.subtitle.size, subtitlePosition: preset.subtitle.position, silenceThresholdMs: preset.execution.silenceThresholdMs, silenceNoiseDb: -30, transition: preset.transition, soundEffectVolume: preset.execution.soundEffectVolume, soundPreset: "auto" }));
     setJob(null);
     setDraftPending(true);
     window.localStorage.setItem(draftPendingKey, "1");
@@ -627,7 +637,11 @@ export function EditorStudio(props: {
       const plannedTimeline = labels.size
         ? orderedTimeline.map((clip) => clip.label.trim() || !labels.has(clip.segmentId) ? clip : { ...clip, label: labels.get(clip.segmentId)! })
         : orderedTimeline;
-      const result = await request<{ job: Row }>("/api/editor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, style, objective, options, settings, timeline: plannedTimeline, skillProfiles: loadSkillProfiles(props.portfolioId) }) });
+      const effectiveSkills: Partial<Record<string, boolean>> = { subtitulos: options.captions, recortes: options.deadAir, audio_fx: options.soundEffects, transiciones: options.transitions, superposiciones: options.labels };
+      const skillProfiles = loadSkillProfiles(props.portfolioId).map((profile) => preproduction
+        ? { ...profile, enabled: effectiveSkills[profile.id] ?? preproduction.skills.includes(profile.id) }
+        : profile);
+      const result = await request<{ job: Row }>("/api/editor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, style, objective, options, settings, timeline: plannedTimeline, skillProfiles }) });
       if (plannedTimeline !== timeline) {
         undoRef.current = [...undoRef.current.slice(-29), timeline];
         redoRef.current = [];
@@ -744,7 +758,7 @@ export function EditorStudio(props: {
           </div>
         </>}
         {tool === "effects" && <><PanelTitle icon={Zap} title="Efectos" text="Movimiento sin complicaciones" /><div className="mt-4 space-y-3"><Toggle enabled={options.deadAir} label="Cortar silencios" detail="Elimina pausas largas" onChange={() => changeOptions({ deadAir: !options.deadAir })} />{options.deadAir && <Range label="Pausa máxima" value={settings.silenceThresholdMs} min={350} max={1500} step={50} suffix=" ms" onChange={(value) => changeSettings({ silenceThresholdMs: value })} />}{options.deadAir && <Select label="Sensibilidad al ruido" value={String(settings.silenceNoiseDb)} onChange={(value) => changeSettings({ silenceNoiseDb: Number(value) })} options={[["-35","Conservadora"],["-30","Normal"],["-25","Alta · para ruido de fondo"]]} />}<Toggle enabled={options.transitions} label="Transiciones" detail="Entre escenas" onChange={() => changeOptions({ transitions: !options.transitions })} />{options.transitions && <Select label="Tipo" value={settings.transition} onChange={(value) => changeSettings({ transition: value as typeof settings.transition })} options={[['cut','Corte'],['fade','Fundido'],['dissolve','Fundido a negro']]} />}<div className="rounded-xl border border-dashed border-white/8 p-3 opacity-60"><p className="flex items-center gap-2 text-xs"><ImageIcon size={14} />B-roll e imágenes</p><small className="mt-1 block text-[9px] text-zinc-600">Se habilitará al conectar la biblioteca visual.</small></div></div></>}
-        {tool === "audio" && <><PanelTitle icon={Volume2} title="Audio" text="Voz clara y golpes precisos" /><div className="mt-4 space-y-4">{selectedClip && <><Range label={`Volumen de ${selectedClip.title}`} value={Math.round(selectedClip.audioVolume * 100)} min={0} max={200} step={5} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { audioVolume: value / 100 })} /><button onClick={() => updateClip(selectedClip.segmentId, { audioVolume: selectedClip.audioVolume === 0 ? 1 : 0 })} className="w-full rounded-xl border border-white/10 px-3 py-2 text-xs text-zinc-300">{selectedClip.audioVolume === 0 ? "Activar voz" : "Silenciar toma"}</button></>}<Toggle enabled={options.soundEffects} label="Efectos sonoros" detail="En cambios importantes" onChange={() => changeOptions({ soundEffects: !options.soundEffects })} />{options.soundEffects && <Range label="Intensidad" value={Math.round(settings.soundEffectVolume * 100)} min={0} max={100} suffix="%" onChange={(value) => changeSettings({ soundEffectVolume: value / 100 })} />}{options.soundEffects && <Select label="Sonido de los cortes" value={settings.soundPreset} onChange={(value) => changeSettings({ soundPreset: value as typeof settings.soundPreset })} options={[["auto","Según el estilo"],["soft","Suave"],["kinetic","Golpe cinético"],["cinematic","Cinematográfico"],["pop","Marca pop"],["none","Sin sonido"]]} />}<div className="rounded-xl border border-dashed border-white/8 p-3 opacity-60"><p className="flex items-center gap-2 text-xs"><Music2 size={14} />Música</p><small className="mt-1 block text-[9px] text-zinc-600">Pendiente de pistas con licencia.</small></div></div></>}
+        {tool === "audio" && <><PanelTitle icon={Volume2} title="Audio" text="Voz clara y golpes precisos" /><div className="mt-4 space-y-4">{selectedClip && <><Range label={`Volumen de ${selectedClip.title}`} value={Math.round(selectedClip.audioVolume * 100)} min={0} max={200} step={5} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { audioVolume: value / 100 })} /><button onClick={() => updateClip(selectedClip.segmentId, { audioVolume: selectedClip.audioVolume === 0 ? 1 : 0 })} className="w-full rounded-xl border border-white/10 px-3 py-2 text-xs text-zinc-300">{selectedClip.audioVolume === 0 ? "Activar voz" : "Silenciar toma"}</button></>}<Select label="Reducción de ruido de voz" value={settings.noiseReduction} onChange={(value) => changeSettings({ noiseReduction: value as typeof settings.noiseReduction })} options={[["off","Apagada"],["light","Suave"],["medium","Media"]]} /><Toggle enabled={options.soundEffects} label="Efectos sonoros" detail="En cambios importantes" onChange={() => changeOptions({ soundEffects: !options.soundEffects })} />{options.soundEffects && <Range label="Intensidad" value={Math.round(settings.soundEffectVolume * 100)} min={0} max={100} suffix="%" onChange={(value) => changeSettings({ soundEffectVolume: value / 100 })} />}{options.soundEffects && <Select label="Sonido de los cortes" value={settings.soundPreset} onChange={(value) => changeSettings({ soundPreset: value as typeof settings.soundPreset })} options={[["auto","Según el estilo"],["soft","Suave"],["kinetic","Golpe cinético"],["cinematic","Cinematográfico"],["pop","Marca pop"],["none","Sin sonido"]]} />}<div className="rounded-xl border border-dashed border-white/8 p-3 opacity-60"><p className="flex items-center gap-2 text-xs"><Music2 size={14} />Música</p><small className="mt-1 block text-[9px] text-zinc-600">Pendiente de pistas con licencia.</small></div></div></>}
         {tool === "catalog" && <><PanelTitle icon={Layers3} title="Mapa de herramientas" text="Guía completa · 15 categorías" /><p className="mt-3 text-[10px] leading-4 text-zinc-400">Disponible: la función descrita modifica el MP4. Parcial: existe una versión limitada. En desarrollo: aún no está conectada al render.</p><input type="search" value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} placeholder="Buscar herramienta…" className="mt-4 w-full rounded-xl border border-white/10 bg-[#151822] p-2.5 text-xs text-white outline-none" /><div className="mt-4 space-y-2">{EDITOR_TOOL_CATALOG.map((category) => { const matches = category.tools.filter((item) => `${item.name} ${item.section} ${item.description}`.toLocaleLowerCase("es").includes(catalogSearch.toLocaleLowerCase("es"))); if (!matches.length) return null; return <details key={category.id} open={Boolean(catalogSearch)} className="rounded-xl border border-white/10 bg-white/[.02] p-2"><summary className="cursor-pointer text-xs font-medium">{category.id}. {category.name} <span className="text-zinc-500">({matches.length})</span></summary><div className="mt-2 space-y-2">{matches.map((item, index) => <div key={`${item.section}-${item.name}-${index}`} className="rounded-lg bg-black/20 p-2"><p className="text-[11px] text-zinc-200">{item.name}</p><p className="mt-1 text-[9px] leading-4 text-zinc-500">{item.description}</p><span className={`mt-1 inline-block text-[9px] ${item.status === "ready" ? "text-emerald-300" : item.status === "partial" ? "text-cyan-300" : "text-amber-200"}`}>{item.status === "ready" ? "Disponible" : item.status === "partial" ? "Parcial" : "En desarrollo"}</span></div>)}</div></details>; })}</div></>}
       </aside>
 
@@ -764,7 +778,7 @@ export function EditorStudio(props: {
 
       <aside id="editor-export" className="order-4 scroll-mt-24 border-t border-white/8 bg-[#0c0f17] p-4 xl:order-none xl:border-l xl:border-t-0">
         <PanelTitle icon={Settings2} title="Director de edición" text="Describe el resultado" />
-        <textarea value={objective} onChange={(event) => { setObjective(event.target.value); setJob(null); setDraftPending(true); window.localStorage.setItem(draftPendingKey, "1"); }} disabled={Boolean(busy)} rows={5} className="mt-4 w-full resize-none rounded-xl border border-white/8 bg-black/20 p-3 text-xs leading-5 text-zinc-300 outline-none focus:border-violet-400/40 disabled:opacity-50" placeholder="Ej. Quiero un reel energético, directo y con pausas mínimas…" />
+        <textarea value={objective} maxLength={2000} onChange={(event) => { setObjective(event.target.value); setJob(null); setDraftPending(true); window.localStorage.setItem(draftPendingKey, "1"); }} disabled={Boolean(busy)} rows={5} className="mt-4 w-full resize-none rounded-xl border border-white/8 bg-black/20 p-3 text-xs leading-5 text-zinc-300 outline-none focus:border-violet-400/40 disabled:opacity-50" placeholder="Ej. Quiero un reel energético, directo y con pausas mínimas…" />
         <div className="mt-4 rounded-xl border border-white/7 bg-black/15 p-3"><p className="text-[10px] font-medium text-zinc-300">Ajustes actuales de edición</p><div className="mt-3 space-y-2 text-[9px] text-zinc-500"><p className="flex justify-between"><span>Estilo</span><b className="text-zinc-300">{selectedStyle.name}</b></p><p className="flex justify-between"><span>Escenas</span><b className="text-zinc-300">{activeTimeline.length}</b></p><p className="flex justify-between"><span>Silencios</span><b className="text-zinc-300">{options.deadAir ? `${settings.silenceThresholdMs} ms` : "No"}</b></p><p className="flex justify-between"><span>Subtítulos</span><b className="text-zinc-300">{options.captions ? `${activeTimeline.filter((clip) => clip.transcript.trim()).length}/${activeTimeline.length}` : "No"}</b></p></div></div>
         {approvedScenes.length > 0 && !hasTranscript && <div className="mt-3 rounded-xl border border-amber-300/20 bg-amber-300/[.06] p-3 text-[10px] leading-4 text-amber-100"><strong className="block">Falta texto para subtítulos.</strong><p className="mt-1 text-amber-100/70">Selecciona cada toma en la línea de tiempo y escribe lo que dice. También puedes desactivar subtítulos.</p></div>}
         {job && <div className={`mt-4 rounded-xl border p-3 ${ready ? "border-emerald-400/20 bg-emerald-400/6" : job.status === "failed" ? "border-red-400/20 bg-red-400/6" : job.status === "unconfirmed" ? "border-amber-300/20 bg-amber-300/6" : "border-violet-400/20 bg-violet-400/6"}`}><div className="flex items-center justify-between text-[10px]"><span>{ready ? "MP4 generado" : job.status === "failed" ? "Render falló" : job.stage}</span><b>{job.status === "failed" ? "Error" : job.status === "unconfirmed" ? "Sin confirmar" : `${job.progress || 0}%`}</b></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/8"><div className={`h-full transition-all ${job.status === "failed" ? "bg-red-400" : job.status === "unconfirmed" ? "bg-amber-300" : "bg-gradient-to-r from-violet-500 to-cyan-400"}`} style={{ width: `${job.status === "failed" || job.status === "unconfirmed" ? 0 : Math.max(2, Number(job.progress || 0))}%` }} /></div>{job.error && <p className="mt-2 text-[9px] leading-4 text-red-200">{job.error}</p>}</div>}

@@ -90,6 +90,15 @@ test("new quality gate refuses captions inferred only from untimed text", () => 
   assert.equal(normalized.quality_gates.timed_captions, true);
 });
 
+test("keeps a supported noise reduction level and rejects unknown filters", () => {
+  const input = fixture();
+  Object.assign(input.raw.style_snapshot.execution, { noiseReduction: "medium" });
+  const normalized = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.equal(normalized.style_snapshot.execution.noiseReduction, "medium");
+  Object.assign(input.raw.style_snapshot.execution, { noiseReduction: "aggressive" });
+  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /reducción de ruido/);
+});
+
 test("rejects a browser-supplied object key that differs from the approved take", () => {
   const input = fixture();
   input.raw.clips[0].object_key = `${ownerId}/${sessionId}/scene-0/other.mp4`;

@@ -57,8 +57,8 @@ export const SKILL_CATALOG: SkillDefinition[] = [
   },
   {
     id: "sonido", name: "Sonido y voz", icon: "🎚️", category: "audio", execution: "partial",
-    description: "Comprime los picos de voz en el render; la música y el aislamiento fino requieren recursos adicionales.",
-    capability: "El motor aplica compresión de voz. La música y el aislamiento quedan registrados como plan.",
+    description: "Comprime la voz y puede reducir ruido de fondo. La música y el aislamiento fino requieren recursos adicionales.",
+    capability: "El motor aplica compresión y, si se elige, reducción de ruido. La música queda registrada como plan.",
     defaultEnabled: true,
     defaultInstruction: "Mantén la voz clara y presente. La música no debe competir con ella.",
     settings: [{ key: "musicRequested", label: "Solicitar música de fondo", kind: "toggle", defaultValue: false, plannedOnly: true }],

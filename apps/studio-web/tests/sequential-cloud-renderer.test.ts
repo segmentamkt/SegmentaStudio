@@ -45,7 +45,7 @@ test("sequential HEVC clips normalize to a playable joined portrait MP4 with tex
       style_snapshot: {
         transition: "fade", transitionDuration: .12,
         subtitle: { text: "#FFFFFF", box: "#7C3AED", size: 48, uppercase: true, position: "bottom" },
-        execution: { zoomPercent: 0, contrast: 1.04, saturation: 1.06, soundEffectVolume: .3, framing: "fill", titleCards: true },
+        execution: { zoomPercent: 0, contrast: 1.04, saturation: 1.06, soundEffectVolume: .3, noiseReduction: "light", framing: "fill", titleCards: true },
       },
       captions: { enabled: true, max_words_per_card: 4 },
       dead_air: { remove: false, threshold_ms: 500 },

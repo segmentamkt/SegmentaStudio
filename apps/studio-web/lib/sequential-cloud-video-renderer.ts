@@ -21,7 +21,7 @@ type EditContract = {
     transitionDuration?: number;
     subtitle: { text: string; box: string; size: number; uppercase: boolean; position?: "top" | "center" | "bottom" };
     execution?: {
-      zoomPercent?: number; contrast?: number; saturation?: number; soundEffectVolume?: number; soundPreset?: "auto" | "none" | "soft" | "kinetic" | "cinematic" | "pop";
+      zoomPercent?: number; contrast?: number; saturation?: number; soundEffectVolume?: number; soundPreset?: "auto" | "none" | "soft" | "kinetic" | "cinematic" | "pop"; noiseReduction?: "off" | "light" | "medium";
       framing?: "fill" | "fit"; titleCards?: boolean; titleColor?: string;
     };
   };
@@ -183,7 +183,10 @@ export async function renderSequentialClip(input: {
     : `atrim=0:${fixed(duration)},asetpts=PTS-STARTPTS,aresample=48000`;
   // loudnorm may emit no short voice stream when mixed with generated SFX.
   // A streaming compressor keeps speech audible and bounds peak level.
-  filters.push(`[${audioSource}:a]${audioTrim},aformat=sample_fmts=fltp:channel_layouts=stereo${analysis.hasAudio ? ",acompressor=threshold=-18dB:ratio=2:attack=5:release=60" : ""},volume=${volume}${audioFade}[abase]`);
+  const denoise = analysis.hasAudio && execution.noiseReduction !== "off" && execution.noiseReduction
+    ? `,afftdn=nr=${execution.noiseReduction === "medium" ? 10 : 6}:nf=-40`
+    : "";
+  filters.push(`[${audioSource}:a]${audioTrim},aformat=sample_fmts=fltp:channel_layouts=stereo${denoise}${analysis.hasAudio ? ",acompressor=threshold=-18dB:ratio=2:attack=5:release=60" : ""},volume=${volume}${audioFade}[abase]`);
   const overlays: Buffer[] = [];
   let videoLabel = "vbase";
   let captionCount = 0;

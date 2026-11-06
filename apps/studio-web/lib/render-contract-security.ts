@@ -184,6 +184,7 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
   if (![-35, -30, -25].includes(noiseDb)) throw new Error("La sensibilidad de silencio no es válida.");
   const soundEffectVolume = bounded(requestedExecution.soundEffectVolume, style.execution.soundEffectVolume, 0, 1, "El volumen de efectos");
   const soundPreset = oneOf(requestedExecution.soundPreset, "auto", ["auto", "none", "soft", "kinetic", "cinematic", "pop"] as const, "El tipo de efecto sonoro");
+  const noiseReduction = oneOf(requestedExecution.noiseReduction, "off", ["off", "light", "medium"] as const, "La reducción de ruido");
   const zoomPercent = bounded(requestedExecution.zoomPercent, style.execution.zoomPercent, 0, 10, "El acercamiento");
   const contrast = bounded(requestedExecution.contrast, style.execution.contrast, 0.8, 1.3, "El contraste");
   const saturation = bounded(requestedExecution.saturation, style.execution.saturation, 0.7, 1.4, "La saturación");
@@ -193,7 +194,7 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
     ...style,
     transition, transitionDuration,
     subtitle: { ...style.subtitle, size: subtitleSize, position: subtitlePosition, uppercase: subtitleUppercase },
-    execution: { ...style.execution, silenceThresholdMs, soundEffectVolume, soundPreset, zoomPercent, contrast, saturation, framing, titleCards },
+    execution: { ...style.execution, silenceThresholdMs, soundEffectVolume, soundPreset, noiseReduction, zoomPercent, contrast, saturation, framing, titleCards },
   };
   const captionsEnabled = flag(requestedCaptions.enabled, true, "Los subtítulos");
   if (captionsEnabled && clips.some((clip) => !clip.transcript)) {
@@ -212,7 +213,7 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
   }
   const baseContract = {
     schema: "kiko.edit-contract.v1" as const,
-    objective: text(contract.objective, "La instrucción editorial", 500),
+    objective: text(contract.objective, "La instrucción editorial", 2_000),
     session: {
       id: sessionId,
       title: text(dbSession.title, "El título de la producción", 160),
