@@ -18,6 +18,8 @@ export async function POST(request: Request) {
   const supabase = await createClient();
   const { error } = await supabase.auth.updateUser({ password });
   if (error) return Response.json({ error: "No pudimos guardar la contraseña. Solicita otro enlace." }, { status: 400 });
-  cookieStore.delete("studio_recovery");
+  cookieStore.set("studio_recovery", "", {
+    httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax", path: "/api/auth/reset", maxAge: 0,
+  });
   return Response.json({ updated: true }, { headers: { "Cache-Control": "private, no-store" } });
 }

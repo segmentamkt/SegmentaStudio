@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { createClient } from "../../../lib/supabase/server";
-import { sameOriginRedirect } from "../../../lib/account-auth";
+import { authCallbackRedirect } from "../../../lib/account-auth";
 import { createRecoveryToken } from "../../../lib/recovery-token";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
   const requestedNext = url.searchParams.get("next") || "/";
-  const next = sameOriginRedirect(url.origin, requestedNext);
+  const next = authCallbackRedirect(url.origin, requestedNext);
 
   if (code) {
     const supabase = await createClient();

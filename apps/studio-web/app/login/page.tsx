@@ -3,7 +3,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Eye, EyeOff, Film, LoaderCircle, LockKeyhole, Mail } from "lucide-react";
 import { createClient } from "../../lib/supabase/browser";
-import { validAccountPassword } from "../../lib/account-auth";
+import { accountAuthErrorMessage, validAccountPassword } from "../../lib/account-auth";
 
 type Mode = "login" | "forgot" | "reset";
 
@@ -36,19 +36,22 @@ export default function LoginPage() {
       const auth = createClient().auth;
       if (mode === "login") {
         const { error: authError } = await auth.signInWithPassword({ email: email.trim().toLowerCase(), password });
-        if (authError) throw new Error("El usuario o la contraseña no coinciden.");
+        if (authError) throw new Error(accountAuthErrorMessage(authError));
         const access = await fetch("/api/auth/check", { cache: "no-store" });
         if (!access.ok) {
-          await auth.signOut();
-          throw new Error("Esta cuenta no tiene acceso al estudio.");
+          if (access.status === 401 || access.status === 403) {
+            await auth.signOut({ scope: "local" });
+            throw new Error("Esta cuenta no tiene acceso al estudio. Usa el correo de la cuenta anfitriona.");
+          }
+          throw new Error("La cuenta se verificó, pero el estudio no respondió. Intenta entrar de nuevo.");
         }
         setPassword("");
         window.location.replace("/");
       } else if (mode === "forgot") {
         const redirectTo = `${window.location.origin}/auth/callback?next=${encodeURIComponent("/login?reset=1")}`;
         const { error: resetError } = await auth.resetPasswordForEmail(email.trim().toLowerCase(), { redirectTo });
-        if (resetError) throw new Error("No pudimos enviar el enlace. Inténtalo de nuevo en unos minutos.");
-        setNotice("Si el correo pertenece a la cuenta anfitriona, recibirás un enlace para restablecer la contraseña.");
+        if (resetError) throw new Error(accountAuthErrorMessage(resetError));
+        setNotice("Si el correo pertenece a la cuenta anfitriona, recibirás un enlace para guardar tu contraseña. Ábrelo en este mismo navegador; revisa también Spam. Tus proyectos se conservan.");
       } else {
         if (!validAccountPassword(password) || password !== repeat) throw new Error("Usa una contraseña de 8 a 72 caracteres y repítela igual.");
         const reset = await fetch("/api/auth/reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }) });

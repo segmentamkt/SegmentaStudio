@@ -70,7 +70,7 @@ export function AccountAccess(props: { projectCount: number; reset?: boolean; se
     const supabase = createClient();
     const before = await refreshUser();
     if (!before) throw new Error("No encontramos tu sesión actual. Recarga el estudio.");
-    const redirect = `${window.location.origin}/auth/callback?next=${encodeURIComponent(props.projectCount > 0 ? "/?access=setup" : "/?access=1")}`;
+    const redirect = `${window.location.origin}/auth/callback?next=${encodeURIComponent(props.projectCount > 0 ? "/login?reset=1" : "/?access=1")}`;
     if (props.projectCount > 0) {
       setRegistrationKind("link");
       // A new signUp would allocate a new user ID and orphan the current projects.
@@ -113,7 +113,7 @@ export function AccountAccess(props: { projectCount: number; reset?: boolean; se
   });
   const sendReset = () => run(async () => {
     if (!/^\S+@\S+\.\S+$/.test(email.trim())) throw new Error("Escribe el correo de tu cuenta.");
-    const redirect = `${window.location.origin}/auth/callback?next=${encodeURIComponent("/?access=reset")}`;
+    const redirect = `${window.location.origin}/auth/callback?next=${encodeURIComponent("/login?reset=1")}`;
     const { error: resetError } = await createClient().auth.resetPasswordForEmail(email.trim().toLowerCase(), { redirectTo: redirect });
     if (resetError) throw resetError;
     setNotice("Si existe una cuenta con ese correo, recibirás un enlace para restablecer la contraseña.");
