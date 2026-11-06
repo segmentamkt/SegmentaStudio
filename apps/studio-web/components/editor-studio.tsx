@@ -700,7 +700,7 @@ export function EditorStudio(props: {
     </header>
 
     <nav aria-label="Pasos para editar" className="border-b border-white/8 bg-[#0f1220] px-3 py-3 sm:px-5">
-      <div className="mb-2 flex items-center justify-between gap-2"><strong className="text-xs text-zinc-200">Tu ruta de edición</strong><span className="text-[10px] text-zinc-400">{completedSteps} de 4 pasos</span></div>
+      <div className="mb-2 flex items-center justify-between gap-2"><strong className="text-xs text-zinc-200">Tu ruta de edición <span className="font-normal text-zinc-500">· puedes saltar pasos</span></strong><span className="text-[10px] text-zinc-400">{completedSteps} de 4 hitos</span></div>
       <div className="mb-3 h-1 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-gradient-to-r from-violet-500 to-cyan-400 transition-all" style={{ width: `${completedSteps * 25}%` }} /></div>
       <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">{workflowSteps.map((step, index) => <button key={step.label} onClick={() => goToWorkflowStep(index)} className={`flex items-center gap-2 rounded-xl border px-2.5 py-2 text-left text-[10px] sm:text-xs ${step.done ? "border-emerald-400/20 bg-emerald-400/[.07] text-emerald-100" : "border-white/10 bg-white/[.03] text-zinc-400 hover:border-violet-400/35 hover:text-white"}`}><span className={`grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-semibold ${step.done ? "bg-emerald-400 text-black" : "bg-white/10 text-zinc-300"}`}>{step.done ? <Check size={12} /> : index + 1}</span><span className="min-w-0">{step.label}</span></button>)}</div>
     </nav>
