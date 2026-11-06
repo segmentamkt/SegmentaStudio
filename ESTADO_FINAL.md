@@ -14,6 +14,7 @@ Actualizado el 6 de noviembre de 2026. Producción: https://studio.segmenta.onli
 - [ ] Superposiciones de imágenes y B-roll real, música con licencia, composición a varias pistas, pantalla dividida y efectos contextuales.
 - [ ] Evaluación editorial automática del MP4 (calidad narrativa, sincronía y diseño) con revisión humana.
 - [ ] Conexión operativa de Codex, Claude y Gemini de escritorio con la web, sin claves API. Hoy la web no ejecuta esas aplicaciones como agentes.
+- [ ] Reparar el despliegue automático desde GitHub: los dos últimos cambios de código se publicaron manualmente en Vercel porque el push no creó un despliegue nuevo.
 
 ## Lo que hacen las skills web ahora
 
