@@ -612,9 +612,21 @@ export function EditorStudio(props: {
     try {
       await ensureScriptSaved();
       const ranks = new Map(editorialPlan.suggestedClipIds.map((id, index) => [id, index]));
-      const plannedTimeline = editorialPlan.reliableOrder
+      const orderedTimeline = editorialPlan.reliableOrder
         ? [...timeline].sort((a, b) => (ranks.get(a.segmentId) ?? 999) - (ranks.get(b.segmentId) ?? 999))
         : timeline;
+      const labels = new Map<string, string>();
+      if (options.labels && editorialPlan.reliableOrder) {
+        for (const resource of editorialPlan.resources) {
+          if (!resource.generatedLabel || labels.size >= 5) continue;
+          const match = editorialPlan.matches.filter((item) => item.beatIndex === resource.beatIndex)
+            .sort((a, b) => a.sequenceOffset - b.sequenceOffset)[0];
+          if (match && !labels.has(match.clipId)) labels.set(match.clipId, resource.generatedLabel.slice(0, 56));
+        }
+      }
+      const plannedTimeline = labels.size
+        ? orderedTimeline.map((clip) => clip.label.trim() || !labels.has(clip.segmentId) ? clip : { ...clip, label: labels.get(clip.segmentId)! })
+        : orderedTimeline;
       const result = await request<{ job: Row }>("/api/editor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, style, objective, options, settings, timeline: plannedTimeline, skillProfiles: loadSkillProfiles(props.portfolioId) }) });
       if (plannedTimeline !== timeline) {
         undoRef.current = [...undoRef.current.slice(-29), timeline];
