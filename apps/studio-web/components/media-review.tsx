@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import {
   ArrowDown, ArrowLeft, ArrowUp, Check, CheckCircle2, Clapperboard,
-  Clock3, Film, GripVertical, ListOrdered, LoaderCircle, Play, RotateCcw, X,
+  Clock3, Film, GripVertical, ListOrdered, LoaderCircle, Play, RotateCcw, Sparkles, X,
 } from "lucide-react";
 import type { MediaReviewReceipt } from "../lib/media-review";
 import { reorderReviewTakes } from "../lib/review-order";
@@ -23,7 +23,8 @@ type Props = {
   session: Session;
   scenes: Scene[];
   takes: Take[];
-  onConfirmed: (review: MediaReviewReceipt) => Promise<void> | void;
+  onConfirmed: (review: MediaReviewReceipt, automatic?: boolean) => Promise<void> | void;
+  offerAutomaticEdit?: boolean;
   onBack: () => void;
 };
 
@@ -55,7 +56,7 @@ function dropPositionAt(event: DragEvent<HTMLElement>, list: ReviewList): DropPo
 }
 
 /** The confirmation is a persisted editorial decision; opening the panel never approves a take. */
-export function MediaReviewPanel({ session, scenes, takes, onConfirmed, onBack }: Props) {
+export function MediaReviewPanel({ session, scenes, takes, onConfirmed, onBack, offerAutomaticEdit = false }: Props) {
   const sessionTakes = useMemo(() => takes.filter((take) => !take.sessionId || take.sessionId === session.id), [takes, session.id]);
   const sessionScenes = useMemo(() => scenes.filter((scene) => !scene.sessionId || scene.sessionId === session.id), [scenes, session.id]);
   const sceneById = useMemo(() => new Map(sessionScenes.map((scene) => [scene.id, scene])), [sessionScenes]);
@@ -143,6 +144,24 @@ export function MediaReviewPanel({ session, scenes, takes, onConfirmed, onBack }
     setDecisions((current) => ({ ...current, [take.id]: status }));
     setSelectedId(take.id); setPlaybackError(""); setError(""); setNotice(""); setSavedReview(null);
   };
+  const approvePending = () => {
+    if (busy || loadFailed) return;
+    const next = { ...decisions };
+    const selectedScenes = new Set(approved.map((take) => take.sceneId));
+    let added = 0;
+    for (const take of orderedTakes) {
+      if (next[take.id] && next[take.id] !== "pending") continue;
+      if (selectedScenes.has(take.sceneId) || approved.length + added >= 12) continue;
+      next[take.id] = "approved";
+      selectedScenes.add(take.sceneId);
+      added++;
+    }
+    setDecisions(next); setSavedReview(null); setError("");
+    const remaining = pending - added;
+    setNotice(added
+      ? `${added} toma${added === 1 ? " aprobada" : "s aprobadas"}. ${remaining ? `Quedan ${remaining} por revisar: elige qué hacer con las alternativas o las tomas que exceden el límite de 12.` : "Comprueba el orden y confirma para continuar."}`
+      : "No se aprobaron tomas nuevas. Ya hay una aprobada para cada escena pendiente o alcanzaste las 12 del montaje. Clasifica las restantes como bloopers o descartadas, o cambia tu selección.");
+  };
   const moveApproved = (takeId: string, offset: number) => {
     const index = approved.findIndex((take) => take.id === takeId);
     const other = approved[index + offset];
@@ -210,7 +229,7 @@ export function MediaReviewPanel({ session, scenes, takes, onConfirmed, onBack }
     setSavedReview(null);
     setNotice("Orden propuesto por nombre de toma. Comprueba que cuenta la historia en el orden correcto antes de confirmarlo.");
   };
-  const save = async () => {
+  const save = async (automatic = false) => {
     if (!canConfirm) return;
     setSaving(true); setError("");
     try {
@@ -225,7 +244,7 @@ export function MediaReviewPanel({ session, scenes, takes, onConfirmed, onBack }
         confirmed = data.review;
         setSavedReview(confirmed);
       }
-      await onConfirmed(confirmed);
+      await onConfirmed(confirmed, automatic && approved.length > 0);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "No pudimos abrir el editor. Inténtalo de nuevo."); }
     finally { setSaving(false); }
   };
@@ -236,6 +255,7 @@ export function MediaReviewPanel({ session, scenes, takes, onConfirmed, onBack }
         <div className="flex min-w-0 items-start gap-3"><button type="button" onClick={onBack} disabled={saving} aria-label="Volver al estudio" className="mt-1 grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-black/20 text-zinc-300 hover:bg-white/10 disabled:opacity-40"><ArrowLeft size={17} /></button><div className="min-w-0"><p className="text-[10px] font-semibold uppercase tracking-[.18em] text-violet-300">Antes de editar · revisión obligatoria</p><h2 id="media-review-title" className="mt-1 text-xl font-semibold sm:text-2xl">Primero, cuenta la historia en orden</h2><p className="mt-1 break-words text-sm text-zinc-400">{session.title || "Tu producción"}</p></div></div>
         <span className="inline-flex items-center gap-2 rounded-full border border-violet-400/20 bg-violet-400/10 px-3 py-2 text-xs text-violet-200"><Film size={14} />{sessionTakes.length} tomas</span>
       </div>
+      {offerAutomaticEdit && <p className="mt-4 text-xs leading-5 text-violet-100">Elige las tomas y su orden una sola vez. Después generaremos subtítulos, aplicaremos el estilo y exportaremos el MP4 automáticamente. Verás el avance en el editor.</p>}
       <div className="mt-5 grid grid-cols-3 gap-2 text-xs"><div className="rounded-xl bg-white/5 p-3"><span className="text-violet-300">01</span><strong className="ml-2 font-medium">Clasificar</strong><p className="mt-1 text-[10px] text-zinc-400">{reviewed}/{sessionTakes.length} revisadas</p></div><div className="rounded-xl bg-white/5 p-3"><span className="text-violet-300">02</span><strong className="ml-2 font-medium">Ordenar</strong><p className="mt-1 text-[10px] text-zinc-400">{approved.length} en el montaje</p></div><div className="rounded-xl bg-white/5 p-3"><span className="text-violet-300">03</span><strong className="ml-2 font-medium">Confirmar</strong><p className="mt-1 text-[10px] text-zinc-400">Guardar y editar</p></div></div>
       <div role="progressbar" aria-label="Tomas clasificadas" aria-valuenow={reviewed} aria-valuemin={0} aria-valuemax={Math.max(1, sessionTakes.length)} className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/8"><div className="h-full rounded-full bg-gradient-to-r from-violet-400 to-cyan-400 transition-[width]" style={{ width: `${sessionTakes.length ? reviewed / sessionTakes.length * 100 : 0}%` }} /></div>
     </header>
@@ -246,6 +266,7 @@ export function MediaReviewPanel({ session, scenes, takes, onConfirmed, onBack }
       <div className="order-2 min-w-0 xl:order-1">
         <div className="mb-3 flex items-center justify-between gap-3"><h3 className="text-sm font-medium">Tus tomas</h3><span className={`text-xs ${pending ? "text-amber-200" : "text-emerald-200"}`}>{pending ? `${pending} por revisar` : "Todas clasificadas"}</span></div>
         <p className="mb-3 text-xs leading-5 text-zinc-400">Arrastra una tarjeta para moverla. El orden de las aprobadas se refleja también en el montaje.</p>
+        {pending > 0 && <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-emerald-400/20 bg-emerald-400/5 p-3"><button type="button" onClick={approvePending} disabled={busy || loadFailed} className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-emerald-300/30 px-3 py-2 text-xs font-medium text-emerald-200 hover:bg-emerald-400/10 disabled:opacity-40"><Check size={14} />Aprobar pendientes</button><span className="min-w-0 flex-1 text-[10px] leading-4 text-zinc-400">Una toma por escena, hasta 12. Las alternativas quedan por revisar; los bloopers y descartes se conservan.</span></div>}
         <div onDragEnterCapture={(event) => handleListDragOver(event, "takes")} onDragOverCapture={(event) => handleListDragOver(event, "takes")} onDragLeave={handleListDragLeave} onDropCapture={(event) => handleListDrop(event, "takes")} className="space-y-2.5">{orderedTakes.map((take) => {
           const status = decisions[take.id] || "pending";
           const isSelected = selected?.id === take.id;
@@ -273,7 +294,10 @@ export function MediaReviewPanel({ session, scenes, takes, onConfirmed, onBack }
     </div>}
     <footer className="flex flex-col gap-3 border-t border-white/10 bg-[#111521] p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
       <p className="text-xs leading-5 text-zinc-400">{pending ? `Falta decidir qué hacer con ${pending} toma${pending === 1 ? "" : "s"}.` : !approved.length ? "No hay tomas para el montaje. Guarda la clasificación; podrás aprobar alguna después para editar." : overMontageLimit ? "Selecciona hasta 12 tomas aprobadas para este montaje." : duplicates ? "Resuelve las alternativas de una misma escena." : <span className="flex items-center gap-2 text-emerald-200"><CheckCircle2 size={16} />{approved.length} toma{approved.length === 1 ? "" : "s"} lista{approved.length === 1 ? "" : "s"}. Confirma que este es el orden correcto.</span>}<span className="mt-1 block text-[10px] text-zinc-500">Las decisiones y el orden se guardan al confirmar.</span></p>
-      <button type="button" onClick={() => void save()} disabled={!canConfirm} className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-violet-500 px-5 py-3 text-sm font-semibold text-white transition hover:bg-violet-400 disabled:cursor-not-allowed disabled:bg-white/8 disabled:text-zinc-500">{saving ? <LoaderCircle size={17} className="animate-spin" /> : <Check size={17} />}{saving ? "Guardando revisión…" : !approved.length ? "Guardar clasificación" : savedReview ? "Abrir editor" : "Confirmar orden y abrir editor"}</button>
+      <div className="flex shrink-0 flex-col gap-2 sm:max-w-[310px]">
+        <button type="button" onClick={() => void save(offerAutomaticEdit)} disabled={!canConfirm} className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-violet-500 px-5 py-3 text-sm font-semibold text-white transition hover:bg-violet-400 disabled:cursor-not-allowed disabled:bg-white/8 disabled:text-zinc-500">{saving ? <LoaderCircle size={17} className="shrink-0 animate-spin" /> : offerAutomaticEdit && approved.length ? <Sparkles size={17} className="shrink-0" /> : <Check size={17} className="shrink-0" />}{saving ? "Guardando revisión…" : !approved.length ? "Guardar clasificación" : offerAutomaticEdit ? "Confirmar y editar automáticamente" : savedReview ? "Abrir editor" : "Confirmar orden y abrir editor"}</button>
+        {offerAutomaticEdit && approved.length > 0 && <button type="button" onClick={() => void save(false)} disabled={!canConfirm} className="min-h-10 rounded-lg px-3 py-2 text-xs text-zinc-300 hover:bg-white/5 disabled:opacity-40">Solo abrir editor</button>}
+      </div>
     </footer>
   </section>;
 }

@@ -6,6 +6,7 @@ import { normalizeRenderContract } from "../../../../lib/render-contract-securit
 import { clean, toEditJob } from "../../../../lib/studio-data";
 import { MediaReviewError, requireCurrentMediaReview } from "../../../../lib/media-review";
 import { readMediaReview } from "../../../../lib/media-review-server";
+import type { RenderPreview } from "../../../../lib/render-preview";
 
 export const maxDuration = 300;
 
@@ -20,7 +21,7 @@ function networkCode(error: unknown) {
   return nested && typeof nested === "object" && "code" in nested ? String(nested.code).slice(0, 40) : null;
 }
 
-async function executeRender(request: Request, onProgress: (progress: number, stage: string) => void = () => undefined) {
+async function executeRender(request: Request, onProgress: (progress: number, stage: string) => void = () => undefined, onPreview?: (preview: RenderPreview) => void) {
   const user = await getRequestUser();
   if (!user) return unauthorized();
   const supabase = await createClient();
@@ -82,6 +83,7 @@ async function executeRender(request: Request, onProgress: (progress: number, st
       projectUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,
       publishableKey: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
       onProgress: update,
+      onPreview,
     });
     if (!evidence.release_gate.passed) throw new Error("El control de calidad rechazó el render porque faltan elementos solicitados.");
     phase = "verificando el MP4 guardado";
@@ -151,7 +153,9 @@ export async function POST(request: Request) {
       heartbeat = setInterval(() => write("\n"), 15_000);
       void (async () => {
         try {
-          const response = await executeRender(request, (progress, stage) => send({ type: "progress", progress, stage }));
+          const response = await executeRender(request,
+            (progress, stage) => send({ type: "progress", progress, stage }),
+            (preview) => send({ type: "preview", preview }));
           const payload = await response.json() as { job?: unknown; error?: string };
           if (response.ok && payload.job) send({ type: "done", job: payload.job });
           else send({ type: "error", error: payload.error || "No se pudo completar la edición.", status: response.status });

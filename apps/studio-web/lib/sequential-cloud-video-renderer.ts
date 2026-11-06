@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -9,6 +9,7 @@ import { capture } from "./cloud-video-renderer";
 import { buildSoundDesignGraph, planCutSoundCues } from "./sound-design";
 import { renderTextOverlay } from "./video-text-overlay";
 import { mapCaptionCues, type CaptionCue } from "./caption-cues";
+import { MAX_RENDER_PREVIEW_BYTES, type RenderPreview } from "./render-preview";
 
 type Range = { start: number; end: number };
 type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string; trim_start_seconds?: number; trim_end_seconds?: number; playback_speed?: number; audio_volume?: number; brightness?: number; contrast?: number; saturation?: number; label?: string; caption_cues?: CaptionCue[] };
@@ -41,6 +42,7 @@ type RenderInput = {
   projectUrl: string;
   publishableKey: string;
   onProgress: Progress;
+  onPreview?: (preview: RenderPreview) => void | Promise<void>;
 };
 
 const safeSeconds = (value: number) => Math.max(0, Number.isFinite(value) ? value : 0);
@@ -146,6 +148,26 @@ async function ffmpegFile(command: string, args: string[], overlays: Buffer[], d
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Encode only an already-rendered scene. This sample contains the real baked-in edits. */
+export async function createRenderPreview(input: {
+  command: string; source: string; output: string; durationSeconds: number; deadline: number;
+}): Promise<{ videoDataUrl: string; durationSeconds: number }> {
+  const durationSeconds = Math.min(3, input.durationSeconds);
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) throw new Error("La escena no tiene duración para una muestra.");
+  await ffmpegFile(input.command, [
+    "-y", "-hide_banner", "-nostdin", "-loglevel", "error", "-threads", "1", "-filter_threads", "1",
+    "-i", input.source, "-map", "0:v:0", "-map", "0:a:0?", "-t", fixed(durationSeconds),
+    "-vf", "scale=360:640:force_original_aspect_ratio=decrease,pad=360:640:(ow-iw)/2:(oh-ih)/2,fps=15",
+    "-c:v", "libx264", "-threads", "1", "-preset", "ultrafast", "-crf", "30",
+    "-maxrate", "256k", "-bufsize", "384k", "-pix_fmt", "yuv420p", "-g", "30",
+    "-c:a", "aac", "-b:a", "48k", "-ac", "1", "-movflags", "+faststart", input.output,
+  ], [], input.deadline);
+  const details = await stat(input.output);
+  if (details.size <= 0 || details.size > MAX_RENDER_PREVIEW_BYTES) throw new Error("La muestra excede el tamaño permitido.");
+  const bytes = await readFile(input.output);
+  return { videoDataUrl: `data:video/mp4;base64,${bytes.toString("base64")}`, durationSeconds };
 }
 
 export async function renderSequentialClip(input: {
@@ -293,8 +315,10 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
     let captions = 0;
     let captionedClips = 0;
     let effects = 0;
+    let previewTimeMs = 0;
     for (const [index, analysis] of analyses.entries()) {
       const path = join(directory, `clip-${index}.mp4`);
+      await input.onProgress(36 + Math.round(index / analyses.length * 42), `Editando toma ${index + 1} de ${analyses.length}`);
       const rendered = await renderSequentialClip({
         command, contract: input.contract, analysis, url: input.signedUrls[index], index,
         output: path, videoKbps: kbps, transitionSeconds, deadline,
@@ -303,7 +327,30 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
       captions += rendered.captionCount;
       if (rendered.captionCount > 0) captionedClips += 1;
       effects += rendered.cueCount + rendered.labelCount + (index > 0 && transitionSeconds > 0 ? 1 : 0);
-      await input.onProgress(36 + Math.round((index + 1) / analyses.length * 42), `Editando toma ${index + 1} de ${analyses.length}`);
+      await input.onProgress(36 + Math.round((index + 1) / analyses.length * 42), `Toma ${index + 1} de ${analyses.length} editada`);
+      // Samples are optional and must not take the final render's remaining budget.
+      // Bound cumulative overhead to 12s and keep 15s reserved for final assembly/upload.
+      const previewBudget = Math.min(2_000, 12_000 - previewTimeMs, deadline - Date.now() - 15_000);
+      if (input.onPreview && previewBudget > 250) {
+        const startedAt = Date.now();
+        try {
+          const sample = await createRenderPreview({
+            command, source: path, output: join(directory, `preview-${index}.mp4`),
+            durationSeconds: rendered.duration, deadline: startedAt + previewBudget,
+          });
+          const clip = input.contract.clips[index];
+          await input.onPreview({
+            clipIndex: index, totalClips: analyses.length, takeId: clip.id, title: clip.name.slice(0, 200),
+            ...sample, captionCount: rendered.captionCount, soundEffectCount: rendered.cueCount,
+            removedSilenceSeconds: Number(analysis.removed.toFixed(2)),
+          });
+        } catch {
+          // The complete MP4 remains the deliverable when an optional sample is unavailable.
+          console.info("[cloud-render] scene preview unavailable", { clipIndex: index });
+        } finally {
+          previewTimeMs += Date.now() - startedAt;
+        }
+      }
     }
     const list = join(directory, "concat.txt");
     await writeFile(list, clips.map((path) => `file '${path.replaceAll("'", "'\\''")}'`).join("\n"));

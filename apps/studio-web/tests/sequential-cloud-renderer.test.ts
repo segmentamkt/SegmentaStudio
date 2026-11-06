@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import ffmpegPath from "ffmpeg-static";
-import { renderSequentialClip, trimSequentialAnalysis } from "../lib/sequential-cloud-video-renderer";
+import { createRenderPreview, renderSequentialClip, trimSequentialAnalysis } from "../lib/sequential-cloud-video-renderer";
+import { MAX_RENDER_PREVIEW_BYTES, parseRenderPreview } from "../lib/render-preview";
 
 test("manual trim intersects voice ranges without moving source timestamps", () => {
   const analysis = { duration: 10, ranges: [{ start: 0, end: 3 }, { start: 5, end: 10 }], removed: 2, hasAudio: true };
@@ -77,6 +78,20 @@ test("sequential HEVC clips normalize to a playable joined portrait MP4 with tex
     assert.equal(layeredResult.captionCount, 1);
     assert.equal(layeredResult.labelCount, 1);
     assert.match(run(["-hide_banner", "-i", layeredOutput, "-map", "0:v:0", "-map", "0:a:0", "-t", "0.3", "-f", "null", "-"]), /Video:[^\n]*\b1080x1920\b/);
+    const sample = await createRenderPreview({
+      command: ffmpegPath!, source: layeredOutput, output: join(directory, "sample.mp4"),
+      durationSeconds: layeredResult.duration, deadline: Date.now() + 2_000,
+    });
+    const preview = parseRenderPreview({ ...sample, clipIndex: 0, totalClips: 2, takeId: "1", title: "Primera escena",
+      captionCount: layeredResult.captionCount, soundEffectCount: layeredResult.cueCount, removedSilenceSeconds: 0 });
+    assert.ok(preview, "A real encoded scene sample must satisfy the streamed preview contract");
+    const sampleBytes = Buffer.from(preview.videoDataUrl.split(",")[1], "base64");
+    assert.ok(sampleBytes.length < MAX_RENDER_PREVIEW_BYTES);
+    const decodedSample = join(directory, "sample-from-stream.mp4");
+    await writeFile(decodedSample, sampleBytes);
+    const sampleInspection = run(["-hide_banner", "-i", decodedSample, "-map", "0:v:0", "-map", "0:a:0", "-f", "null", "-"]);
+    assert.match(sampleInspection, /Video:[^\n]*\b360x640\b/);
+    assert.match(sampleInspection, /Audio:/);
     const spedUpInspection = run(["-hide_banner", "-i", outputs[0], "-f", "null", "-"]);
     const spedUpDuration = spedUpInspection.match(/Duration: 00:00:(\d+(?:\.\d+)?)/);
     assert.ok(spedUpDuration, "FFmpeg should report the encoded clip duration");

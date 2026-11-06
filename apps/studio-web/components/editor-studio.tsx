@@ -18,6 +18,9 @@ import { EDITOR_TOOL_CATALOG } from "../lib/editor-tool-catalog";
 import { MediaReviewPanel } from "./media-review";
 import type { MediaReviewReceipt } from "../lib/media-review";
 import { alignReviewedTimeline } from "../lib/reviewed-timeline";
+import { runAutomaticEdit, type AutomaticEditStage } from "../lib/automatic-edit";
+import { parseRenderPreview, type RenderPreview } from "../lib/render-preview";
+import { EditingProgress } from "./editing-progress";
 
 // Session, scene, take and job rows share the editor surface.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -58,7 +61,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return data as T;
 }
 
-async function streamRender(job: Row, onProgress: (progress: number, stage: string) => void): Promise<Row> {
+async function streamRender(job: Row, onProgress: (progress: number, stage: string) => void, onPreview?: (preview: RenderPreview) => void): Promise<Row> {
   const controller = new AbortController();
   let inactivityTimer = 0;
   let progressTimer = 0;
@@ -94,10 +97,14 @@ async function streamRender(job: Row, onProgress: (progress: number, stage: stri
     let completed: Row | null = null;
     const consume = (line: string) => {
       if (!line.trim()) return;
-      const event = JSON.parse(line) as { type: string; progress?: number; stage?: string; job?: Row; error?: string };
+      const event = JSON.parse(line) as { type: string; progress?: number; stage?: string; job?: Row; error?: string; preview?: unknown };
       if (event.type === "progress") {
         keepProgress();
         onProgress(Number(event.progress || 0), String(event.stage || "Procesando video"));
+      }
+      if (event.type === "preview") {
+        const preview = parseRenderPreview(event.preview);
+        if (preview) { keepProgress(); onPreview?.(preview); }
       }
       if (event.type === "done" && event.job) completed = event.job;
       if (event.type === "error") { serverFailure = true; throw new Error(event.error || "El render se detuvo."); }
@@ -196,7 +203,7 @@ export function EditorStudio(props: {
   const [selectedResultId, setSelectedResultId] = useState(props.initialResultId || "");
   useEffect(() => { setSelectedResultId(props.initialResultId || ""); }, [props.initialResultId]);
   const [lastResult, setLastResult] = useState<Row | null>(null);
-  const [previewMode, setPreviewMode] = useState<"final" | "original">("final");
+  const [previewMode, setPreviewMode] = useState<"final" | "original" | "live">("final");
   const latestJob = props.editJobs.find((item) => item.id === selectedResultId && item.sessionId === sessionId)
     || props.editJobs.find((item) => item.sessionId === sessionId) || null;
   const parsedPreproduction = preproductionSchema.safeParse(props.preproductionPlans.find((item) => item.sessionId === sessionId)?.contract);
@@ -206,6 +213,12 @@ export function EditorStudio(props: {
   const resultStorageKey = `segmenta.latest-result.v1:${props.portfolioId}:${sessionId}`;
   const [busy, setBusy] = useState<"transcribe" | "plan" | "render" | "">("");
   const [error, setError] = useState("");
+  const [automaticRunning, setAutomaticRunning] = useState(false);
+  const [automaticStage, setAutomaticStage] = useState<AutomaticEditStage | "error" | "cancelled" | "idle">("idle");
+  const automaticRunRef = useRef<AbortController | null>(null);
+  const [automaticRequest, setAutomaticRequest] = useState<{ sessionId: string; reviewId: string } | null>(null);
+  const [livePreviews, setLivePreviews] = useState<RenderPreview[]>([]);
+  const [livePreviewIndex, setLivePreviewIndex] = useState(0);
   const [transcriptionStage, setTranscriptionStage] = useState("");
   const [transcriptionTasks, setTranscriptionTasks] = useState<CaptionTask[]>([]);
   const transcriptionRunRef = useRef<AbortController | null>(null);
@@ -237,6 +250,15 @@ export function EditorStudio(props: {
   const draftPendingKey = `segmenta.timeline-pending.v1:${props.portfolioId}:${sessionId}`;
   const timelineReviewKey = `segmenta.timeline-review.v1:${props.portfolioId}:${sessionId}`;
   const sourceSignature = approvedScenes.map((scene) => `${scene.id}:${scene.position}:${scene.selectedTakeId}:${scene.script || ""}`).join("|");
+
+  useEffect(() => {
+    setAutomaticRequest((current) => current?.sessionId === sessionId ? current : null);
+  }, [sessionId]);
+
+  useEffect(() => {
+    setAutomaticRunning(false); setAutomaticStage("idle"); setLivePreviews([]); setBusy("");
+    return () => { automaticRunRef.current?.abort(); automaticRunRef.current = null; };
+  }, [timelineStorageKey, review?.id, manualReviewSession]);
 
   useEffect(() => {
     setTranscriptionTasks([]); setTranscriptionStage("");
@@ -405,7 +427,7 @@ export function EditorStudio(props: {
   }, [lastResult, resultStorageKey, sessionId]);
 
   const chooseStyle = (nextStyle: EditorStyleId) => {
-    if (busy) return;
+    if (busy || automaticRunning) return;
     const preset = EDITOR_STYLES.find((item) => item.id === nextStyle) || EDITOR_STYLES[0];
     setStyle(nextStyle);
     setSettings((current) => ({ ...current, subtitleSize: preset.subtitle.size, subtitlePosition: preset.subtitle.position, silenceThresholdMs: preset.execution.silenceThresholdMs, silenceNoiseDb: -30, transition: preset.transition, soundEffectVolume: preset.execution.soundEffectVolume, soundPreset: "auto" }));
@@ -415,7 +437,7 @@ export function EditorStudio(props: {
   };
 
   const changeOptions = (next: Partial<typeof options>) => {
-    if (busy) return;
+    if (busy || automaticRunning) return;
     setOptions((current) => ({ ...current, ...next }));
     setJob(null);
     setDraftPending(true);
@@ -423,7 +445,7 @@ export function EditorStudio(props: {
   };
 
   const changeSettings = (next: Partial<typeof settings>) => {
-    if (busy) return;
+    if (busy || automaticRunning) return;
     setSettings((current) => ({ ...current, ...next }));
     setJob(null);
     setDraftPending(true);
@@ -431,7 +453,7 @@ export function EditorStudio(props: {
   };
 
   const changeTimeline = (next: TimelineClip[] | ((current: TimelineClip[]) => TimelineClip[])) => {
-    if (busy) return;
+    if (busy || automaticRunning) return;
     const current = timelineRef.current;
     const updated = typeof next === "function" ? next(current) : next;
     if (updated === current) return;
@@ -508,19 +530,22 @@ export function EditorStudio(props: {
   const resultIsPrevious = Boolean(activeResult && (needsPlan || job?.status !== "ready"));
   const showingFinal = Boolean(activeResult && previewMode === "final");
   const resultSrc = activeResult ? `/api/editor/output/${activeResult.id}` : "";
-  const previewSrc = showingFinal ? resultSrc : selectedTake ? `/api/media/${selectedTake.id}` : "";
+  const livePreview = livePreviews.find((item) => item.clipIndex === livePreviewIndex) || livePreviews.at(-1);
+  const showingLive = Boolean(livePreview && previewMode === "live");
+  const showingRendered = showingFinal || showingLive;
+  const previewSrc = showingLive ? livePreview!.videoDataUrl : showingFinal ? resultSrc : selectedTake ? `/api/media/${selectedTake.id}` : "";
   useEffect(() => {
-    if (!videoRef.current || showingFinal || !selectedClip) return;
+    if (!videoRef.current || showingRendered || !selectedClip) return;
     videoRef.current.playbackRate = selectedClip.playbackSpeed;
     videoRef.current.volume = Math.min(1, selectedClip.audioVolume);
-  }, [selectedClip, showingFinal, previewSrc]);
+  }, [selectedClip, showingRendered, previewSrc]);
   useEffect(() => {
     const seek = captionPreviewSeekRef.current;
     const video = videoRef.current;
-    if (!seek || showingFinal || selectedSegmentId !== seek.segmentId || !video || video.readyState < 1) return;
+    if (!seek || showingRendered || selectedSegmentId !== seek.segmentId || !video || video.readyState < 1) return;
     video.pause(); video.currentTime = seek.seconds; setPreviewTime(seek.seconds);
     captionPreviewSeekRef.current = null;
-  }, [timeline, selectedSegmentId, showingFinal]);
+  }, [timeline, selectedSegmentId, showingRendered]);
   const resultMetadata = activeResult?.resultMetadata || {};
   const resultStyle = EDITOR_STYLES.find((item) => item.id === resultMetadata.style_id)?.name || "Estilo no registrado";
   const missingTimedTakes = [...new Set(activeTimeline.filter((clip) => !clip.captionCues.length).map((clip) => clip.takeId))];
@@ -532,12 +557,14 @@ export function EditorStudio(props: {
     setPreviewMode("original");
     document.getElementById("editor-caption-text")?.scrollIntoView({ behavior: "smooth", block: "center" });
   };
-  const transcribeMissingTakes = async (scope: "missing" | "selected" = "missing") => {
-    if (busy || transcriptionRunRef.current || !reviewConfirmed) return;
+  const transcribeMissingTakes = async (scope: "missing" | "selected" = "missing", signal?: AbortSignal): Promise<boolean> => {
+    if (busy || transcriptionRunRef.current || !reviewConfirmed || signal?.aborted) return false;
     const targets = getCaptionGenerationTargets(timelineRef.current, { scope, selectedSegmentId: selectedClip?.segmentId });
-    if (!targets.length) { showCaptionTools(); return; }
+    if (!targets.length) return true;
     const controller = new AbortController();
     transcriptionRunRef.current = controller;
+    const abort = () => controller.abort();
+    signal?.addEventListener("abort", abort, { once: true });
     const isCurrent = () => transcriptionRunRef.current === controller && !controller.signal.aborted;
     setBusy("transcribe"); setError(""); setTool("text"); setTranscriptionStage("Preparando subtítulos automáticos…");
     setTranscriptionTasks(targets.map((target) => ({ takeId: target.takeId, title: timelineRef.current.find((clip) => clip.takeId === target.takeId)?.title || "Toma", status: "pending" })));
@@ -567,7 +594,7 @@ export function EditorStudio(props: {
             timelineRef.current = merged.timeline; setTimeline(merged.timeline); setHistoryVersion((value) => value + 1);
             setOptions((currentOptions) => ({ ...currentOptions, captions: true }));
             setPreviewMode("original");
-            if (!generated) {
+            {
               const first = merged.timeline.find((clip) => clip.segmentId === merged.updatedSegmentIds[0])!;
               captionPreviewSeekRef.current = { segmentId: first.segmentId, seconds: first.captionCues[0].startSeconds + .01 };
               setSelectedTakeId(first.segmentId);
@@ -593,7 +620,9 @@ export function EditorStudio(props: {
         ? `Generación detenida. Se conserva${generated === 1 ? "" : "n"} ${generated} segmento${generated === 1 ? "" : "s"} generado${generated === 1 ? "" : "s"}; puedes continuar con los pendientes.`
         : failed ? `Se generó${generated === 1 ? "" : " un total de"} ${generated} segmento${generated === 1 ? "" : "s"}. Revisa las tomas con aviso y vuelve a intentar las pendientes.`
         : `Subtítulos listos en ${generated} ${generated === 1 ? "segmento" : "segmentos"}. Ya están activados: revisa el texto y prepara el MP4.`);
+      return isCurrent() && !failed;
     } finally {
+      signal?.removeEventListener("abort", abort);
       if (transcriptionRunRef.current === controller) { transcriptionRunRef.current = null; setBusy(""); }
     }
   };
@@ -615,22 +644,8 @@ export function EditorStudio(props: {
     } else updateClip(selectedClip.segmentId, { transcript: overlayDraft.trim(), captionCues: [] });
     setOverlayEditor(null);
   };
-  const workflowSteps = [
-    { label: "Orden y tomas", done: reviewConfirmed },
-    { label: "Detalles opcionales", done: Boolean(scriptDraft.trim()) || activeTimeline.some((clip) => clip.transcript.trim() || clip.label.trim()) },
-    { label: "Edición preparada", done: !needsPlan },
-    { label: "MP4 listo", done: ready },
-  ];
-  const completedSteps = workflowSteps.filter((step) => step.done).length;
-  const goToWorkflowStep = (index: number) => {
-    if (index === 0) { transcriptionRunRef.current?.abort(); if (sessionId) setManualReviewSession(sessionId); else props.onUpload(); return; }
-    if (index === 2) setTool("styles");
-    const target = ["editor-workbench", "editor-script", "editor-workbench", "editor-export"][index];
-    document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
-
   const changeScriptDraft = (value: string) => {
-    if (busy || savingScript) return;
+    if (busy || automaticRunning || savingScript) return;
     setScriptDraft(value.slice(0, 6_000));
     setJob(null);
     setDraftPending(true);
@@ -710,23 +725,28 @@ export function EditorStudio(props: {
     setSelectedTakeId(copy.segmentId);
   };
 
-  const plan = async () => {
-    if (!reviewConfirmed) { setManualReviewSession(sessionId); return; }
-    if (!activeTimeline.length) { setError("Activa al menos una toma en la línea de tiempo."); return; }
-    if (activeTimeline.length > 12) { setError("Este montaje admite hasta 12 segmentos activos. Desactiva o elimina algunos cortes de la línea de tiempo; tus originales se conservan."); return; }
-    if (options.captions && activeTimeline.some((clip) => !clip.transcript.trim() || !clip.captionCues.length)) {
+  const plan = async (draft: TimelineClip[] = timelineRef.current, planOptions = options, signal?: AbortSignal, automaticCaptions = false): Promise<Row | null> => {
+    const activeDraft = draft.filter((clip) => clip.included);
+    const scriptPlan = planFromScript(scriptDraft, activeDraft.map((clip) => ({ id: clip.segmentId, title: clip.title, transcript: clip.transcript })));
+    const isCurrent = () => !signal?.aborted;
+    if (!reviewConfirmed) { setManualReviewSession(sessionId); return null; }
+    if (!activeDraft.length) { setError("Activa al menos una toma en la línea de tiempo."); return null; }
+    if (activeDraft.length > 12) { setError("Este montaje admite hasta 12 segmentos activos. Desactiva o elimina algunos cortes de la línea de tiempo; tus originales se conservan."); return null; }
+    if (planOptions.captions && activeDraft.some((clip) => !clip.transcript.trim() || !clip.captionCues.length)) {
       setError("Para exportar subtítulos sincronizados, escucha las tomas con IA local o importa SRT/VTT con tiempos. No repartiremos el libreto a ciegas.");
-      return;
+      return null;
     }
     setBusy("plan"); setError("");
     try {
+      signal?.throwIfAborted();
       await ensureScriptSaved();
-      const orderedTimeline = timeline;
+      signal?.throwIfAborted();
+      const orderedTimeline = draft;
       const labels = new Map<string, string>();
-      if (options.labels && editorialPlan.reliableOrder) {
-        for (const resource of editorialPlan.resources) {
+      if (planOptions.labels && scriptPlan.reliableOrder) {
+        for (const resource of scriptPlan.resources) {
           if (!resource.generatedLabel || labels.size >= 5) continue;
-          const match = editorialPlan.matches.filter((item) => item.beatIndex === resource.beatIndex)
+          const match = scriptPlan.matches.filter((item) => item.beatIndex === resource.beatIndex)
             .sort((a, b) => a.sequenceOffset - b.sequenceOffset)[0];
           if (match && !labels.has(match.clipId)) labels.set(match.clipId, resource.generatedLabel.slice(0, 56));
         }
@@ -734,13 +754,15 @@ export function EditorStudio(props: {
       const plannedTimeline = labels.size
         ? orderedTimeline.map((clip) => clip.label.trim() || !labels.has(clip.segmentId) ? clip : { ...clip, label: labels.get(clip.segmentId)! })
         : orderedTimeline;
-      const effectiveSkills: Partial<Record<string, boolean>> = { subtitulos: options.captions, recortes: options.deadAir, audio_fx: options.soundEffects, transiciones: options.transitions, superposiciones: options.labels };
+      const effectiveSkills: Partial<Record<string, boolean>> = { subtitulos: planOptions.captions, recortes: planOptions.deadAir, audio_fx: planOptions.soundEffects, transiciones: planOptions.transitions, superposiciones: planOptions.labels };
       const skillProfiles = loadSkillProfiles(props.portfolioId).map((profile) => preproduction
         ? { ...profile, enabled: effectiveSkills[profile.id] ?? preproduction.skills.includes(profile.id) }
-        : profile);
-      const result = await request<{ job: Row }>("/api/editor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, style, objective, options, settings, timeline: plannedTimeline, skillProfiles }) });
-      if (plannedTimeline !== timeline) {
-        undoRef.current = [...undoRef.current.slice(-29), timeline];
+        : profile).map((profile) => automaticCaptions && profile.id === "subtitulos"
+          ? { ...profile, enabled: true, settings: { ...profile.settings, enabled: true } } : profile);
+      const result = await request<{ job: Row }>("/api/editor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, style, objective, options: planOptions, settings, timeline: plannedTimeline, skillProfiles }), signal });
+      signal?.throwIfAborted();
+      if (plannedTimeline !== timelineRef.current) {
+        undoRef.current = [...undoRef.current.slice(-29), timelineRef.current];
         redoRef.current = [];
         timelineRef.current = plannedTimeline;
         setTimeline(plannedTimeline);
@@ -752,35 +774,86 @@ export function EditorStudio(props: {
       window.localStorage.removeItem(draftPendingKey);
       if (result.job.ephemeral) window.localStorage.setItem(ephemeralStorageKey, JSON.stringify(result.job));
       else await props.onRefresh();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo crear el plan."); }
-    finally { setBusy(""); }
+      return result.job;
+    } catch (reason) { if (isCurrent()) setError(reason instanceof Error ? reason.message : "No se pudo crear el plan."); return null; }
+    finally { if (isCurrent()) setBusy(""); }
   };
 
-  const render = async () => {
-    if (!reviewConfirmed) { setManualReviewSession(sessionId); return; }
-    if (needsPlan) { await plan(); return; }
-    if (!job) return;
-    setBusy("render"); setError("");
-    setJob({ ...job, status: "processing", progress: 0, stage: "Enviando el plan al servidor", error: null });
+  const render = async (preparedJob?: Row, signal?: AbortSignal): Promise<Row | null> => {
+    if (!reviewConfirmed) { setManualReviewSession(sessionId); return null; }
+    const renderJob = preparedJob || job;
+    if (!renderJob) return null;
+    const isCurrent = () => !signal?.aborted;
+    signal?.throwIfAborted();
+    setBusy("render"); setError(""); setLivePreviews([]); setPreviewMode("original");
+    setJob({ ...renderJob, status: "processing", progress: 0, stage: "Enviando el plan al servidor", error: null });
     try {
-      const completedJob = await streamRender(job, (progress, stage) => setJob((current) => ({ ...(current || job), status: "processing", progress, stage, error: null })));
+      const completedJob = await streamRender(renderJob, (progress, stage) => {
+        if (isCurrent()) setJob((current) => ({ ...(current || renderJob), status: "processing", progress, stage, error: null }));
+      }, (preview) => {
+        if (!isCurrent()) return;
+        setLivePreviews((current) => [...current.filter((item) => item.clipIndex !== preview.clipIndex), preview].slice(-12));
+        setLivePreviewIndex(preview.clipIndex); setPreviewMode("live");
+      });
+      signal?.throwIfAborted();
       setJob(completedJob);
       if (completedJob.ephemeral) window.localStorage.setItem(ephemeralStorageKey, JSON.stringify(completedJob));
       if (completedJob.status === "ready") {
         window.localStorage.setItem(resultStorageKey, JSON.stringify(completedJob));
-        setLastResult(completedJob);
-        setPreviewMode("final");
-        setDraftPending(false);
+        setLastResult(completedJob); setPreviewMode("final"); setDraftPending(false);
         window.localStorage.removeItem(draftPendingKey);
       }
       if (!completedJob.ephemeral) await props.onRefresh();
+      return completedJob.status === "ready" ? completedJob : null;
     } catch (reason) {
+      if (!isCurrent()) return null;
       const message = reason instanceof Error ? reason.message : "No se pudo renderizar el video.";
       setError(message);
-      setJob((current) => ({ ...(current || job), status: reason instanceof RenderStatusUnconfirmedError ? "unconfirmed" : "failed", stage: reason instanceof RenderStatusUnconfirmedError ? "Resultado sin confirmar" : "Render falló", progress: 0, error: message }));
+      setJob((current) => ({ ...(current || renderJob), status: reason instanceof RenderStatusUnconfirmedError ? "unconfirmed" : "failed", stage: reason instanceof RenderStatusUnconfirmedError ? "Resultado sin confirmar" : "Render falló", progress: 0, error: message }));
+      return null;
     }
-    finally { setBusy(""); }
+    finally { if (isCurrent()) setBusy(""); }
   };
+
+  const editAutomatically = async () => {
+    if (busy || automaticRunRef.current) return;
+    if (!reviewConfirmed) { setManualReviewSession(sessionId); return; }
+    if (!timelineRef.current.some((clip) => clip.included)) { setError("Incluye al menos una toma para editar."); return; }
+    if (job?.status === "processing" || job?.status === "unconfirmed") {
+      setError("Hay una exportación sin confirmar. Comprueba Mis videos antes de iniciar otra."); return;
+    }
+    const controller = new AbortController();
+    automaticRunRef.current = controller; setAutomaticRunning(true); setError(""); setOverlayEditor(null);
+    setPreviewMode("original"); setLivePreviews([]);
+    document.getElementById("editor-live-progress")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    const automaticOptions = { ...options, captions: true };
+    setOptions(automaticOptions);
+    try {
+      await runAutomaticEdit({
+        signal: controller.signal,
+        transcribe: () => transcribeMissingTakes("missing", controller.signal),
+        captureDraft: () => timelineRef.current,
+        prepare: (draft) => plan(draft, automaticOptions, controller.signal, true),
+        render: (preparedJob) => render(preparedJob, controller.signal),
+        onStage: setAutomaticStage,
+      });
+    } catch (reason) {
+      if (automaticRunRef.current !== controller) return;
+      setAutomaticStage(controller.signal.aborted ? "cancelled" : "error");
+      if (!controller.signal.aborted) setError((current) => current || (reason instanceof Error ? reason.message : "La edición se detuvo. Tus avances se conservan."));
+    } finally {
+      if (automaticRunRef.current === controller) { automaticRunRef.current = null; setAutomaticRunning(false); setBusy(""); }
+    }
+  };
+
+  useEffect(() => {
+    if (!automaticRequest || automaticRequest.sessionId !== sessionId || automaticRequest.reviewId !== review?.id
+      || timelineReadyKey !== timelineStorageKey || preferencesReadyKey !== preferencesStorageKey || !timeline.length) return;
+    setAutomaticRequest(null);
+    void editAutomatically();
+  // A confirmed review is a one-shot intent, never an automatic rerun when drafts/jobs change.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [automaticRequest, sessionId, review?.id, timelineReadyKey, preferencesReadyKey, timeline.length]);
 
   const togglePlayback = async () => {
     if (!videoRef.current) return;
@@ -803,9 +876,11 @@ export function EditorStudio(props: {
       scenes={props.scenes.filter((scene) => scene.sessionId === sessionId).map((scene) => ({ id: String(scene.id), sessionId, title: scene.title, script: scene.script, position: scene.position, selectedTakeId: scene.selectedTakeId }))}
       takes={props.takes.filter((take) => take.sessionId === sessionId).map((take) => ({ id: String(take.id), sceneId: String(take.sceneId), sessionId, status: take.status, durationMs: take.durationMs, createdAt: take.createdAt }))}
       onBack={() => reviewConfirmed ? setManualReviewSession("") : props.onBack()}
-      onConfirmed={async () => {
+      offerAutomaticEdit
+      onConfirmed={async (confirmedReview, automatic) => {
         setJob(null); setDraftPending(true); window.localStorage.setItem(draftPendingKey, "1");
         await props.onRefresh();
+        setAutomaticRequest(automatic ? { sessionId, reviewId: confirmedReview.id } : null);
         setManualReviewSession(""); setReviewReload((value) => value + 1);
       }}
     />}
@@ -815,37 +890,41 @@ export function EditorStudio(props: {
     <header className="flex flex-wrap items-center gap-3 border-b border-white/8 bg-[#0d1018] px-3 py-2.5 sm:px-4">
       <button onClick={props.onBack} className="grid h-9 w-9 place-items-center rounded-xl text-zinc-500 hover:bg-white/5 hover:text-white"><ChevronLeft size={18} /></button>
       <div className="min-w-0"><p className="truncate text-sm font-medium">{selectedSession?.title || "Nuevo proyecto"}</p><p className="text-[9px] text-zinc-600">{selectedSession ? "Guardado automáticamente" : "Añade material para comenzar"}</p></div>
-      {available.length ? <select value={sessionId} onChange={(event) => { transcriptionRunRef.current?.abort(); setSessionId(event.target.value); setJob(undefined); setSelectedTakeId(""); setOverlayEditor(null); }} className="ml-auto max-w-[170px] rounded-xl border border-white/8 bg-white/5 px-3 py-2 text-[11px] text-zinc-300 outline-none">{available.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select> : <span className="ml-auto rounded-xl border border-amber-300/15 bg-amber-300/5 px-3 py-2 text-[10px] text-amber-200">Sin material</span>}
+      {available.length ? <select disabled={Boolean(busy || automaticRunning)} value={sessionId} onChange={(event) => { transcriptionRunRef.current?.abort(); setSessionId(event.target.value); setJob(undefined); setSelectedTakeId(""); setOverlayEditor(null); }} className="ml-auto max-w-[170px] rounded-xl border border-white/8 bg-white/5 px-3 py-2 text-[11px] text-zinc-300 outline-none">{available.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select> : <span className="ml-auto rounded-xl border border-amber-300/15 bg-amber-300/5 px-3 py-2 text-[10px] text-amber-200">Sin material</span>}
       <span className="hidden rounded-xl border border-white/8 px-3 py-2 text-[10px] text-zinc-500 sm:inline">9:16 · 1080p</span>
-      {activeTimeline.length > 0 && <button type="button" onClick={() => { showCaptionTools(); if (missingTimedTakes.length) void transcribeMissingTakes(); }} disabled={Boolean(busy)} className="flex items-center gap-2 rounded-xl border border-violet-400/40 bg-violet-400/10 px-3 py-2 text-xs font-semibold text-violet-100 disabled:opacity-40"><Captions size={15} />{busy === "transcribe" ? "Generando subtítulos…" : missingTimedTakes.length ? "Subtítulos automáticos" : "Revisar subtítulos"}</button>}
-      {ready ? <a href={`${resultSrc}?download=1`} className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-black"><Download size={14} />Descargar MP4</a> : available.length ? <button onClick={needsPlan ? plan : render} disabled={busy !== ""} className="flex items-center gap-2 rounded-xl bg-violet-500 px-3 py-2 text-xs font-semibold disabled:opacity-50">{busy ? <LoaderCircle className="animate-spin" size={14} /> : <Sparkles size={14} />}{busy === "render" ? "Exportando…" : needsPlan ? "Preparar edición" : "Renderizar"}</button> : <button onClick={props.onUpload} className="flex items-center gap-2 rounded-xl bg-violet-500 px-3 py-2 text-xs font-semibold"><Plus size={14} />Subir videos</button>}
+      {ready ? <a href={`${resultSrc}?download=1`} className="flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-black"><Download size={14} />Descargar MP4</a> : available.length ? <button onClick={() => void editAutomatically()} disabled={busy !== "" || automaticRunning} className="flex items-center gap-2 rounded-xl bg-violet-500 px-3 py-2 text-xs font-semibold disabled:opacity-50">{busy ? <LoaderCircle className="animate-spin" size={14} /> : <Sparkles size={14} />}{automaticRunning ? "Editando automáticamente…" : busy === "render" ? "Exportando…" : "Editar automáticamente"}</button> : <button onClick={props.onUpload} className="flex items-center gap-2 rounded-xl bg-violet-500 px-3 py-2 text-xs font-semibold"><Plus size={14} />Subir videos</button>}
     </header>
 
-    <nav aria-label="Pasos para editar" className="border-b border-white/8 bg-[#0f1220] px-3 py-3 sm:px-5">
-      <div className="mb-2 flex items-center justify-between gap-2"><strong className="text-xs text-zinc-200">Tu ruta de edición <span className="font-normal text-zinc-500">· orden y tomas confirmados</span></strong><span className="text-[10px] text-zinc-400">{completedSteps} de 4 hitos</span></div>
-      <div className="mb-3 h-1 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-gradient-to-r from-violet-500 to-cyan-400 transition-all" style={{ width: `${completedSteps * 25}%` }} /></div>
-      <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">{workflowSteps.map((step, index) => <button key={step.label} onClick={() => goToWorkflowStep(index)} className={`flex items-center gap-2 rounded-xl border px-2.5 py-2 text-left text-[10px] sm:text-xs ${step.done ? "border-emerald-400/20 bg-emerald-400/[.07] text-emerald-100" : "border-white/10 bg-white/[.03] text-zinc-400 hover:border-violet-400/35 hover:text-white"}`}><span className={`grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-semibold ${step.done ? "bg-emerald-400 text-black" : "bg-white/10 text-zinc-300"}`}>{step.done ? <Check size={12} /> : index + 1}</span><span className="min-w-0">{step.label}</span></button>)}</div>
-    </nav>
+    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/8 px-4 py-2 text-[11px] text-zinc-400"><span className="flex items-center gap-2"><Check size={14} className="text-emerald-300" />Orden confirmado · {activeTimeline.length} escenas</span><button disabled={Boolean(busy || automaticRunning)} onClick={() => setManualReviewSession(sessionId)} className="rounded-lg px-2 py-2 text-violet-200 disabled:opacity-40">Cambiar tomas u orden</button></div>
 
     {activeResult && <div className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-400/20 bg-emerald-400/[.08] px-4 py-4 sm:px-6"><div><p className="flex items-center gap-2 text-sm font-semibold text-emerald-200"><Check size={16} />{resultIsPrevious ? "Resultado anterior disponible" : "Resultado editado listo"}</p><p className="mt-1 text-xs text-zinc-400">{resultIsPrevious ? "Esta versión todavía no incluye los cambios pendientes. Prepara y renderiza una nueva versión." : resultMetadata.recoveredFromStorage ? "El MP4 apareció en la biblioteca tras perderse la conexión. Reprodúcelo completo para comprobar el resultado." : "El MP4 pasó una comprobación inicial de video y audio. Revísalo completo antes de publicarlo."}</p>{!resultMetadata.recoveredFromStorage && <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-zinc-300"><span>{resultStyle}</span><span>· {Number(resultMetadata.duration_seconds || 0).toFixed(1)} s finales</span><span>· {Number(resultMetadata.caption_count || 0)} subtítulos</span><span>· {Number(resultMetadata.effect_count || 0)} efectos</span><span>· {Number(resultMetadata.removed_silence_seconds || 0).toFixed(1)} s de silencio retirado</span></div>}</div><div className="flex w-full flex-wrap gap-2 sm:w-auto"><button onClick={() => { setPreviewMode("original"); document.getElementById("editor-workbench")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} className="flex-1 rounded-xl bg-violet-500 px-3 py-2 text-xs font-semibold text-white sm:flex-none">Seguir editando</button><button onClick={() => setPreviewMode("final")} className="flex-1 rounded-xl bg-emerald-400 px-3 py-2 text-xs font-semibold text-black sm:flex-none">Ver resultado</button><a href={`${resultSrc}?download=1`} className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-emerald-300/30 px-3 py-2 text-xs text-emerald-100 sm:flex-none"><Download size={14} />Descargar</a></div></div>}
     {selectedSession?.title?.startsWith("Copia del MP4 ·") && <div className="border-b border-amber-300/20 bg-amber-300/[.06] px-4 py-3 text-xs leading-5 text-amber-100 sm:px-6">Estás editando una copia del MP4 exportado. Puedes recortar, ajustar audio/color y añadir nuevos elementos; los subtítulos, sonidos y efectos ya incrustados no se pueden separar. Puedes generar subtítulos nuevos desde el audio en Texto → Subtítulos automáticos.</div>}
     {job?.status === "failed" && <div className="border-b border-red-400/20 bg-red-400/[.08] px-4 py-4 text-sm text-red-100 sm:px-6"><strong>La edición no se completó. No existe un MP4 final de este intento.</strong><p className="mt-1 text-xs text-red-200/80">{job.error || error || "Revisa el mensaje y vuelve a intentar el render."}</p></div>}
     {job?.status === "unconfirmed" && <div className="border-b border-amber-300/20 bg-amber-300/[.07] px-4 py-4 text-sm text-amber-100 sm:px-6"><strong>No pudimos confirmar el resultado de este intento.</strong><p className="mt-1 text-xs text-amber-100/80">{job.error || "Abre Mis videos para ver si apareció el MP4 antes de reintentar."}</p></div>}
     {job?.ephemeral && <div className="border-b border-amber-300/15 bg-amber-300/[.04] px-4 py-2.5 text-[11px] text-amber-100/80 sm:px-6">El plan y el progreso de esta edición solo se conservan en este navegador. El MP4 terminado aparecerá en Mis videos de esta misma sesión.</div>}
-    {options.captions && missingTimedTakes.length > 0 && <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-300/20 bg-amber-300/[.06] px-4 py-3 text-[11px] text-amber-100 sm:px-6"><span>Faltan tiempos de voz en {missingTimedTakes.length} {missingTimedTakes.length === 1 ? "toma" : "tomas"}. Puedes seguir sin subtítulos y añadirlos más tarde.</span><div className="flex flex-wrap gap-2"><button onClick={() => changeOptions({ captions: false })} className="rounded-lg border border-amber-200/30 px-3 py-2 font-semibold text-amber-100">Seguir sin subtítulos</button><button onClick={() => { setTool("text"); document.getElementById("editor-workbench")?.scrollIntoView({ behavior: "smooth" }); }} className="rounded-lg bg-violet-500 px-3 py-2 font-semibold text-white">Sincronizar subtítulos</button></div></div>}
+    {!automaticRunning && automaticStage === "idle" && options.captions && missingTimedTakes.length > 0 && <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-300/20 bg-amber-300/[.06] px-4 py-3 text-[11px] text-amber-100 sm:px-6"><span>Faltan tiempos de voz en {missingTimedTakes.length} {missingTimedTakes.length === 1 ? "toma" : "tomas"}. Puedes seguir sin subtítulos y añadirlos más tarde.</span><div className="flex flex-wrap gap-2"><button onClick={() => changeOptions({ captions: false })} className="rounded-lg border border-amber-200/30 px-3 py-2 font-semibold text-amber-100">Seguir sin subtítulos</button><button onClick={() => { setTool("text"); document.getElementById("editor-workbench")?.scrollIntoView({ behavior: "smooth" }); }} className="rounded-lg bg-violet-500 px-3 py-2 font-semibold text-white">Sincronizar subtítulos</button></div></div>}
 
-    {selectedSession && <section id="editor-script" className="scroll-mt-24 border-b border-white/8 bg-[#10131e] p-4 sm:p-5" aria-label="Dirección por libreto">
+    {selectedSession && <details id="editor-script" className="scroll-mt-24 border-b border-white/8 bg-[#10131e] p-4 sm:p-5" aria-label="Dirección por libreto"><summary className="cursor-pointer text-xs font-medium text-zinc-300">Libreto y recursos (opcional)</summary>
+      <div className="mt-4">
       <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="text-[10px] font-semibold uppercase tracking-[.17em] text-violet-300">Dirección editorial</p><h2 className="mt-1 text-base font-semibold">Libreto y recursos del video</h2><p className="mt-1 max-w-2xl text-xs leading-5 text-zinc-400">El libreto es opcional. Si lo añades, puede ayudar a proponer el orden y los apoyos; también puedes ordenar las tomas manualmente.</p></div><span className={`rounded-full px-3 py-1 text-[10px] ${scriptDraft.trim() ? "bg-emerald-400/10 text-emerald-200" : "bg-white/5 text-zinc-400"}`}>{scriptDraft.trim() ? "Libreto cargado" : "Libreto opcional"}</span></div>
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <div><label className="block text-xs text-zinc-300">Libreto (opcional)<textarea value={scriptDraft} onChange={(event) => changeScriptDraft(event.target.value)} maxLength={6_000} rows={7} placeholder="Puedes pegar el libreto ahora o continuar sin él. Separa ideas o escenas con líneas en blanco." className="mt-2 w-full resize-y rounded-xl border border-white/10 bg-black/25 p-3 text-xs leading-5 text-white outline-none focus:border-violet-400/50" /></label><div className="mt-2 flex flex-wrap items-center gap-2"><label className="cursor-pointer rounded-lg border border-white/15 px-3 py-2 text-[11px] text-zinc-200">Subir .txt o .md<input type="file" accept=".txt,.md,text/plain,text/markdown" className="sr-only" onChange={(event) => { void importScript(event.target.files?.[0]); event.target.value = ""; }} /></label><button onClick={() => void saveScript()} disabled={savingScript || scriptDraft.trim() === String(selectedSession.script || "").trim()} className="rounded-lg bg-violet-500 px-3 py-2 text-[11px] font-semibold disabled:opacity-40">{savingScript ? "Guardando…" : "Guardar libreto"}</button><span className="text-[10px] text-zinc-500">{scriptDraft.length}/6000 caracteres</span></div></div>
-        <div className="rounded-xl border border-white/10 bg-black/20 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-semibold">Orden propuesto por el libreto</p><p className="mt-1 text-[10px] text-zinc-500">{editorialPlan.matches.filter((match) => match.beatIndex !== null).length}/{activeTimeline.length} tomas vinculadas · {editorialPlan.beats.length} partes del relato</p></div><button onClick={applySuggestedOrder} disabled={!editorialPlan.reliableOrder || Boolean(busy)} className="rounded-lg bg-violet-500 px-3 py-2 text-[10px] font-semibold disabled:opacity-40">Aplicar orden</button></div>
+        <div className="rounded-xl border border-white/10 bg-black/20 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-semibold">Orden propuesto por el libreto</p><p className="mt-1 text-[10px] text-zinc-500">{editorialPlan.matches.filter((match) => match.beatIndex !== null).length}/{activeTimeline.length} tomas vinculadas · {editorialPlan.beats.length} partes del relato</p></div><button onClick={applySuggestedOrder} disabled={!editorialPlan.reliableOrder || Boolean(busy || automaticRunning)} className="rounded-lg bg-violet-500 px-3 py-2 text-[10px] font-semibold disabled:opacity-40">Aplicar orden</button></div>
           {!editorialPlan.reliableOrder && <p className="mt-3 rounded-lg bg-amber-300/10 p-2 text-[10px] leading-4 text-amber-100">{editorialPlan.transcriptCoverage < 1 ? "Falta texto hablado en una o más tomas; el sistema no puede reconocer su lugar con seguridad." : editorialPlan.repeatedBeats.length ? "Hay tomas que coinciden con la misma parte del libreto. Revisa si se repiten." : "El texto de las tomas no coincide lo suficiente con el libreto para imponer un orden."}</p>}
           {editorialPlan.beats.length > 0 && <ol className="mt-3 max-h-40 space-y-1.5 overflow-y-auto text-[10px]">{editorialPlan.beats.map((beat) => { const match = editorialPlan.matches.find((item) => item.beatIndex === beat.index); const clip = activeTimeline.find((item) => item.segmentId === match?.clipId); return <li key={beat.index} className="flex gap-2 rounded-lg bg-white/[.04] p-2"><span className="font-semibold text-violet-300">{beat.index + 1}.</span><span className="min-w-0"><span className="block truncate text-zinc-300">{beat.text}</span><small className={clip ? "text-emerald-300" : "text-amber-200"}>{clip ? `${clip.title} · coincidencia ${match?.confidence}` : "Falta toma o transcripción"}</small></span></li>; })}</ol>}
         </div>
       </div>
-      {editorialPlan.resources.length > 0 && <div className="mt-4"><p className="mb-2 text-xs font-semibold">Recursos recomendados para esta historia</p><div className="flex gap-2 overflow-x-auto pb-1">{editorialPlan.resources.map((resource) => { const match = editorialPlan.matches.find((item) => item.beatIndex === resource.beatIndex); return <article key={resource.id} className="min-w-[210px] max-w-[240px] flex-1 rounded-xl border border-white/10 bg-black/20 p-3"><span className={`text-[9px] font-semibold uppercase tracking-wide ${resource.needsMedia ? "text-amber-200" : "text-cyan-200"}`}>{resource.needsMedia ? "Requiere imagen o toma propia" : "Generable como rótulo"}</span><strong className="mt-1 block text-xs">{resource.title}</strong><p className="mt-1 text-[10px] leading-4 text-zinc-500">{resource.detail}</p>{resource.generatedLabel && <button onClick={() => match && updateClip(match.clipId, { label: resource.generatedLabel || "" })} disabled={!match || Boolean(busy)} className="mt-2 rounded-lg border border-cyan-300/25 px-2 py-1.5 text-[10px] text-cyan-200 disabled:opacity-40">{match ? `Aplicar a ${activeTimeline.find((clip) => clip.segmentId === match.clipId)?.title || "toma"}` : "Falta vincular la toma"}</button>}</article>; })}</div></div>}
-    </section>}
+      {editorialPlan.resources.length > 0 && <div className="mt-4"><p className="mb-2 text-xs font-semibold">Recursos recomendados para esta historia</p><div className="flex gap-2 overflow-x-auto pb-1">{editorialPlan.resources.map((resource) => { const match = editorialPlan.matches.find((item) => item.beatIndex === resource.beatIndex); return <article key={resource.id} className="min-w-[210px] max-w-[240px] flex-1 rounded-xl border border-white/10 bg-black/20 p-3"><span className={`text-[9px] font-semibold uppercase tracking-wide ${resource.needsMedia ? "text-amber-200" : "text-cyan-200"}`}>{resource.needsMedia ? "Requiere imagen o toma propia" : "Generable como rótulo"}</span><strong className="mt-1 block text-xs">{resource.title}</strong><p className="mt-1 text-[10px] leading-4 text-zinc-500">{resource.detail}</p>{resource.generatedLabel && <button onClick={() => match && updateClip(match.clipId, { label: resource.generatedLabel || "" })} disabled={!match || Boolean(busy || automaticRunning)} className="mt-2 rounded-lg border border-cyan-300/25 px-2 py-1.5 text-[10px] text-cyan-200 disabled:opacity-40">{match ? `Aplicar a ${activeTimeline.find((clip) => clip.segmentId === match.clipId)?.title || "toma"}` : "Falta vincular la toma"}</button>}</article>; })}</div></div>}
+      </div>
+    </details>}
 
+    <EditingProgress stage={automaticStage} running={automaticRunning} captionStage={transcriptionStage}
+      tasks={transcriptionTasks} renderStage={job?.stage || ""} renderProgress={Number(job?.progress || 0)}
+      previews={livePreviews} selectedPreviewIndex={showingLive ? livePreview?.clipIndex : undefined}
+      onSelectPreview={(index) => { setLivePreviewIndex(index); setPreviewMode("live"); }}
+      onStop={() => { automaticRunRef.current?.abort(); transcriptionRunRef.current?.abort(); }}
+      onStart={() => void editAutomatically()} disabled={Boolean(busy || automaticRunning) || !activeTimeline.length}
+      error={error} />
     <div id="editor-workbench" className="scroll-mt-24 grid min-h-[670px] xl:grid-cols-[78px_250px_minmax(320px,1fr)_260px]">
       <nav className="order-2 flex overflow-x-auto border-t border-white/8 bg-[#0d1018] p-1.5 xl:order-none xl:flex-col xl:border-r xl:border-t-0 xl:p-2">
         <ToolButton active={tool === "media"} icon={Film} label="Medios" onClick={() => setTool("media")} />
@@ -857,77 +936,77 @@ export function EditorStudio(props: {
         <ToolButton active={tool === "catalog"} icon={Layers3} label="Herramientas" onClick={() => setTool("catalog")} />
       </nav>
 
-      <aside className="order-3 max-h-[430px] overflow-y-auto border-t border-white/8 bg-[#0c0f17] p-4 xl:order-none xl:max-h-none xl:border-r xl:border-t-0">
+      <aside className="order-3 max-h-[430px] overflow-y-auto border-t border-white/8 bg-[#0c0f17] p-4 xl:order-none xl:max-h-none xl:border-r xl:border-t-0"><fieldset disabled={Boolean(busy || automaticRunning) && tool !== "text"} className="contents">
         {tool === "media" && <><PanelTitle icon={Layers3} title="Tus escenas" text={`${approvedTakes.length} clips listos`} /><button onClick={() => props.onAddToCurrent(sessionId)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-violet-400/25 bg-violet-400/5 px-3 py-3 text-xs text-violet-200"><Plus size={15} />Añadir a este proyecto</button><div className="mt-4 grid grid-cols-2 gap-2">{approvedTakes.map((take, index) => <button key={take.id} onClick={() => { setSelectedTakeId(timeline.find((clip) => clip.takeId === take.id)?.segmentId || ""); setPreviewMode("original"); setOverlayEditor(null); }} className={`overflow-hidden rounded-xl border text-left ${selectedTake?.id === take.id ? "border-violet-400" : "border-white/8"}`}><div className="relative aspect-[9/12] bg-black"><video src={`/api/media/${take.id}`} muted preload="metadata" className="h-full w-full object-cover" /><span className="absolute bottom-1 right-1 rounded bg-black/75 px-1.5 py-0.5 text-[8px]">{seconds(take.durationMs)}</span></div><p className="truncate px-2 py-2 text-[9px] text-zinc-400">{approvedScenes[index]?.title || `Clip ${index + 1}`}</p></button>)}</div></>}
         {tool === "video" && <><PanelTitle icon={SlidersHorizontal} title="Video y color" text={selectedClip ? `Ajustes de ${selectedClip.title}` : "Selecciona una toma"} />{selectedClip && <div className="mt-5 space-y-5"><p className="text-[10px] leading-4 text-zinc-500">Cada control se aplica a esta toma al renderizar. La vista previa del color es aproximada.</p><Range label="Velocidad" value={selectedClip.playbackSpeed} min={.5} max={2} step={.05} suffix="×" onChange={(value) => updateClip(selectedClip.segmentId, { playbackSpeed: value })} /><Range label="Brillo" value={Math.round(selectedClip.brightness * 100)} min={-20} max={20} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { brightness: value / 100 })} /><Range label="Contraste" value={Math.round(selectedClip.contrast * 100)} min={80} max={130} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { contrast: value / 100 })} /><Range label="Saturación" value={Math.round(selectedClip.saturation * 100)} min={50} max={150} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { saturation: value / 100 })} /><button onClick={() => updateClip(selectedClip.segmentId, { playbackSpeed: 1, brightness: 0, contrast: 1, saturation: 1 })} className="w-full rounded-xl border border-white/10 px-3 py-2 text-xs text-zinc-300">Restablecer ajustes</button></div>}</>}
         {tool === "styles" && <>
           <PanelTitle icon={WandSparkles} title="Estilos" text="Cambia toda la edición" />
           <div className="mt-4 space-y-2">{EDITOR_STYLES.map((item) => <button key={item.id} onClick={() => chooseStyle(item.id)} className={`flex w-full items-center gap-3 rounded-xl border p-2.5 text-left ${style === item.id ? "border-violet-400/40 bg-violet-400/10" : "border-white/7 bg-black/15"}`}><span className="h-12 w-9 shrink-0 rounded-lg" style={{ background: `linear-gradient(145deg,${item.palette[0]},${item.palette[1]})` }} /><span className="min-w-0"><strong className="block truncate text-xs">{item.name}</strong><small className="mt-1 block truncate text-[9px] text-zinc-600">{item.reference}</small></span>{style === item.id && <Check className="ml-auto text-violet-300" size={14} />}</button>)}</div>
-          {layeredStyle && <div className="mt-4 rounded-xl border border-yellow-300/25 bg-yellow-300/[.04] p-3"><p className="text-[10px] font-semibold text-yellow-200">Vista del estilo IA en capas</p><div className="relative mx-auto mt-3 aspect-[9/16] w-28 overflow-hidden rounded-lg bg-gradient-to-br from-slate-500 via-slate-800 to-black"><span className="absolute inset-x-2 top-4 rounded bg-black/90 px-1 py-1 text-center text-[8px] font-black text-white">El poder de la IA</span><span className="absolute inset-x-2 bottom-10 text-center text-[12px] font-black leading-3 text-white drop-shadow-lg">Y ESO LO <span className="text-yellow-300">CAMBIA</span></span></div><p className="mt-3 text-[10px] leading-4 text-zinc-400">Encabezado oscuro, subtítulos blanco y amarillo, cortes secos y acentos de sonido. El encabezado usa el título o un rótulo; los subtítulos necesitan tiempos de voz para aparecer en el MP4.</p><a href="https://www.instagram.com/reel/DfYILmwt3cL/" target="_blank" rel="noopener noreferrer" className="mt-2 inline-block text-[10px] text-yellow-200 underline">Ver reel de referencia</a>{missingTimedTakes.length ? <button onClick={() => { setTool("text"); void transcribeMissingTakes(); }} disabled={Boolean(busy)} className="mt-3 w-full rounded-lg bg-yellow-300 px-3 py-2 text-[10px] font-semibold text-black disabled:opacity-50">Generar subtítulos automáticos</button> : !options.captions ? <button onClick={() => changeOptions({ captions: true })} className="mt-3 w-full rounded-lg bg-yellow-300 px-3 py-2 text-[10px] font-semibold text-black">Activar subtítulos</button> : null}</div>}
+          {layeredStyle && <div className="mt-4 rounded-xl border border-yellow-300/25 bg-yellow-300/[.04] p-3"><p className="text-[10px] font-semibold text-yellow-200">Vista del estilo IA en capas</p><div className="relative mx-auto mt-3 aspect-[9/16] w-28 overflow-hidden rounded-lg bg-gradient-to-br from-slate-500 via-slate-800 to-black"><span className="absolute inset-x-2 top-4 rounded bg-black/90 px-1 py-1 text-center text-[8px] font-black text-white">El poder de la IA</span><span className="absolute inset-x-2 bottom-10 text-center text-[12px] font-black leading-3 text-white drop-shadow-lg">Y ESO LO <span className="text-yellow-300">CAMBIA</span></span></div><p className="mt-3 text-[10px] leading-4 text-zinc-400">Encabezado oscuro, subtítulos blanco y amarillo, cortes secos y acentos de sonido. El encabezado usa el título o un rótulo; los subtítulos necesitan tiempos de voz para aparecer en el MP4.</p><a href="https://www.instagram.com/reel/DfYILmwt3cL/" target="_blank" rel="noopener noreferrer" className="mt-2 inline-block text-[10px] text-yellow-200 underline">Ver reel de referencia</a>{missingTimedTakes.length ? <button onClick={() => { setTool("text"); void transcribeMissingTakes(); }} disabled={Boolean(busy || automaticRunning)} className="mt-3 w-full rounded-lg bg-yellow-300 px-3 py-2 text-[10px] font-semibold text-black disabled:opacity-50">Generar subtítulos automáticos</button> : !options.captions ? <button onClick={() => changeOptions({ captions: true })} className="mt-3 w-full rounded-lg bg-yellow-300 px-3 py-2 text-[10px] font-semibold text-black">Activar subtítulos</button> : null}</div>}
         </>}
         {tool === "text" && <>
           <PanelTitle icon={Captions} title="Subtítulos" text="Sincronizados con la voz de cada toma" />
           <div className="mt-4 space-y-4">
-            <AutomaticCaptions busy={busy === "transcribe"} disabled={Boolean(busy) || !reviewConfirmed}
+            <AutomaticCaptions busy={busy === "transcribe"} disabled={Boolean(busy || automaticRunning) || !reviewConfirmed}
               missingCount={missingTimedTakes.length} completedCount={activeTimeline.filter((clip) => clip.captionCues.length > 0).length} totalCount={activeTimeline.length}
               selectedTitle={selectedClip?.title} selectedHasCaptions={Boolean(selectedClip?.captionCues.length)} tasks={transcriptionTasks} stage={transcriptionStage}
               onGenerate={() => void transcribeMissingTakes()} onGenerateSelected={() => void transcribeMissingTakes("selected")}
-              onCancel={() => transcriptionRunRef.current?.abort()} onReview={reviewCaptionText} />
-            <Toggle enabled={options.captions} label="Mostrar subtítulos" detail="Se activan al terminar la generación" onChange={() => changeOptions({ captions: !options.captions })} />
+              onCancel={() => { automaticRunRef.current?.abort(); transcriptionRunRef.current?.abort(); }} onReview={reviewCaptionText} />
+            <fieldset disabled={Boolean(busy || automaticRunning)} className="contents"><Toggle enabled={options.captions} label="Mostrar subtítulos" detail="Se activan al terminar la generación" onChange={() => changeOptions({ captions: !options.captions })} />
             <Range label="Tamaño" value={settings.subtitleSize} min={38} max={100} suffix="px" onChange={(value) => changeSettings({ subtitleSize: value })} />
             <Select label="Posición" value={settings.subtitlePosition} onChange={(value) => changeSettings({ subtitlePosition: value as typeof settings.subtitlePosition })} options={[["top","Arriba"],["center","Centro"],["bottom","Abajo"]]} />
-            <Toggle enabled={options.labels} label="Título inicial" detail="Muestra el nombre del proyecto" onChange={() => changeOptions({ labels: !options.labels })} />
+            <Toggle enabled={options.labels} label="Título inicial" detail="Muestra el nombre del proyecto" onChange={() => changeOptions({ labels: !options.labels })} /></fieldset>
           </div>
         </>}
         {tool === "effects" && <><PanelTitle icon={Zap} title="Efectos" text="Movimiento sin complicaciones" /><div className="mt-4 space-y-3"><Toggle enabled={options.deadAir} label="Cortar silencios" detail="Elimina pausas largas" onChange={() => changeOptions({ deadAir: !options.deadAir })} />{options.deadAir && <Range label="Pausa máxima" value={settings.silenceThresholdMs} min={350} max={1500} step={50} suffix=" ms" onChange={(value) => changeSettings({ silenceThresholdMs: value })} />}{options.deadAir && <Select label="Sensibilidad al ruido" value={String(settings.silenceNoiseDb)} onChange={(value) => changeSettings({ silenceNoiseDb: Number(value) })} options={[["-35","Conservadora"],["-30","Normal"],["-25","Alta · para ruido de fondo"]]} />}<Toggle enabled={options.transitions} label="Transiciones" detail="Entre escenas" onChange={() => changeOptions({ transitions: !options.transitions })} />{options.transitions && <Select label="Tipo" value={settings.transition} onChange={(value) => changeSettings({ transition: value as typeof settings.transition })} options={[['cut','Corte'],['fade','Fundido'],['dissolve','Fundido a negro']]} />}<div className="rounded-xl border border-dashed border-white/8 p-3 opacity-60"><p className="flex items-center gap-2 text-xs"><ImageIcon size={14} />B-roll e imágenes</p><small className="mt-1 block text-[9px] text-zinc-600">Se habilitará al conectar la biblioteca visual.</small></div></div></>}
         {tool === "audio" && <><PanelTitle icon={Volume2} title="Audio" text="Voz clara y golpes precisos" /><div className="mt-4 space-y-4">{selectedClip && <><Range label={`Volumen de ${selectedClip.title}`} value={Math.round(selectedClip.audioVolume * 100)} min={0} max={200} step={5} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { audioVolume: value / 100 })} /><button onClick={() => updateClip(selectedClip.segmentId, { audioVolume: selectedClip.audioVolume === 0 ? 1 : 0 })} className="w-full rounded-xl border border-white/10 px-3 py-2 text-xs text-zinc-300">{selectedClip.audioVolume === 0 ? "Activar voz" : "Silenciar toma"}</button></>}<Select label="Reducción de ruido de voz" value={settings.noiseReduction} onChange={(value) => changeSettings({ noiseReduction: value as typeof settings.noiseReduction })} options={[["off","Apagada"],["light","Suave"],["medium","Media"]]} /><Toggle enabled={options.soundEffects} label="Efectos sonoros" detail="En cambios importantes" onChange={() => changeOptions({ soundEffects: !options.soundEffects })} />{options.soundEffects && <Range label="Intensidad" value={Math.round(settings.soundEffectVolume * 100)} min={0} max={100} suffix="%" onChange={(value) => changeSettings({ soundEffectVolume: value / 100 })} />}{options.soundEffects && <Select label="Sonido de los cortes" value={settings.soundPreset} onChange={(value) => changeSettings({ soundPreset: value as typeof settings.soundPreset })} options={[["auto","Según el estilo"],["soft","Suave"],["kinetic","Golpe cinético"],["cinematic","Cinematográfico"],["pop","Marca pop"],["none","Sin sonido"]]} />}<div className="rounded-xl border border-dashed border-white/8 p-3 opacity-60"><p className="flex items-center gap-2 text-xs"><Music2 size={14} />Música</p><small className="mt-1 block text-[9px] text-zinc-600">Pendiente de pistas con licencia.</small></div></div></>}
         {tool === "catalog" && <><PanelTitle icon={Layers3} title="Mapa de herramientas" text="Guía completa · 15 categorías" /><p className="mt-3 text-[10px] leading-4 text-zinc-400">Disponible: la función descrita modifica el MP4. Parcial: existe una versión limitada. En desarrollo: aún no está conectada al render.</p><input type="search" value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} placeholder="Buscar herramienta…" className="mt-4 w-full rounded-xl border border-white/10 bg-[#151822] p-2.5 text-xs text-white outline-none" /><div className="mt-4 space-y-2">{EDITOR_TOOL_CATALOG.map((category) => { const matches = category.tools.filter((item) => `${item.name} ${item.section} ${item.description}`.toLocaleLowerCase("es").includes(catalogSearch.toLocaleLowerCase("es"))); if (!matches.length) return null; return <details key={category.id} open={Boolean(catalogSearch)} className="rounded-xl border border-white/10 bg-white/[.02] p-2"><summary className="cursor-pointer text-xs font-medium">{category.id}. {category.name} <span className="text-zinc-500">({matches.length})</span></summary><div className="mt-2 space-y-2">{matches.map((item, index) => <div key={`${item.section}-${item.name}-${index}`} className="rounded-lg bg-black/20 p-2"><p className="text-[11px] text-zinc-200">{item.name}</p><p className="mt-1 text-[9px] leading-4 text-zinc-500">{item.description}</p><span className={`mt-1 inline-block text-[9px] ${item.status === "ready" ? "text-emerald-300" : item.status === "partial" ? "text-cyan-300" : "text-amber-200"}`}>{item.status === "ready" ? "Disponible" : item.status === "partial" ? "Parcial" : "En desarrollo"}</span></div>)}</div></details>; })}</div></>}
-      </aside>
+      </fieldset></aside>
 
       <main className="order-1 flex min-h-[540px] flex-col bg-[#07090e] xl:order-none">
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="relative aspect-[9/16] h-[430px] max-h-[58vh] overflow-hidden rounded-2xl border border-white/10 bg-black shadow-[0_30px_100px_rgba(0,0,0,.65)] sm:h-[520px]">
-            {previewSrc ? <video key={`${previewSrc}:${showingFinal ? "final" : selectedClip?.segmentId}`} ref={videoRef} src={previewSrc} aria-label={showingFinal ? "Resultado editado" : "Vista previa de la toma original"} controls playsInline preload="metadata" onLoadedMetadata={(event) => { setMediaErrorSrc(""); if (!showingFinal && selectedClip) { const seek = captionPreviewSeekRef.current;
+            {previewSrc ? <video key={`${previewSrc}:${showingFinal ? "final" : selectedClip?.segmentId}`} ref={videoRef} src={previewSrc} aria-label={showingLive ? "Escena procesada durante la edición" : showingFinal ? "Resultado editado" : "Vista previa de la toma original"} autoPlay={showingLive} muted={showingLive} loop={showingLive} controls playsInline preload="metadata" onLoadedMetadata={(event) => { setMediaErrorSrc(""); if (!showingRendered && selectedClip) { const seek = captionPreviewSeekRef.current;
               const start = seek?.segmentId === selectedClip.segmentId ? seek.seconds : selectedClip.trimStartSeconds;
               event.currentTarget.currentTime = start; if (seek?.segmentId === selectedClip.segmentId) captionPreviewSeekRef.current = null;
-              event.currentTarget.playbackRate = selectedClip.playbackSpeed; event.currentTarget.volume = Math.min(1, selectedClip.audioVolume); setPreviewTime(start); } else setPreviewTime(event.currentTarget.currentTime); }} onTimeUpdate={(event) => setPreviewTime(event.currentTarget.currentTime)} onError={() => setMediaErrorSrc(previewSrc)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} className="h-full w-full object-contain" style={!showingFinal && selectedClip ? { filter: `brightness(${1 + selectedClip.brightness}) contrast(${selectedClip.contrast}) saturate(${selectedClip.saturation})` } : undefined} /> : <button onClick={props.onUpload} className="grid h-full w-full place-items-center bg-[radial-gradient(circle_at_50%_35%,rgba(124,58,237,.18),transparent_45%)] text-center"><span><span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-violet-400/10 text-violet-200"><UploadCloud size={24} /></span><strong className="mt-4 block text-sm text-zinc-200">Sube videos para editar</strong><small className="mt-2 block px-7 leading-4 text-zinc-600">Después podrás cortarlos, subtitularlos y aplicar estilos.</small></span></button>}
-            {previewSrc && mediaErrorSrc === previewSrc && <p className="absolute inset-x-3 bottom-12 rounded-xl bg-black/90 p-3 text-center text-[10px] leading-4 text-amber-100">{showingFinal ? "Este resultado no se pudo reproducir aquí. Prueba descargarlo o actualizar la biblioteca." : "Esta toma original no se reproduce en este navegador. El render final se exporta como MP4."}</p>}
-            {!showingFinal && selectedClip && options.labels && (layeredStyle || previewTime - selectedClip.trimStartSeconds < 2.6) && <button type="button" onClick={() => openOverlayEditor("label")} className="absolute inset-x-9 top-[7%] mx-auto max-w-[80%] rounded-lg border border-dashed border-violet-200/60 bg-black/85 px-3 py-2 text-center text-sm font-black text-white shadow-xl" aria-label="Editar rótulo sobre el video">{layeredStyle ? layeredHeader || "＋ Añadir encabezado" : selectedClip.label || "＋ Añadir rótulo"}</button>}
-            {!showingFinal && selectedClip && options.captions && <button type="button" onClick={() => openOverlayEditor("caption")} className={`absolute inset-x-5 mx-auto max-w-[90%] rounded-lg border border-dashed border-violet-200/50 px-3 py-2 text-center font-black shadow-xl ${layeredStyle ? "bottom-[22%]" : settings.subtitlePosition === "top" ? "top-[12%]" : settings.subtitlePosition === "center" ? "top-1/2 -translate-y-1/2" : "bottom-[10%]"}`} style={{ color: selectedStyle.subtitle.text, backgroundColor: layeredStyle ? "rgba(0,0,0,.34)" : selectedStyle.subtitle.box, fontSize: `${Math.max(15, settings.subtitleSize * .3)}px`, textTransform: selectedStyle.subtitle.uppercase ? "uppercase" : "none" }} aria-label="Editar subtítulo sobre el video">{layeredStyle && previewCaptionWords.length ? <>{previewCaptionWords.slice(0, -1).join(" ")}{previewCaptionWords.length > 1 && <br />}<span className="text-yellow-300">{previewCaptionWords[previewCaptionWords.length - 1]}</span></> : previewCaption || (selectedClip.captionCues.length ? "Editar subtítulos" : "＋ Escribir subtítulo")}</button>}
-            {!showingFinal && selectedClip && overlayEditor && <form onSubmit={(event) => { event.preventDefault(); applyOverlayEditor(); }} className="absolute inset-x-3 top-1/2 z-10 -translate-y-1/2 rounded-xl border border-violet-300/50 bg-[#10121e]/95 p-3 shadow-2xl"><label className="block text-xs font-semibold text-white">{overlayEditor === "label" ? "Rótulo de esta toma" : overlayCueIndex >= 0 ? "Subtítulo en este momento" : "Texto hablado de esta toma"}<textarea autoFocus value={overlayDraft} onChange={(event) => setOverlayDraft(event.target.value)} maxLength={overlayEditor === "label" ? 120 : overlayCueIndex >= 0 ? 250 : 1000} rows={overlayEditor === "label" ? 2 : 4} className="mt-2 w-full resize-y rounded-lg border border-white/20 bg-black/40 p-2 text-xs font-normal text-white outline-none focus:border-violet-300" /></label><div className="mt-2 flex justify-end gap-2"><button type="button" onClick={() => setOverlayEditor(null)} className="rounded-lg border border-white/20 px-3 py-2 text-xs text-zinc-300">Cancelar</button><button type="submit" className="rounded-lg bg-violet-500 px-3 py-2 text-xs font-semibold text-white">Aplicar al video</button></div></form>}
-            <span className={`pointer-events-none absolute left-3 top-3 rounded-full px-2.5 py-1 text-[8px] ${showingFinal ? "bg-emerald-400 text-black" : "bg-black/70 text-zinc-300"}`}>{showingFinal ? resultIsPrevious ? "RESULTADO ANTERIOR" : "RESULTADO EDITADO" : "VISTA PREVIA · TEXTO EDITABLE"}</span>
+              event.currentTarget.playbackRate = selectedClip.playbackSpeed; event.currentTarget.volume = Math.min(1, selectedClip.audioVolume); setPreviewTime(start); } else setPreviewTime(event.currentTarget.currentTime); }} onTimeUpdate={(event) => setPreviewTime(event.currentTarget.currentTime)} onError={() => setMediaErrorSrc(previewSrc)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} className="h-full w-full object-contain" style={!showingRendered && selectedClip ? { filter: `brightness(${1 + selectedClip.brightness}) contrast(${selectedClip.contrast}) saturate(${selectedClip.saturation})` } : undefined} /> : <button onClick={props.onUpload} className="grid h-full w-full place-items-center bg-[radial-gradient(circle_at_50%_35%,rgba(124,58,237,.18),transparent_45%)] text-center"><span><span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-violet-400/10 text-violet-200"><UploadCloud size={24} /></span><strong className="mt-4 block text-sm text-zinc-200">Sube videos para editar</strong><small className="mt-2 block px-7 leading-4 text-zinc-600">Después podrás cortarlos, subtitularlos y aplicar estilos.</small></span></button>}
+            {previewSrc && mediaErrorSrc === previewSrc && <p className="absolute inset-x-3 bottom-12 rounded-xl bg-black/90 p-3 text-center text-[10px] leading-4 text-amber-100">{showingLive ? "Esta muestra no pudo reproducirse. La exportación completa sigue en proceso." : showingFinal ? "Este resultado no se pudo reproducir aquí. Prueba descargarlo o actualizar la biblioteca." : "Esta toma original no se reproduce en este navegador. El render final se exporta como MP4."}</p>}
+            {!showingRendered && selectedClip && options.labels && (layeredStyle || previewTime - selectedClip.trimStartSeconds < 2.6) && <button type="button" onClick={() => openOverlayEditor("label")} className="absolute inset-x-9 top-[7%] mx-auto max-w-[80%] rounded-lg border border-dashed border-violet-200/60 bg-black/85 px-3 py-2 text-center text-sm font-black text-white shadow-xl" aria-label="Editar rótulo sobre el video">{layeredStyle ? layeredHeader || "＋ Añadir encabezado" : selectedClip.label || "＋ Añadir rótulo"}</button>}
+            {!showingRendered && selectedClip && options.captions && <button type="button" onClick={() => openOverlayEditor("caption")} className={`absolute inset-x-5 mx-auto max-w-[90%] rounded-lg border border-dashed border-violet-200/50 px-3 py-2 text-center font-black shadow-xl ${layeredStyle ? "bottom-[22%]" : settings.subtitlePosition === "top" ? "top-[12%]" : settings.subtitlePosition === "center" ? "top-1/2 -translate-y-1/2" : "bottom-[10%]"}`} style={{ color: selectedStyle.subtitle.text, backgroundColor: layeredStyle ? "rgba(0,0,0,.34)" : selectedStyle.subtitle.box, fontSize: `${Math.max(15, settings.subtitleSize * .3)}px`, textTransform: selectedStyle.subtitle.uppercase ? "uppercase" : "none" }} aria-label="Editar subtítulo sobre el video">{layeredStyle && previewCaptionWords.length ? <>{previewCaptionWords.slice(0, -1).join(" ")}{previewCaptionWords.length > 1 && <br />}<span className="text-yellow-300">{previewCaptionWords[previewCaptionWords.length - 1]}</span></> : previewCaption || (selectedClip.captionCues.length ? "Editar subtítulos" : "＋ Escribir subtítulo")}</button>}
+            {!showingRendered && selectedClip && overlayEditor && <form onSubmit={(event) => { event.preventDefault(); applyOverlayEditor(); }} className="absolute inset-x-3 top-1/2 z-10 -translate-y-1/2 rounded-xl border border-violet-300/50 bg-[#10121e]/95 p-3 shadow-2xl"><label className="block text-xs font-semibold text-white">{overlayEditor === "label" ? "Rótulo de esta toma" : overlayCueIndex >= 0 ? "Subtítulo en este momento" : "Texto hablado de esta toma"}<textarea autoFocus value={overlayDraft} onChange={(event) => setOverlayDraft(event.target.value)} maxLength={overlayEditor === "label" ? 120 : overlayCueIndex >= 0 ? 250 : 1000} rows={overlayEditor === "label" ? 2 : 4} className="mt-2 w-full resize-y rounded-lg border border-white/20 bg-black/40 p-2 text-xs font-normal text-white outline-none focus:border-violet-300" /></label><div className="mt-2 flex justify-end gap-2"><button type="button" onClick={() => setOverlayEditor(null)} className="rounded-lg border border-white/20 px-3 py-2 text-xs text-zinc-300">Cancelar</button><button type="submit" className="rounded-lg bg-violet-500 px-3 py-2 text-xs font-semibold text-white">Aplicar al video</button></div></form>}
+            <span className={`pointer-events-none absolute left-3 top-3 rounded-full px-2.5 py-1 text-[8px] ${showingFinal ? "bg-emerald-400 text-black" : "bg-black/70 text-zinc-300"}`}>{showingLive ? `MUESTRA REAL · ESCENA ${livePreview!.clipIndex + 1}` : showingFinal ? resultIsPrevious ? "RESULTADO ANTERIOR" : "RESULTADO EDITADO" : "VISTA PREVIA · TEXTO EDITABLE"}</span>
           </div>
         </div>
-        <div className="flex flex-wrap items-center justify-center gap-3 border-t border-white/8 px-4 py-3">{activeResult && <div className="flex rounded-xl border border-white/10 bg-white/5 p-1 text-[10px]"><button onClick={() => setPreviewMode("final")} className={`rounded-lg px-3 py-1.5 ${showingFinal ? "bg-emerald-400 font-semibold text-black" : "text-zinc-400"}`}>Resultado editado</button><button onClick={() => setPreviewMode("original")} className={`rounded-lg px-3 py-1.5 ${!showingFinal ? "bg-white font-semibold text-black" : "text-zinc-400"}`}>Toma original</button></div>}<button onClick={togglePlayback} disabled={!previewSrc} className="grid h-9 w-9 place-items-center rounded-full bg-white text-black disabled:opacity-30">{playing ? <Pause size={15} fill="currentColor" /> : <Play size={15} fill="currentColor" />}</button><span className="text-[10px] text-zinc-400">{showingFinal ? `${Number(resultMetadata.duration_seconds || 0).toFixed(1)} s` : selectedTake ? seconds(selectedTake.durationMs) : "0:00"}</span><span className="rounded-lg bg-white/5 px-2 py-1 text-[9px] text-zinc-500">{showingFinal ? resultStyle : selectedStyle.name}</span></div>
+        <div className="flex flex-wrap items-center justify-center gap-3 border-t border-white/8 px-4 py-3">{activeResult && <div className="flex rounded-xl border border-white/10 bg-white/5 p-1 text-[10px]"><button onClick={() => setPreviewMode("final")} className={`rounded-lg px-3 py-1.5 ${showingFinal ? "bg-emerald-400 font-semibold text-black" : "text-zinc-400"}`}>Resultado editado</button><button onClick={() => setPreviewMode("original")} className={`rounded-lg px-3 py-1.5 ${!showingRendered ? "bg-white font-semibold text-black" : "text-zinc-400"}`}>Toma original</button></div>}<button onClick={togglePlayback} disabled={!previewSrc} className="grid h-9 w-9 place-items-center rounded-full bg-white text-black disabled:opacity-30">{playing ? <Pause size={15} fill="currentColor" /> : <Play size={15} fill="currentColor" />}</button><span className="text-[10px] text-zinc-400">{showingLive ? `${livePreview!.durationSeconds.toFixed(1)} s de muestra` : showingFinal ? `${Number(resultMetadata.duration_seconds || 0).toFixed(1)} s` : selectedTake ? seconds(selectedTake.durationMs) : "0:00"}</span><span className="rounded-lg bg-white/5 px-2 py-1 text-[9px] text-zinc-500">{showingFinal ? resultStyle : selectedStyle.name}</span></div>
       </main>
 
       <aside id="editor-export" className="order-4 scroll-mt-24 border-t border-white/8 bg-[#0c0f17] p-4 xl:order-none xl:border-l xl:border-t-0">
         <PanelTitle icon={Settings2} title="Director de edición" text="Describe el resultado" />
-        <textarea value={objective} maxLength={2000} onChange={(event) => { setObjective(event.target.value); setJob(null); setDraftPending(true); window.localStorage.setItem(draftPendingKey, "1"); }} disabled={Boolean(busy)} rows={5} className="mt-4 w-full resize-none rounded-xl border border-white/8 bg-black/20 p-3 text-xs leading-5 text-zinc-300 outline-none focus:border-violet-400/40 disabled:opacity-50" placeholder="Ej. Quiero un reel energético, directo y con pausas mínimas…" />
+        <textarea value={objective} maxLength={2000} onChange={(event) => { setObjective(event.target.value); setJob(null); setDraftPending(true); window.localStorage.setItem(draftPendingKey, "1"); }} disabled={Boolean(busy || automaticRunning)} rows={5} className="mt-4 w-full resize-none rounded-xl border border-white/8 bg-black/20 p-3 text-xs leading-5 text-zinc-300 outline-none focus:border-violet-400/40 disabled:opacity-50" placeholder="Ej. Quiero un reel energético, directo y con pausas mínimas…" />
         <div className="mt-4 rounded-xl border border-white/7 bg-black/15 p-3"><p className="text-[10px] font-medium text-zinc-300">Ajustes actuales de edición</p><div className="mt-3 space-y-2 text-[9px] text-zinc-500"><p className="flex justify-between"><span>Estilo</span><b className="text-zinc-300">{selectedStyle.name}</b></p><p className="flex justify-between"><span>Escenas</span><b className="text-zinc-300">{activeTimeline.length}</b></p><p className="flex justify-between"><span>Silencios</span><b className="text-zinc-300">{options.deadAir ? `${settings.silenceThresholdMs} ms` : "No"}</b></p><p className="flex justify-between"><span>Subtítulos</span><b className="text-zinc-300">{options.captions ? `${activeTimeline.filter((clip) => clip.transcript.trim()).length}/${activeTimeline.length}` : "No"}</b></p></div></div>
-        {missingTimedTakes.length > 0 && <div className="mt-3 rounded-xl border border-violet-400/20 bg-violet-400/[.06] p-3 text-[11px] leading-5 text-violet-100"><strong className="block">Crea subtítulos desde el audio.</strong><p className="mt-1 text-zinc-400">No necesitas escribir el libreto. Genera el texto y corrige cualquier palabra antes de exportar.</p><button type="button" onClick={() => { showCaptionTools(); void transcribeMissingTakes(); }} disabled={Boolean(busy)} className="mt-2 rounded-lg bg-violet-500 px-3 py-2 font-semibold text-white disabled:opacity-40">Generar subtítulos automáticos</button></div>}
+        {missingTimedTakes.length > 0 && <div className="mt-3 rounded-xl border border-violet-400/20 bg-violet-400/[.06] p-3 text-[11px] leading-5 text-violet-100"><strong className="block">Crea subtítulos desde el audio.</strong><p className="mt-1 text-zinc-400">No necesitas escribir el libreto. Genera el texto y corrige cualquier palabra antes de exportar.</p><button type="button" onClick={() => { showCaptionTools(); void transcribeMissingTakes(); }} disabled={Boolean(busy || automaticRunning)} className="mt-2 rounded-lg bg-violet-500 px-3 py-2 font-semibold text-white disabled:opacity-40">Generar subtítulos automáticos</button></div>}
         {job && <div className={`mt-4 rounded-xl border p-3 ${ready ? "border-emerald-400/20 bg-emerald-400/6" : job.status === "failed" ? "border-red-400/20 bg-red-400/6" : job.status === "unconfirmed" ? "border-amber-300/20 bg-amber-300/6" : "border-violet-400/20 bg-violet-400/6"}`}><div className="flex items-center justify-between text-[10px]"><span>{ready ? "MP4 generado" : job.status === "failed" ? "Render falló" : job.stage}</span><b>{job.status === "failed" ? "Error" : job.status === "unconfirmed" ? "Sin confirmar" : `${job.progress || 0}%`}</b></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/8"><div className={`h-full transition-all ${job.status === "failed" ? "bg-red-400" : job.status === "unconfirmed" ? "bg-amber-300" : "bg-gradient-to-r from-violet-500 to-cyan-400"}`} style={{ width: `${job.status === "failed" || job.status === "unconfirmed" ? 0 : Math.max(2, Number(job.progress || 0))}%` }} /></div>{job.error && <p className="mt-2 text-[9px] leading-4 text-red-200">{job.error}</p>}</div>}
         {job?.contract?.skill_manifest?.decisions && <details className="mt-4 rounded-xl border border-white/8 bg-black/15 p-3"><summary className="cursor-pointer text-xs text-zinc-300">Decisiones de las skills ({job.contract.skill_manifest.decisions.length})</summary><div className="mt-3 max-h-52 space-y-2 overflow-y-auto">{job.contract.skill_manifest.decisions.map((decision: Row) => <p key={decision.skillId} className="border-t border-white/5 pt-2 text-[10px] leading-4 text-zinc-500"><strong className="block text-zinc-300">{decision.skillId} · {decision.execution === "render" ? "render" : decision.execution === "pending" ? "pendiente" : decision.execution === "plan" ? "plan" : "parcial"}</strong>{decision.summary}</p>)}</div></details>}
-        {!ready && <button onClick={available.length ? (needsPlan ? plan : render) : props.onUpload} disabled={busy !== ""} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-500 to-indigo-500 px-4 py-3 text-xs font-semibold disabled:opacity-40">{busy ? <LoaderCircle className="animate-spin" size={15} /> : available.length ? (needsPlan ? <Sparkles size={15} /> : <Film size={15} />) : <Plus size={15} />}{busy === "plan" ? "Creando edición…" : busy === "render" ? "Renderizando…" : available.length ? (needsPlan ? "Crear edición" : "Renderizar MP4") : "Subir videos"}</button>}
+        <details className="mt-3 rounded-xl border border-white/10 p-3 text-xs text-zinc-400"><summary className="cursor-pointer">Control manual (opcional)</summary><p className="mt-2 text-[10px] leading-4">Conserva tus ajustes y exporta sin la secuencia automática.</p><div className="mt-3 flex flex-wrap gap-2"><button disabled={Boolean(busy || automaticRunning)} onClick={() => void plan()} className="rounded-lg border border-white/15 px-2 py-2 disabled:opacity-40">Preparar plan</button><button disabled={Boolean(busy || automaticRunning) || needsPlan} onClick={() => void render()} className="rounded-lg border border-white/15 px-2 py-2 disabled:opacity-40">Exportar plan</button></div></details>
         {activeResult && <a href={`${resultSrc}?download=1`} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-white px-4 py-3 text-xs font-semibold text-black"><Download size={15} />Descargar resultado MP4</a>}
         {error && <p className="mt-4 rounded-xl bg-red-400/8 p-3 text-[10px] leading-4 text-red-200">{error}</p>}
       </aside>
     </div>
 
     <div className="border-t border-white/8 bg-[#0b0e15] p-3 sm:p-4">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-medium">Línea de tiempo manual</p><p className="text-[10px] text-zinc-500">Ordena, divide y ajusta video, audio y subtítulos antes de exportar.</p></div><div className="flex flex-wrap items-center gap-2"><span className="rounded-lg bg-white/5 px-2 py-1 text-[10px] text-zinc-400">{activeTimeline.length} de {timeline.length} segmentos</span><button onClick={undoTimeline} disabled={Boolean(busy) || !undoRef.current.length} className="rounded-lg border border-white/10 px-2 py-1.5 text-[10px] text-zinc-300 disabled:opacity-30">Deshacer</button><button onClick={redoTimeline} disabled={Boolean(busy) || !redoRef.current.length} className="rounded-lg border border-white/10 px-2 py-1.5 text-[10px] text-zinc-300 disabled:opacity-30">Rehacer</button><button onClick={applySuggestedOrder} disabled={Boolean(busy) || !editorialPlan.reliableOrder} className="rounded-lg border border-violet-400/30 px-2 py-1.5 text-[10px] text-violet-200 disabled:opacity-40">Aplicar orden del libreto</button></div></div>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-medium">Línea de tiempo manual</p><p className="text-[10px] text-zinc-500">Ordena, divide y ajusta video, audio y subtítulos antes de exportar.</p></div><div className="flex flex-wrap items-center gap-2"><span className="rounded-lg bg-white/5 px-2 py-1 text-[10px] text-zinc-400">{activeTimeline.length} de {timeline.length} segmentos</span><button onClick={undoTimeline} disabled={Boolean(busy || automaticRunning) || !undoRef.current.length} className="rounded-lg border border-white/10 px-2 py-1.5 text-[10px] text-zinc-300 disabled:opacity-30">Deshacer</button><button onClick={redoTimeline} disabled={Boolean(busy || automaticRunning) || !redoRef.current.length} className="rounded-lg border border-white/10 px-2 py-1.5 text-[10px] text-zinc-300 disabled:opacity-30">Rehacer</button><button onClick={applySuggestedOrder} disabled={Boolean(busy || automaticRunning) || !editorialPlan.reliableOrder} className="rounded-lg border border-violet-400/30 px-2 py-1.5 text-[10px] text-violet-200 disabled:opacity-40">Aplicar orden del libreto</button></div></div>
       <div className="flex gap-2 overflow-x-auto pb-2" aria-label="Orden de las tomas">
         {timeline.map((clip, index) => <div key={clip.segmentId} className={`min-w-[165px] max-w-[190px] flex-1 rounded-xl border p-2 ${selectedClip?.segmentId === clip.segmentId ? "border-violet-400 bg-violet-400/10" : "border-white/10 bg-white/[.03]"} ${clip.included ? "" : "opacity-50"}`}>
           <button onClick={() => { setSelectedTakeId(clip.segmentId); setPreviewMode("original"); setOverlayEditor(null); }} className="w-full text-left" aria-label={`Editar toma ${index + 1}: ${clip.title}`}><span className="text-[10px] text-violet-300">{index + 1} · {Math.max(.1, (clip.trimEndSeconds - clip.trimStartSeconds) / clip.playbackSpeed).toFixed(1)} s · {clip.playbackSpeed}×</span><strong className="mt-1 block truncate text-xs">{clip.title}</strong><small className="mt-1 block truncate text-[9px] text-zinc-500">{clip.transcript || "Sin texto hablado"}</small></button>
-          <div className="mt-2 flex items-center justify-between gap-1 border-t border-white/10 pt-2 text-[10px]"><button onClick={() => moveClip(clip.segmentId, -1)} disabled={Boolean(busy) || index === 0} aria-label={`Mover ${clip.title} a la izquierda`} className="rounded bg-white/5 px-2 py-1 disabled:opacity-30">←</button><button onClick={() => moveClip(clip.segmentId, 1)} disabled={Boolean(busy) || index === timeline.length - 1} aria-label={`Mover ${clip.title} a la derecha`} className="rounded bg-white/5 px-2 py-1 disabled:opacity-30">→</button><button onClick={() => updateClip(clip.segmentId, { included: !clip.included })} disabled={Boolean(busy)} className="rounded bg-white/5 px-2 py-1">{clip.included ? "Excluir" : "Incluir"}</button></div>
+          <div className="mt-2 flex items-center justify-between gap-1 border-t border-white/10 pt-2 text-[10px]"><button onClick={() => moveClip(clip.segmentId, -1)} disabled={Boolean(busy || automaticRunning) || index === 0} aria-label={`Mover ${clip.title} a la izquierda`} className="rounded bg-white/5 px-2 py-1 disabled:opacity-30">←</button><button onClick={() => moveClip(clip.segmentId, 1)} disabled={Boolean(busy || automaticRunning) || index === timeline.length - 1} aria-label={`Mover ${clip.title} a la derecha`} className="rounded bg-white/5 px-2 py-1 disabled:opacity-30">→</button><button onClick={() => updateClip(clip.segmentId, { included: !clip.included })} disabled={Boolean(busy || automaticRunning)} className="rounded bg-white/5 px-2 py-1">{clip.included ? "Excluir" : "Incluir"}</button></div>
         </div>)}
       </div>
       {selectedClip && <div className="mt-3 grid gap-3 rounded-xl border border-white/10 bg-black/20 p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)]">
         <div><p className="text-xs font-semibold">Editar {selectedClip.title}</p><p className="mt-1 text-[10px] text-zinc-500">Los cambios se guardan en este navegador y se aplican al próximo MP4.</p><div className="mt-3 grid grid-cols-2 gap-2">
-          <label className="text-[10px] text-zinc-400">Inicio (s)<input type="number" min={0} max={Math.max(0, selectedClip.trimEndSeconds - .2)} step="0.1" value={selectedClip.trimStartSeconds} disabled={Boolean(busy)} onChange={(event) => updateClip(selectedClip.segmentId, { trimStartSeconds: Math.max(0, Math.min(selectedClip.trimEndSeconds - .2, Number(event.target.value) || 0)) })} className="mt-1 w-full rounded-lg border border-white/10 bg-[#151822] p-2 text-xs text-white" /></label>
-          <label className="text-[10px] text-zinc-400">Final (s)<input type="number" min={selectedClip.trimStartSeconds + .2} max={selectedClip.duration} step="0.1" value={selectedClip.trimEndSeconds} disabled={Boolean(busy)} onChange={(event) => updateClip(selectedClip.segmentId, { trimEndSeconds: Math.max(selectedClip.trimStartSeconds + .2, Math.min(selectedClip.duration, Number(event.target.value) || selectedClip.duration)) })} className="mt-1 w-full rounded-lg border border-white/10 bg-[#151822] p-2 text-xs text-white" /></label>
-        </div><div className="mt-3 flex flex-wrap items-end gap-2"><label className="min-w-[100px] flex-1 text-[10px] text-zinc-400">Dividir en segundo<input type="number" min={selectedClip.trimStartSeconds + .2} max={selectedClip.trimEndSeconds - .2} step="0.1" value={splitPoint} disabled={Boolean(busy)} onChange={(event) => setSplitPoint(Number(event.target.value))} className="mt-1 w-full rounded-lg border border-white/10 bg-[#151822] p-2 text-xs text-white" /></label><button onClick={splitClip} disabled={Boolean(busy) || timeline.length >= 12} className="rounded-lg border border-violet-400/30 px-3 py-2 text-[10px] text-violet-200 disabled:opacity-30">Dividir</button><button onClick={duplicateClip} disabled={Boolean(busy) || timeline.length >= 12} className="rounded-lg border border-white/10 px-3 py-2 text-[10px] text-zinc-300 disabled:opacity-30">Duplicar</button></div><p className="mt-2 text-[9px] leading-4 text-zinc-500">Después de dividir, revisa el texto hablado de cada parte.</p></div>
-        <div id="editor-caption-text" className="scroll-mt-24 space-y-2"><label className="block text-[10px] text-zinc-400">Texto hablado para subtítulos<textarea value={selectedClip.transcript} onChange={(event) => updateClip(selectedClip.segmentId, { transcript: event.target.value, captionCues: [] })} disabled={Boolean(busy)} readOnly={selectedClip.captionCues.length > 0} maxLength={1000} rows={2} placeholder="Genera subtítulos automáticos o importa SRT/VTT con tiempos" className="mt-1 w-full resize-y rounded-lg border border-white/10 bg-[#151822] p-2 text-xs leading-5 text-white" /></label><div className="flex flex-wrap items-center gap-2"><label className="cursor-pointer rounded-lg border border-violet-400/25 px-2 py-1.5 text-[10px] text-violet-200">Importar .srt, .vtt o .txt<input type="file" accept=".srt,.vtt,.txt,text/plain,text/vtt" disabled={Boolean(busy)} className="sr-only" onChange={(event) => { void importTranscript(selectedClip, event.target.files?.[0]); event.target.value = ""; }} /></label>{selectedClip.captionCues.length > 0 && <span className="text-[10px] text-emerald-300">{selectedClip.captionCues.length} subtítulos con tiempos</span>}</div>{selectedClip.captionCues.length > 0 && <div className="max-h-56 space-y-1 overflow-y-auto rounded-lg border border-white/10 p-2"><p className="mb-2 text-[9px] text-zinc-500">Corrige cada tarjeta sin perder los tiempos de voz.</p>{selectedClip.captionCues.map((cue, index) => <label key={`${selectedClip.segmentId}-${index}`} className="flex items-center gap-2 text-[9px] text-zinc-500"><span className="w-16 shrink-0 tabular-nums">{cue.startSeconds.toFixed(1)}–{cue.endSeconds.toFixed(1)} s</span><input aria-label={`Subtítulo ${index + 1} de ${selectedClip.title}`} value={cue.text} maxLength={250} disabled={Boolean(busy)} onChange={(event) => { const captionCues = selectedClip.captionCues.map((item, cueIndex) => cueIndex === index ? { ...item, text: event.target.value } : item); const transcript = captionCues.map((item) => item.text).join(" "); if (transcript.length <= 1_000) updateClip(selectedClip.segmentId, { captionCues, transcript }); }} className="min-w-0 flex-1 rounded border border-white/10 bg-[#151822] px-2 py-1.5 text-[10px] text-white" /></label>)}</div>}<label className="block text-[10px] text-zinc-400">Rótulo visual opcional<input value={selectedClip.label} onChange={(event) => updateClip(selectedClip.segmentId, { label: event.target.value })} disabled={Boolean(busy)} maxLength={120} placeholder="Ej. Lechona tradicional" className="mt-1 w-full rounded-lg border border-white/10 bg-[#151822] p-2 text-xs text-white" /></label></div>
+          <label className="text-[10px] text-zinc-400">Inicio (s)<input type="number" min={0} max={Math.max(0, selectedClip.trimEndSeconds - .2)} step="0.1" value={selectedClip.trimStartSeconds} disabled={Boolean(busy || automaticRunning)} onChange={(event) => updateClip(selectedClip.segmentId, { trimStartSeconds: Math.max(0, Math.min(selectedClip.trimEndSeconds - .2, Number(event.target.value) || 0)) })} className="mt-1 w-full rounded-lg border border-white/10 bg-[#151822] p-2 text-xs text-white" /></label>
+          <label className="text-[10px] text-zinc-400">Final (s)<input type="number" min={selectedClip.trimStartSeconds + .2} max={selectedClip.duration} step="0.1" value={selectedClip.trimEndSeconds} disabled={Boolean(busy || automaticRunning)} onChange={(event) => updateClip(selectedClip.segmentId, { trimEndSeconds: Math.max(selectedClip.trimStartSeconds + .2, Math.min(selectedClip.duration, Number(event.target.value) || selectedClip.duration)) })} className="mt-1 w-full rounded-lg border border-white/10 bg-[#151822] p-2 text-xs text-white" /></label>
+        </div><div className="mt-3 flex flex-wrap items-end gap-2"><label className="min-w-[100px] flex-1 text-[10px] text-zinc-400">Dividir en segundo<input type="number" min={selectedClip.trimStartSeconds + .2} max={selectedClip.trimEndSeconds - .2} step="0.1" value={splitPoint} disabled={Boolean(busy || automaticRunning)} onChange={(event) => setSplitPoint(Number(event.target.value))} className="mt-1 w-full rounded-lg border border-white/10 bg-[#151822] p-2 text-xs text-white" /></label><button onClick={splitClip} disabled={Boolean(busy || automaticRunning) || timeline.length >= 12} className="rounded-lg border border-violet-400/30 px-3 py-2 text-[10px] text-violet-200 disabled:opacity-30">Dividir</button><button onClick={duplicateClip} disabled={Boolean(busy || automaticRunning) || timeline.length >= 12} className="rounded-lg border border-white/10 px-3 py-2 text-[10px] text-zinc-300 disabled:opacity-30">Duplicar</button></div><p className="mt-2 text-[9px] leading-4 text-zinc-500">Después de dividir, revisa el texto hablado de cada parte.</p></div>
+        <div id="editor-caption-text" className="scroll-mt-24 space-y-2"><label className="block text-[10px] text-zinc-400">Texto hablado para subtítulos<textarea value={selectedClip.transcript} onChange={(event) => updateClip(selectedClip.segmentId, { transcript: event.target.value, captionCues: [] })} disabled={Boolean(busy || automaticRunning)} readOnly={selectedClip.captionCues.length > 0} maxLength={1000} rows={2} placeholder="Genera subtítulos automáticos o importa SRT/VTT con tiempos" className="mt-1 w-full resize-y rounded-lg border border-white/10 bg-[#151822] p-2 text-xs leading-5 text-white" /></label><div className="flex flex-wrap items-center gap-2"><label className="cursor-pointer rounded-lg border border-violet-400/25 px-2 py-1.5 text-[10px] text-violet-200">Importar .srt, .vtt o .txt<input type="file" accept=".srt,.vtt,.txt,text/plain,text/vtt" disabled={Boolean(busy || automaticRunning)} className="sr-only" onChange={(event) => { void importTranscript(selectedClip, event.target.files?.[0]); event.target.value = ""; }} /></label>{selectedClip.captionCues.length > 0 && <span className="text-[10px] text-emerald-300">{selectedClip.captionCues.length} subtítulos con tiempos</span>}</div>{selectedClip.captionCues.length > 0 && <div className="max-h-56 space-y-1 overflow-y-auto rounded-lg border border-white/10 p-2"><p className="mb-2 text-[9px] text-zinc-500">Corrige cada tarjeta sin perder los tiempos de voz.</p>{selectedClip.captionCues.map((cue, index) => <label key={`${selectedClip.segmentId}-${index}`} className="flex items-center gap-2 text-[9px] text-zinc-500"><span className="w-16 shrink-0 tabular-nums">{cue.startSeconds.toFixed(1)}–{cue.endSeconds.toFixed(1)} s</span><input aria-label={`Subtítulo ${index + 1} de ${selectedClip.title}`} value={cue.text} maxLength={250} disabled={Boolean(busy || automaticRunning)} onChange={(event) => { const captionCues = selectedClip.captionCues.map((item, cueIndex) => cueIndex === index ? { ...item, text: event.target.value } : item); const transcript = captionCues.map((item) => item.text).join(" "); if (transcript.length <= 1_000) updateClip(selectedClip.segmentId, { captionCues, transcript }); }} className="min-w-0 flex-1 rounded border border-white/10 bg-[#151822] px-2 py-1.5 text-[10px] text-white" /></label>)}</div>}<label className="block text-[10px] text-zinc-400">Rótulo visual opcional<input value={selectedClip.label} onChange={(event) => updateClip(selectedClip.segmentId, { label: event.target.value })} disabled={Boolean(busy || automaticRunning)} maxLength={120} placeholder="Ej. Lechona tradicional" className="mt-1 w-full rounded-lg border border-white/10 bg-[#151822] p-2 text-xs text-white" /></label></div>
       </div>}
     </div>
   </section>;
