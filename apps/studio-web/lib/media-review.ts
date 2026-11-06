@@ -5,6 +5,8 @@ export type MediaReviewDecision = { takeId: string; status: MediaReviewStatus };
 export type MediaReviewReceipt = {
   id: string;
   orderedTakeIds: string[];
+  /** Full review-list order, including takes excluded from the montage. Legacy receipts omit it. */
+  takeOrder?: string[];
   decisions: MediaReviewDecision[];
   confirmedAt: string;
   fingerprint: string;
@@ -90,7 +92,20 @@ export function validateMediaReviewSubmission(
       orderedTakeIds.some((id: unknown) => typeof id !== "string" || !approvedIds.has(id)) || new Set(orderedTakeIds).size !== approvedIds.size) {
     throw new MediaReviewError("Ordena todas las tomas aprobadas, sin repetirlas. Se admiten hasta 12.", 400);
   }
-  return { decisions, orderedTakeIds: orderedTakeIds as string[] };
+  let takeOrder: string[] | undefined;
+  if (payload.takeOrder !== undefined) {
+    if (!Array.isArray(payload.takeOrder) || payload.takeOrder.length !== takeById.size ||
+        payload.takeOrder.some((id: unknown) => typeof id !== "string" || !takeById.has(id)) ||
+        new Set(payload.takeOrder).size !== takeById.size) {
+      throw new MediaReviewError("El orden de revisión debe contener todas las tomas una sola vez. Actualiza el material e inténtalo de nuevo.", 400);
+    }
+    takeOrder = payload.takeOrder as string[];
+    const montageOrder = takeOrder.filter((id) => approvedIds.has(id));
+    if (montageOrder.some((id, index) => id !== orderedTakeIds[index])) {
+      throw new MediaReviewError("El orden del montaje no coincide con las tomas aprobadas de la revisión.", 400);
+    }
+  }
+  return { decisions, orderedTakeIds: orderedTakeIds as string[], ...(takeOrder ? { takeOrder } : {}) };
 }
 
 /** The intended database state, used to detect concurrent or partial updates before confirming. */
@@ -112,12 +127,13 @@ export function mediaReviewFromRow(row: MediaRow | null): MediaReviewReceipt | n
   const contract = record(row?.contract);
   if (!row || row.status !== "media_review" || typeof row.id !== "string" || contract?.schema !== MEDIA_REVIEW_SCHEMA ||
       !Array.isArray(contract.orderedTakeIds) || !contract.orderedTakeIds.every((id) => typeof id === "string") ||
+      (contract.takeOrder !== undefined && (!Array.isArray(contract.takeOrder) || !contract.takeOrder.every((id) => typeof id === "string"))) ||
       !Array.isArray(contract.decisions) || !contract.decisions.every((value) => {
         const decision = record(value);
         return decision && typeof decision.takeId === "string" && ["approved", "rejected", "blooper"].includes(String(decision.status));
       }) || typeof contract.confirmedAt !== "string" || !Number.isFinite(Date.parse(contract.confirmedAt)) ||
       typeof contract.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(contract.fingerprint)) return null;
-  return { id: row.id, orderedTakeIds: contract.orderedTakeIds as string[], decisions: contract.decisions as MediaReviewDecision[], confirmedAt: contract.confirmedAt, fingerprint: contract.fingerprint };
+  return { id: row.id, orderedTakeIds: contract.orderedTakeIds as string[], ...(contract.takeOrder !== undefined ? { takeOrder: contract.takeOrder as string[] } : {}), decisions: contract.decisions as MediaReviewDecision[], confirmedAt: contract.confirmedAt, fingerprint: contract.fingerprint };
 }
 
 export function isMediaReviewCurrent(review: MediaReviewReceipt | null, ownerId: string, sessionId: string, scenes: MediaRow[], takes: MediaRow[]) {
@@ -127,6 +143,12 @@ export function isMediaReviewCurrent(review: MediaReviewReceipt | null, ownerId:
     const intended = reviewedMediaRows(scenes, takes, submission);
     return mediaReviewFingerprint(sessionId, intended.scenes, intended.takes) === review.fingerprint;
   } catch { return false; }
+}
+
+/** A stale receipt may restore the review UI's order, but can never authorize editing. */
+export function mediaReviewStateFromRow(row: MediaRow | null, ownerId: string, sessionId: string, scenes: MediaRow[], takes: MediaRow[]) {
+  const review = mediaReviewFromRow(row?.status === "media_review_stale" ? { ...row, status: "media_review" } : row);
+  return { review, valid: row?.status === "media_review" && isMediaReviewCurrent(review, ownerId, sessionId, scenes, takes) };
 }
 
 export function requireCurrentMediaReview(state: { review: MediaReviewReceipt | null; valid: boolean }, plannedReview?: unknown) {

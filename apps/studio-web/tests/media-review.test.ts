@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   assertTakeCanBeApproved, isMediaReviewCurrent, MEDIA_REVIEW_SCHEMA, mediaReviewFingerprint,
-  mediaReviewFromRow, requireCurrentMediaReview, reviewedMediaRows, validateMediaReviewSubmission,
+  mediaReviewFromRow, mediaReviewStateFromRow, requireCurrentMediaReview, reviewedMediaRows, validateMediaReviewSubmission,
   type MediaReviewReceipt, type MediaRow,
 } from "../lib/media-review";
 
@@ -33,6 +33,52 @@ test("confirmation persists explicit decisions and the chosen chronology without
   assert.deepEqual(result.takes.map((take) => take.status), ["approved", "approved", "blooper"]);
   assert.ok(takes.every((take) => take.status === "pending"));
   assert.ok(isMediaReviewCurrent(result.review, owner, session, result.scenes, result.takes));
+});
+
+test("the full review order survives receipt storage while only approved takes enter the montage", () => {
+  const takeOrder = ["retake-1", "take-2", "take-1"];
+  const valid = validateMediaReviewSubmission({ ...submission, takeOrder }, owner, session, scenes, takes);
+  const rows = reviewedMediaRows(scenes, takes, valid);
+  const review: MediaReviewReceipt = { id: "receipt-dragged", ...valid, confirmedAt: "2026-11-06T12:00:00.000Z", fingerprint: mediaReviewFingerprint(session, rows.scenes, rows.takes) };
+  const restored = mediaReviewFromRow({ id: review.id, status: "media_review", contract: { schema: MEDIA_REVIEW_SCHEMA, ...review } });
+  assert.deepEqual(restored?.takeOrder, takeOrder);
+  assert.deepEqual(restored?.orderedTakeIds, ["take-2", "take-1"]);
+  assert.deepEqual(restored?.decisions, submission.decisions);
+  assert.ok(isMediaReviewCurrent(restored, owner, session, rows.scenes, rows.takes));
+  assert.deepEqual(takes.map((take) => take.id), ["take-1", "take-2", "retake-1"]);
+});
+
+test("full review order rejects omitted, repeated, foreign, malformed and inconsistent montage IDs", () => {
+  for (const takeOrder of [
+    [], ["take-2", "take-1"], ["take-2", "take-1", "take-1"],
+    ["take-2", "take-1", "foreign"], ["take-2", "take-1", 3],
+    ["take-1", "retake-1", "take-2"], null, "take-2,take-1,retake-1",
+  ]) assert.throws(() => validateMediaReviewSubmission({ ...submission, takeOrder }, owner, session, scenes, takes));
+  const { review, scenes: reviewedScenes, takes: reviewedTakes } = confirmed();
+  assert.equal(isMediaReviewCurrent({ ...review, takeOrder: ["take-1", "retake-1", "take-2"] }, owner, session, reviewedScenes, reviewedTakes), false);
+  assert.equal(mediaReviewFromRow({ id: review.id, status: "media_review", contract: { schema: MEDIA_REVIEW_SCHEMA, ...review, takeOrder: [null] } }), null);
+});
+
+test("legacy receipts without full review order remain usable", () => {
+  const { review, scenes: reviewedScenes, takes: reviewedTakes } = confirmed();
+  const restored = mediaReviewFromRow({ id: review.id, status: "media_review", contract: { schema: MEDIA_REVIEW_SCHEMA, ...review } });
+  assert.equal(restored?.takeOrder, undefined);
+  assert.ok(isMediaReviewCurrent(restored, owner, session, reviewedScenes, reviewedTakes));
+});
+
+test("stale receipts restore the full list order without authorizing editing, even if the source is unchanged", () => {
+  const current = confirmed();
+  const takeOrder = ["retake-1", "take-2", "take-1"];
+  const row = { id: current.review.id, status: "media_review_stale", contract: { schema: MEDIA_REVIEW_SCHEMA, ...current.review, takeOrder } };
+  const state = mediaReviewStateFromRow(row, owner, session, current.scenes, current.takes);
+  assert.deepEqual(state.review?.takeOrder, takeOrder);
+  assert.deepEqual(state.review?.decisions, current.review.decisions);
+  assert.equal(state.valid, false);
+  assert.throws(() => requireCurrentMediaReview(state));
+  assert.throws(() => requireCurrentMediaReview(state, { id: current.review.id, fingerprint: current.review.fingerprint }));
+  assert.equal(mediaReviewStateFromRow({ ...row, status: "media_review" }, owner, session, current.scenes, current.takes).valid, true);
+  assert.deepEqual(mediaReviewStateFromRow({ ...row, status: "planned" }, owner, session, current.scenes, current.takes), { review: null, valid: false });
+  assert.equal(row.status, "media_review_stale");
 });
 
 test("all takes must have exactly one explicit decision, with only approved takes in the order", () => {

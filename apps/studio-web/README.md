@@ -15,6 +15,7 @@ Editor de video vertical para [studio.segmenta.online](https://studio.segmenta.o
 - Línea de tiempo manual con división y duplicación de tomas, orden, recorte, inclusión/exclusión, deshacer y rehacer. Cada segmento puede tener velocidad de 0,5× a 2×, volumen de voz y ajustes de brillo, contraste y saturación propios; estos valores llegan al MP4, incluidos los tiempos de subtítulos tras cambiar la velocidad.
 - Catálogo consultable de las 244 herramientas de la guía de CapCut enviada por el propietario, organizado en 15 categorías y con estado **Disponible**, **Parcial** o **En desarrollo**. El catálogo no activa funciones que todavía no tienen motor.
 - Pingüino guía en la esquina inferior derecha: ayuda contextual según la etapa del proyecto, preguntas frecuentes y botones que llevan a la acción. Funciona sin claves API y distingue las herramientas disponibles de las pendientes.
+- Arrastrar y soltar en «Tus tomas» y «Orden del montaje», con ambas listas sincronizadas, indicador de inserción y alternativa con flechas/teclado. Al confirmar se conserva el orden de todas las tomas, incluidos bloopers y descartadas.
 - Ruta visual de cuatro referencias en el editor: orden y tomas confirmados, detalles opcionales, edición preparada y MP4 listo. Se puede editar y exportar sin libreto ni subtítulos; los subtítulos sincronizados se activan cuando existen tiempos reales.
 - Verificación técnica de video y audio del archivo **después** de subirlo a Storage.
 

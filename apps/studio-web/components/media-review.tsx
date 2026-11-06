@@ -1,11 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import {
   ArrowDown, ArrowLeft, ArrowUp, Check, CheckCircle2, Clapperboard,
-  Clock3, Film, ListOrdered, LoaderCircle, Play, RotateCcw, X,
+  Clock3, Film, GripVertical, ListOrdered, LoaderCircle, Play, RotateCcw, X,
 } from "lucide-react";
 import type { MediaReviewReceipt } from "../lib/media-review";
+import { reorderReviewTakes } from "../lib/review-order";
+
+type ReviewList = "takes" | "montage";
+type DraggedTake = { id: string; list: ReviewList; source: string };
+type DropPosition = { id: string; list: ReviewList; edge: "before" | "after" };
+const REVIEW_DRAG_TYPE = "application/x-segmenta-review-take";
 
 type Decision = "approved" | "rejected" | "blooper";
 type ReviewStatus = Decision | "pending";
@@ -40,6 +46,14 @@ function readableStatus(status: ReviewStatus) {
   return status === "approved" ? "Aprobada" : status === "blooper" ? "Blooper" : status === "rejected" ? "Descartada" : "Por revisar";
 }
 
+function dropPositionAt(event: DragEvent<HTMLElement>, list: ReviewList): DropPosition | null {
+  const rows = Array.from(event.currentTarget.querySelectorAll<HTMLElement>("[data-review-take]"));
+  const row = rows.find((item) => event.clientY < item.getBoundingClientRect().bottom) || rows.at(-1);
+  if (!row) return null;
+  const bounds = row.getBoundingClientRect();
+  return { id: row.dataset.reviewTake!, list, edge: event.clientY < bounds.top + bounds.height / 2 ? "before" : "after" };
+}
+
 /** The confirmation is a persisted editorial decision; opening the panel never approves a take. */
 export function MediaReviewPanel({ session, scenes, takes, onConfirmed, onBack }: Props) {
   const sessionTakes = useMemo(() => takes.filter((take) => !take.sessionId || take.sessionId === session.id), [takes, session.id]);
@@ -64,12 +78,17 @@ export function MediaReviewPanel({ session, scenes, takes, onConfirmed, onBack }
   const [savedReview, setSavedReview] = useState<MediaReviewReceipt | null>(null);
   const [playbackError, setPlaybackError] = useState("");
   const [previewAttempt, setPreviewAttempt] = useState(0);
+  const dragRef = useRef<DraggedTake | null>(null);
+  const [dragged, setDragged] = useState<DraggedTake | null>(null);
+  const [dropPosition, setDropPosition] = useState<DropPosition | null>(null);
+  const [orderAnnouncement, setOrderAnnouncement] = useState("");
 
   useEffect(() => {
     let active = true;
     const controller = new AbortController();
     const readReview = async () => {
       setLoading(true); setLoadFailed(false); setError(""); setNotice(""); setSavedReview(null);
+      dragRef.current = null; setDragged(null); setDropPosition(null);
       setDecisions(Object.fromEntries(sessionTakes.map((take) => [take.id, statusOf(take.status)])));
       setOrder(defaultOrder);
       setSelectedId(defaultOrder[0] || "");
@@ -79,7 +98,8 @@ export function MediaReviewPanel({ session, scenes, takes, onConfirmed, onBack }
         if (!response.ok) throw new Error(data.error || "No pudimos cargar la revisión de este proyecto.");
         if (!active) return;
         const known = new Set(defaultOrder);
-        const recordedOrder = Array.isArray(data.review?.orderedTakeIds) ? [...new Set(data.review.orderedTakeIds)].filter((id) => known.has(id)) : [];
+        const savedOrder = data.review?.takeOrder || data.review?.orderedTakeIds;
+        const recordedOrder = Array.isArray(savedOrder) ? [...new Set(savedOrder)].filter((id) => known.has(id)) : [];
         if (recordedOrder.length) setOrder([...recordedOrder, ...defaultOrder.filter((id) => !recordedOrder.includes(id))]);
         setNotice(data.valid ? data.review?.orderedTakeIds.length === 0 ? "Clasificación guardada. Ninguna toma entrará al montaje hasta que apruebes al menos una." : "Este orden ya estaba confirmado. Puedes revisarlo y guardar una nueva selección." : data.review ? "El material cambió desde la última revisión. Revisa las tomas nuevas y vuelve a confirmar." : "Reproduce las tomas, decide cuáles sirven y confirma el orden del montaje.");
       } catch (reason) {
@@ -127,15 +147,63 @@ export function MediaReviewPanel({ session, scenes, takes, onConfirmed, onBack }
     const index = approved.findIndex((take) => take.id === takeId);
     const other = approved[index + offset];
     if (!other || busy) return;
-    setOrder((current) => {
-      const next = [...current];
-      const from = next.indexOf(takeId);
-      const to = next.indexOf(other.id);
-      [next[from], next[to]] = [next[to], next[from]];
-      return next;
-    });
+    setOrder((current) => reorderReviewTakes(current, approved.map((take) => take.id), takeId, other.id, offset < 0 ? "before" : "after"));
     setSavedReview(null); setNotice("");
   };
+  const finishDrag = () => { dragRef.current = null; setDragged(null); setDropPosition(null); };
+  const moveTake = (list: ReviewList, takeId: string, targetId: string, edge: "before" | "after") => {
+    if (busy) return;
+    const visibleIds = list === "takes" ? order : approved.map((take) => take.id);
+    const next = reorderReviewTakes(order, visibleIds, takeId, targetId, edge);
+    if (next.every((id, index) => id === order[index])) return;
+    setOrder(next);
+    setSavedReview(null); setNotice("");
+    const moved = takeById.get(takeId);
+    const target = takeById.get(targetId);
+    setOrderAnnouncement(`${moved ? titleOf(moved) : "Toma"} movida ${edge === "before" ? "antes" : "después"} de ${target ? titleOf(target) : "otra toma"}. Confirma para guardar el orden.`);
+  };
+  const dragProps = (takeId: string, list: ReviewList) => ({
+    draggable: !busy,
+    onDragStart: (event: DragEvent<HTMLElement>) => {
+      if (busy) { event.preventDefault(); return; }
+      const value = { id: takeId, list, source: `${sourceKey}:${orderKey}` };
+      dragRef.current = value; setDragged(value); setDropPosition(null);
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData(REVIEW_DRAG_TYPE, takeId);
+    },
+    onDragEnd: finishDrag,
+  });
+  const handleListDragOver = (event: DragEvent<HTMLElement>, list: ReviewList) => {
+    const active = dragRef.current;
+    if (busy || !active || active.list !== list || active.source !== `${sourceKey}:${orderKey}` || !event.dataTransfer.types.includes(REVIEW_DRAG_TYPE)) return;
+    const position = dropPositionAt(event, list);
+    if (!position) return;
+    event.preventDefault(); event.dataTransfer.dropEffect = "move";
+    setDropPosition(position);
+  };
+  // The whole list accepts drops, including gaps and the insertion marker between cards.
+  const handleListDragLeave = (event: DragEvent<HTMLElement>) => {
+    if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+    setDropPosition(null);
+  };
+  const handleListDrop = (event: DragEvent<HTMLElement>, list: ReviewList) => {
+    const active = dragRef.current;
+    if (busy || !active || active.list !== list || active.source !== `${sourceKey}:${orderKey}`) return;
+    const position = dropPositionAt(event, list);
+    if (!position) return;
+    event.preventDefault(); event.stopPropagation();
+    moveTake(list, active.id, position.id, position.edge);
+    finishDrag();
+  };
+  const dragClass = (takeId: string, list: ReviewList) => `${busy ? "" : "cursor-grab active:cursor-grabbing"} ${dragged?.id === takeId && dragged.list === list ? "opacity-40" : ""} ${dropPosition?.id === takeId && dropPosition.list === list && dragged?.id !== takeId ? dropPosition.edge === "before" ? "before:absolute before:inset-x-0 before:-top-1.5 before:h-1 before:rounded-full before:bg-violet-400" : "after:absolute after:inset-x-0 after:-bottom-1.5 after:h-1 after:rounded-full after:bg-violet-400" : ""}`;
+  const dragHandle = (take: Take, list: ReviewList) => <button type="button" draggable={!busy} disabled={busy} aria-label={`Reordenar ${titleOf(take)} en ${list === "takes" ? "Tus tomas" : "Orden del montaje"}`} title="Arrastra para mover. También puedes usar ↑ y ↓ con el teclado." onClick={(event) => event.preventDefault()} onKeyDown={(event) => {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    const items = list === "takes" ? orderedTakes : approved;
+    const offset = event.key === "ArrowUp" ? -1 : 1;
+    const target = items[items.findIndex((item) => item.id === take.id) + offset];
+    if (target) moveTake(list, take.id, target.id, offset < 0 ? "before" : "after");
+  }} className="grid h-10 w-8 shrink-0 cursor-grab place-items-center rounded-lg text-zinc-500 hover:bg-white/10 hover:text-violet-200 focus-visible:outline-2 focus-visible:outline-violet-300 active:cursor-grabbing disabled:opacity-40"><GripVertical size={17} /></button>;
   const proposeFileOrder = () => {
     const sorted = [...approved].sort((left, right) => titleOf(left).localeCompare(titleOf(right), "es", { numeric: true, sensitivity: "base" }));
     setOrder([...sorted.map((take) => take.id), ...order.filter((id) => decisions[id] !== "approved")]);
@@ -150,7 +218,7 @@ export function MediaReviewPanel({ session, scenes, takes, onConfirmed, onBack }
       if (!confirmed) {
         const response = await fetch("/api/media-review", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId: session.id, orderedTakeIds: approved.map((take) => take.id), decisions: sessionTakes.map((take) => ({ takeId: take.id, status: decisions[take.id] })) }),
+          body: JSON.stringify({ sessionId: session.id, takeOrder: order, orderedTakeIds: approved.map((take) => take.id), decisions: sessionTakes.map((take) => ({ takeId: take.id, status: decisions[take.id] })) }),
         });
         const data = await response.json() as { review?: MediaReviewReceipt; error?: string };
         if (!response.ok || !data.review) throw new Error(data.error || "No pudimos guardar la revisión. Tus decisiones siguen aquí para reintentar.");
@@ -173,16 +241,18 @@ export function MediaReviewPanel({ session, scenes, takes, onConfirmed, onBack }
     </header>
     {error && <div role="alert" className="mx-4 mt-4 rounded-xl border border-rose-400/25 bg-rose-400/10 p-3 text-sm text-rose-200 sm:mx-6">{error}{loadFailed && <button type="button" onClick={() => setReloadVersion((value) => value + 1)} className="ml-3 underline underline-offset-2">Reintentar carga</button>}</div>}
     {notice && <p role="status" className="mx-4 mt-4 rounded-xl border border-violet-400/15 bg-violet-400/5 p-3 text-xs leading-5 text-violet-100 sm:mx-6">{notice}</p>}
+    <p aria-live="polite" className="sr-only">{orderAnnouncement}</p>
     {loading ? <div className="flex min-h-64 items-center justify-center gap-3 text-sm text-zinc-400"><LoaderCircle size={19} className="animate-spin" />Cargando tus tomas…</div> : !sessionTakes.length ? <div className="px-6 py-14 text-center"><Film size={32} className="mx-auto text-violet-300" /><h3 className="mt-4 font-medium">Todavía no hay videos para revisar</h3><p className="mt-2 text-sm text-zinc-400">Vuelve al estudio y sube tus tomas. Después podrás clasificarlas y ordenar el montaje.</p></div> : <div className="grid gap-5 p-4 sm:p-6 xl:grid-cols-[minmax(0,1fr)_minmax(320px,.85fr)]">
       <div className="order-2 min-w-0 xl:order-1">
         <div className="mb-3 flex items-center justify-between gap-3"><h3 className="text-sm font-medium">Tus tomas</h3><span className={`text-xs ${pending ? "text-amber-200" : "text-emerald-200"}`}>{pending ? `${pending} por revisar` : "Todas clasificadas"}</span></div>
-        <div className="space-y-2.5">{orderedTakes.map((take) => {
+        <p className="mb-3 text-xs leading-5 text-zinc-400">Arrastra una tarjeta para moverla. El orden de las aprobadas se refleja también en el montaje.</p>
+        <div onDragEnterCapture={(event) => handleListDragOver(event, "takes")} onDragOverCapture={(event) => handleListDragOver(event, "takes")} onDragLeave={handleListDragLeave} onDropCapture={(event) => handleListDrop(event, "takes")} className="space-y-2.5">{orderedTakes.map((take) => {
           const status = decisions[take.id] || "pending";
           const isSelected = selected?.id === take.id;
-          return <article key={take.id} className={`rounded-2xl border p-3 transition ${isSelected ? "border-violet-400/55 bg-violet-400/8" : "border-white/8 bg-white/[.025]"}`}>
-            <button type="button" onClick={() => { setSelectedId(take.id); setPlaybackError(""); }} aria-label={`Reproducir ${titleOf(take)}`} aria-pressed={isSelected} disabled={saving} className="flex w-full items-center gap-3 rounded-lg text-left outline-offset-4 focus-visible:outline-2 focus-visible:outline-violet-300">
+          return <article key={take.id} data-review-take={take.id} {...dragProps(take.id, "takes")} className={`relative rounded-2xl border p-3 transition ${dragClass(take.id, "takes")} ${isSelected ? "border-violet-400/55 bg-violet-400/8" : "border-white/8 bg-white/[.025]"}`}>
+            <div className="flex items-center gap-1">{dragHandle(take, "takes")}<button type="button" onClick={() => { setSelectedId(take.id); setPlaybackError(""); }} aria-label={`Reproducir ${titleOf(take)}`} aria-pressed={isSelected} disabled={saving} className="flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left outline-offset-4 focus-visible:outline-2 focus-visible:outline-violet-300">
               <span className={`grid h-12 w-12 shrink-0 place-items-center rounded-xl ${isSelected ? "bg-violet-400/20 text-violet-200" : "bg-white/5 text-zinc-500"}`}><Play size={18} /></span><span className="min-w-0 flex-1"><strong className="block break-words text-sm font-medium">{titleOf(take)}</strong><span className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-zinc-400"><span className="inline-flex items-center gap-1"><Clock3 size={11} />{timeLabel(take.durationMs)}</span><span className={status === "approved" ? "text-emerald-300" : status === "blooper" ? "text-amber-200" : status === "pending" ? "text-violet-200" : "text-zinc-400"}>{readableStatus(status)}</span></span></span>
-            </button>
+            </button></div>
             <div className="mt-3 grid grid-cols-3 gap-1.5">{choices.map(({ status: value, label, active, Icon }) => <button key={value} type="button" disabled={busy} onClick={() => changeDecision(take, value)} aria-label={`${label}: ${titleOf(take)}`} aria-pressed={status === value} className={`flex min-h-10 items-center justify-center gap-1.5 rounded-lg border px-1.5 py-2 text-xs transition disabled:opacity-40 ${status === value ? active : "border-white/8 text-zinc-400 hover:border-white/20 hover:text-white"}`}><Icon size={13} />{label}</button>)}</div>
           </article>;
         })}</div>
@@ -191,9 +261,9 @@ export function MediaReviewPanel({ session, scenes, takes, onConfirmed, onBack }
       <div className="order-1 min-w-0 space-y-4 xl:order-2">
         {selected && <section className="overflow-hidden rounded-2xl border border-white/10 bg-black/25" aria-label="Revisión de la toma seleccionada"><div className="flex items-center justify-between gap-2 px-4 py-3"><h3 className="min-w-0 truncate text-xs font-medium">{titleOf(selected)}</h3><span className="shrink-0 text-[10px] text-zinc-500">Original</span></div><div className="relative flex h-[250px] items-center justify-center bg-black sm:h-[310px]"><video key={`${selected.id}:${previewAttempt}`} src={`/api/media/${encodeURIComponent(selected.id)}`} controls playsInline preload="metadata" onError={() => setPlaybackError("No se pudo reproducir esta toma. Prueba otra vez antes de decidir.")} aria-label={`Video original: ${titleOf(selected)}`} className="h-full max-w-full object-contain" />{playbackError && <p role="alert" className="absolute inset-x-4 top-4 rounded-xl bg-black/90 p-3 text-xs text-rose-200">{playbackError}<button type="button" onClick={() => { setPlaybackError(""); setPreviewAttempt((value) => value + 1); }} className="ml-2 underline">Reintentar reproducción</button></p>}</div><div className="flex items-center justify-between gap-3 px-4 py-3"><span className="text-xs text-zinc-400">{readableStatus(decisions[selected.id] || "pending")}</span>{decisions[selected.id] && decisions[selected.id] !== "pending" && <button type="button" onClick={() => changeDecision(selected, "pending")} disabled={busy} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] text-zinc-400 hover:text-white"><RotateCcw size={12} />Revisar de nuevo</button>}</div><div className="grid grid-cols-3 gap-2 border-t border-white/8 px-4 py-3">{choices.map(({ status: value, label, active, Icon }) => <button key={value} type="button" disabled={busy} onClick={() => changeDecision(selected, value)} aria-label={`${label} toma seleccionada`} aria-pressed={decisions[selected.id] === value} className={`flex min-h-11 items-center justify-center gap-1.5 rounded-lg border px-1.5 py-2 text-xs disabled:opacity-40 ${decisions[selected.id] === value ? active : "border-white/10 text-zinc-400 hover:text-white"}`}><Icon size={14} />{label}</button>)}</div>{pending > 0 && decisions[selected.id] && decisions[selected.id] !== "pending" && <button type="button" disabled={busy} onClick={() => { const next = orderedTakes.find((take) => !decisions[take.id] || decisions[take.id] === "pending"); if (next) { setSelectedId(next.id); setPlaybackError(""); } }} className="min-h-11 w-full border-t border-white/8 px-4 py-3 text-xs text-violet-200 hover:bg-violet-400/10 disabled:opacity-40">Siguiente toma por revisar →</button>}</section>}
         <section className="rounded-2xl border border-violet-400/20 bg-violet-400/5 p-4" aria-labelledby="review-order-title">
-          <div className="flex items-start justify-between gap-3"><div><h3 id="review-order-title" className="flex items-center gap-2 text-sm font-medium"><ListOrdered size={17} className="text-violet-300" />Orden del montaje</h3><p className="mt-1.5 text-xs leading-5 text-zinc-400">Se editarán en esta secuencia. Usa las flechas para contar la historia.</p></div><span className="shrink-0 rounded-lg bg-white/5 px-2 py-1 text-xs text-violet-200">{timeLabel(approvedDuration)}</span></div>
+          <div className="flex items-start justify-between gap-3"><div><h3 id="review-order-title" className="flex items-center gap-2 text-sm font-medium"><ListOrdered size={17} className="text-violet-300" />Orden del montaje</h3><p className="mt-1.5 text-xs leading-5 text-zinc-400">Arrastra las tomas para elegir la secuencia. También puedes usar las flechas.</p></div><span className="shrink-0 rounded-lg bg-white/5 px-2 py-1 text-xs text-violet-200">{timeLabel(approvedDuration)}</span></div>
           {approved.length > 1 && <button type="button" onClick={proposeFileOrder} disabled={busy} className="mt-3 rounded-lg border border-white/10 px-3 py-2 text-[11px] text-zinc-300 hover:bg-white/5 disabled:opacity-40">Proponer orden por nombre</button>}
-          <ol className="mt-4 space-y-2">{approved.map((take, index) => <li key={take.id} className="flex items-center gap-2 rounded-xl border border-white/8 bg-[#111521] p-2.5"><span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-violet-400/15 text-xs font-semibold text-violet-200">{index + 1}</span><button type="button" disabled={saving} onClick={() => { setSelectedId(take.id); setPlaybackError(""); }} className="min-w-0 flex-1 text-left"><span className="block break-words text-xs font-medium">{titleOf(take)}</span><span className="mt-0.5 block text-[10px] text-zinc-500">{index === 0 ? "Inicio" : index === approved.length - 1 ? "Cierre" : "Continuación"} · {timeLabel(take.durationMs)}</span></button><div className="flex shrink-0 gap-1"><button type="button" onClick={() => moveApproved(take.id, -1)} disabled={busy || index === 0} aria-label={`Mover ${titleOf(take)} antes`} className="grid h-11 w-11 place-items-center rounded-lg bg-white/5 text-zinc-300 hover:bg-white/10 disabled:opacity-25"><ArrowUp size={15} /></button><button type="button" onClick={() => moveApproved(take.id, 1)} disabled={busy || index === approved.length - 1} aria-label={`Mover ${titleOf(take)} después`} className="grid h-11 w-11 place-items-center rounded-lg bg-white/5 text-zinc-300 hover:bg-white/10 disabled:opacity-25"><ArrowDown size={15} /></button></div></li>)}</ol>
+          <ol onDragEnterCapture={(event) => handleListDragOver(event, "montage")} onDragOverCapture={(event) => handleListDragOver(event, "montage")} onDragLeave={handleListDragLeave} onDropCapture={(event) => handleListDrop(event, "montage")} className="mt-4 space-y-2">{approved.map((take, index) => <li key={take.id} data-review-take={take.id} {...dragProps(take.id, "montage")} className={`relative flex items-center gap-2 rounded-xl border border-white/8 bg-[#111521] p-2.5 ${dragClass(take.id, "montage")}`}>{dragHandle(take, "montage")}<span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-violet-400/15 text-xs font-semibold text-violet-200">{index + 1}</span><button type="button" disabled={saving} onClick={() => { setSelectedId(take.id); setPlaybackError(""); }} className="min-w-0 flex-1 text-left"><span className="block break-words text-xs font-medium">{titleOf(take)}</span><span className="mt-0.5 block text-[10px] text-zinc-500">{index === 0 ? "Inicio" : index === approved.length - 1 ? "Cierre" : "Continuación"} · {timeLabel(take.durationMs)}</span></button><div className="flex shrink-0 gap-1"><button type="button" onClick={() => moveApproved(take.id, -1)} disabled={busy || index === 0} aria-label={`Mover ${titleOf(take)} antes`} className="grid h-11 w-11 place-items-center rounded-lg bg-white/5 text-zinc-300 hover:bg-white/10 disabled:opacity-25"><ArrowUp size={15} /></button><button type="button" onClick={() => moveApproved(take.id, 1)} disabled={busy || index === approved.length - 1} aria-label={`Mover ${titleOf(take)} después`} className="grid h-11 w-11 place-items-center rounded-lg bg-white/5 text-zinc-300 hover:bg-white/10 disabled:opacity-25"><ArrowDown size={15} /></button></div></li>)}</ol>
           {!approved.length && <p className="mt-4 rounded-xl border border-dashed border-violet-400/20 px-4 py-6 text-center text-xs leading-5 text-zinc-400">Aprueba las tomas que sí deben aparecer.<br />Aquí se armará su secuencia.</p>}
           {duplicates && <p role="alert" className="mt-3 text-xs leading-5 text-amber-200">Hay más de una toma aprobada para la misma escena. Elige una y clasifica las alternativas como blooper o descartadas.</p>}
           <p className={`mt-3 text-xs leading-5 ${overMontageLimit ? "text-amber-200" : "text-zinc-500"}`} role={overMontageLimit ? "alert" : undefined}>{overMontageLimit ? `Tienes ${approved.length} tomas aprobadas. Este montaje admite hasta 12: elige cuáles incluir antes de confirmar. Las demás pueden quedar como bloopers o descartadas, sin borrar los originales.` : "Hasta 12 tomas aprobadas por montaje. Puedes subir y revisar más material."}</p>

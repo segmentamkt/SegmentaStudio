@@ -1,12 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { isMediaReviewCurrent, MEDIA_REVIEW_STATUSES, mediaReviewFromRow, MediaReviewError, type MediaRow } from "./media-review";
+import { MEDIA_REVIEW_STATUSES, mediaReviewStateFromRow, MediaReviewError, type MediaRow } from "./media-review";
 
 export async function readMediaReview(client: SupabaseClient, ownerId: string, sessionId: string, scenes: MediaRow[], takes: MediaRow[]) {
   const result = await client.from("kiko_edit_jobs").select("*").eq("owner_id", ownerId).eq("session_id", sessionId)
     .in("status", MEDIA_REVIEW_STATUSES).order("created_at", { ascending: false }).limit(1).maybeSingle();
   if (result.error) throw result.error;
-  const review = mediaReviewFromRow(result.data);
-  return { review, valid: isMediaReviewCurrent(review, ownerId, sessionId, scenes, takes) };
+  return mediaReviewStateFromRow(result.data, ownerId, sessionId, scenes, takes);
 }
 
 export async function loadMediaReviewState(client: SupabaseClient, ownerId: string, sessionId: string) {
