@@ -3,11 +3,15 @@ let generatorPromise: ReturnType<typeof loadGenerator> | null = null;
 
 async function loadGenerator() {
   const { pipeline } = await import("@huggingface/transformers");
-  return pipeline("text-generation", "onnx-community/Qwen2.5-0.5B-Instruct", { device: "webgpu", dtype: "q4" });
+  const model = "onnx-community/Qwen2.5-0.5B-Instruct";
+  if ("gpu" in navigator) {
+    try { return await pipeline("text-generation", model, { device: "webgpu", dtype: "q4" }); }
+    catch { /* WebGPU may be advertised but unavailable on the active adapter. */ }
+  }
+  return pipeline("text-generation", model, { device: "wasm", dtype: "q4" });
 }
 
 export async function suggestPreproductionEdit(input: { script: string; description: string; question: string; scenes: string[] }): Promise<string> {
-  if (!("gpu" in navigator)) throw new Error("Este navegador no ofrece WebGPU para la IA local. Puedes ajustar el plan manualmente.");
   generatorPromise ||= loadGenerator().catch((error) => { generatorPromise = null; throw error; });
   const generator = await generatorPromise;
   const messages = [

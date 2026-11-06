@@ -17,7 +17,7 @@ export function PreproductionPlanner(props: {
   const updateTechnical = (patch: Partial<PreproductionPlan["technical"]>) => setPlan((current) => ({ ...current, technical: { ...current.technical, ...patch } }));
   const ask = async () => {
     if (!question.trim() || thinking) return;
-    setThinking(true); setMessage("Cargando el modelo local por primera vez puede tardar varios minutos.");
+    setThinking(true); setMessage("Cargando el modelo local por primera vez puede tardar varios minutos; en algunos celulares usa el procesador.");
     try {
       const { suggestPreproductionEdit } = await import("../lib/browser-preproduction-ai");
       const answer = await suggestPreproductionEdit({ script: props.script, description: plan.description, question, scenes: plan.scenes.map((scene) => `${scene.title}: ${scene.spoken}`) });
