@@ -57,8 +57,8 @@ export const SKILL_CATALOG: SkillDefinition[] = [
   },
   {
     id: "sonido", name: "Sonido y voz", icon: "🎚️", category: "audio", execution: "partial",
-    description: "Normaliza la voz en el render; la música y el aislamiento fino requieren recursos adicionales.",
-    capability: "El motor aplica normalización de voz. La música y el control del aislamiento quedan registrados como plan.",
+    description: "Comprime los picos de voz en el render; la música y el aislamiento fino requieren recursos adicionales.",
+    capability: "El motor aplica compresión de voz. La música y el aislamiento quedan registrados como plan.",
     defaultEnabled: true,
     defaultInstruction: "Mantén la voz clara y presente. La música no debe competir con ella.",
     settings: [{ key: "musicRequested", label: "Solicitar música de fondo", kind: "toggle", defaultValue: false, plannedOnly: true }],
@@ -119,8 +119,8 @@ export const SKILL_CATALOG: SkillDefinition[] = [
   },
   {
     id: "audio_fx", name: "Efectos de sonido", icon: "🔊", category: "audio", execution: "partial",
-    description: "Acentos sonoros originales en cortes de tomas y silencios, según el estilo elegido.",
-    capability: "El motor crea efectos procedimentales para cinco estilos; no hay sonidos contextuales generados por IA ni biblioteca externa.",
+    description: "Acentos sonoros originales al abrir o cambiar de escena, según el estilo elegido.",
+    capability: "El motor crea efectos procedimentales para cinco estilos en cambios de escena; no hay sonidos contextuales generados por IA ni biblioteca externa.",
     defaultEnabled: true,
     defaultInstruction: "Los acentos sonoros deben ser discretos y no competir con la voz.",
     settings: [
@@ -130,8 +130,8 @@ export const SKILL_CATALOG: SkillDefinition[] = [
   },
   {
     id: "subtitulos", name: "Subtítulos", icon: "💬", category: "texto", execution: "partial",
-    description: "Dibuja subtítulos por toma; acepta archivos SRT y VTT con tiempos.",
-    capability: "SRT y VTT conservan sus tiempos tras recortes y silencios. El texto sin tiempos se distribuye de forma aproximada; no hay alineación automática de voz.",
+    description: "Dibuja subtítulos sincronizados por toma; acepta voz transcrita localmente y archivos SRT/VTT.",
+    capability: "La transcripción local en navegadores compatibles obtiene tiempos de voz. SRT y VTT también conservan sus tiempos tras recortes y silencios. Revisa el texto antes de exportar.",
     defaultEnabled: true,
     defaultInstruction: "Subtítulos breves, legibles y ubicados lejos del rostro.",
     settings: [
@@ -153,19 +153,19 @@ export const SKILL_CATALOG: SkillDefinition[] = [
   {
     id: "narrativa", name: "Narrativa", icon: "📖", category: "dirección", execution: "partial",
     description: "Compara el libreto completo con el texto hablado de cada toma y propone su orden.",
-    capability: "Propone un orden cuando la coincidencia es suficiente y señala huecos o repeticiones. Debes aplicarlo antes del render; el análisis no escucha el audio automáticamente.",
+    capability: "Propone y aplica el orden al preparar la edición cuando la coincidencia con el texto hablado es suficiente. Señala huecos y repeticiones; requiere transcripción o SRT/VTT.",
     defaultEnabled: true,
     defaultInstruction: "Abre con la idea principal y conserva la progresión del libreto.",
     settings: [{ key: "structure", label: "Estructura buscada", kind: "select", defaultValue: "libreto", options: choice([["libreto", "Orden del libreto"], ["gancho", "Gancho primero"], ["problema", "Problema y solución"]]), plannedOnly: true }],
   },
   {
-    id: "transiciones", name: "Transiciones", icon: "↔️", category: "imagen", execution: "render",
-    description: "Elige corte directo, fundido o disolución entre tomas.",
-    capability: "El tipo y duración se aplican entre tomas aprobadas.",
+    id: "transiciones", name: "Transiciones", icon: "↔️", category: "imagen", execution: "partial",
+    description: "Elige corte directo o fundido entre tomas. La disolución usa un fundido a negro en este motor.",
+    capability: "El corte y el fundido se aplican entre tomas aprobadas. La disolución solicitada se representa como una transición breve a negro.",
     defaultEnabled: true,
     defaultInstruction: "Usa transiciones breves y solo donde faciliten la lectura del video.",
     settings: [
-      { key: "type", label: "Tipo", kind: "select", defaultValue: "cut", options: choice([["cut", "Corte"], ["fade", "Fundido"], ["dissolve", "Disolución"]]) },
+      { key: "type", label: "Tipo", kind: "select", defaultValue: "cut", options: choice([["cut", "Corte"], ["fade", "Fundido"], ["dissolve", "Fundido a negro"]]) },
       { key: "duration", label: "Duración", kind: "range", defaultValue: 0.18, min: 0.08, max: 0.8, step: 0.02, suffix: " s" },
     ],
   },

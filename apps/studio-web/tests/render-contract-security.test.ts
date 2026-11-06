@@ -81,6 +81,15 @@ test("rebuilds a valid contract from DB rows and applies bounded skill overrides
   assert.ok(output.skill_manifest.configuredRenderSkills.includes("subtitulos"));
 });
 
+test("new quality gate refuses captions inferred only from untimed text", () => {
+  const input = fixture();
+  Object.assign(input.raw, { quality_gates: { timed_captions: true } });
+  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /tiempos reales/);
+  input.raw.clips.forEach((clip) => Object.assign(clip, { caption_cues: [{ startSeconds: .2, endSeconds: 1.2, text: clip.transcript }] }));
+  const normalized = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.equal(normalized.quality_gates.timed_captions, true);
+});
+
 test("rejects a browser-supplied object key that differs from the approved take", () => {
   const input = fixture();
   input.raw.clips[0].object_key = `${ownerId}/${sessionId}/scene-0/other.mp4`;

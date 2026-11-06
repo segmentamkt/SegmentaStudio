@@ -10,6 +10,7 @@ import { EDITOR_STYLES, type EditorStyleId } from "../lib/editor-presets";
 import { loadSkillProfiles } from "../lib/studio-skills";
 import { planFromScript } from "../lib/editorial-director";
 import { parseCaptionCues, type CaptionCue } from "../lib/caption-cues";
+import { transcribeTakeInBrowser } from "../lib/browser-transcription";
 import { EDITOR_TOOL_CATALOG } from "../lib/editor-tool-catalog";
 
 // Session, scene, take and job rows share the editor surface.
@@ -174,8 +175,9 @@ export function EditorStudio(props: {
   const job = localJob === undefined || (localJob && localJob.sessionId !== sessionId) ? latestJob : localJob;
   const ephemeralStorageKey = `segmenta.edit-job.v1:${props.portfolioId}:${sessionId}`;
   const resultStorageKey = `segmenta.latest-result.v1:${props.portfolioId}:${sessionId}`;
-  const [busy, setBusy] = useState<"plan" | "render" | "">("");
+  const [busy, setBusy] = useState<"transcribe" | "plan" | "render" | "">("");
   const [error, setError] = useState("");
+  const [transcriptionStage, setTranscriptionStage] = useState("");
   const [selectedTakeId, setSelectedTakeId] = useState("");
   const [timeline, setTimeline] = useState<TimelineClip[]>([]);
   const timelineRef = useRef<TimelineClip[]>([]);
@@ -431,10 +433,7 @@ export function EditorStudio(props: {
   const selectedTake = approvedTakes.find((take) => take.id === selectedClip?.takeId) || approvedTakes[0];
   const selectedSegmentId = selectedClip?.segmentId;
   const previewCueIndex = selectedClip?.captionCues.findIndex((cue) => previewTime >= cue.startSeconds && previewTime < cue.endSeconds) ?? -1;
-  const previewWords = selectedClip?.transcript.trim().split(/\s+/).filter(Boolean) || [];
-  const previewCardSize = Math.max(1, selectedStyle.subtitle.maxWords || 5);
-  const previewCardIndex = selectedClip ? Math.min(Math.max(0, Math.floor((previewTime - selectedClip.trimStartSeconds) / Math.max(.2, selectedClip.trimEndSeconds - selectedClip.trimStartSeconds) * Math.ceil(previewWords.length / previewCardSize))), Math.max(0, Math.ceil(previewWords.length / previewCardSize) - 1)) : 0;
-  const previewCaption = previewCueIndex >= 0 ? selectedClip?.captionCues[previewCueIndex]?.text || "" : selectedClip?.captionCues.length ? "" : previewWords.slice(previewCardIndex * previewCardSize, (previewCardIndex + 1) * previewCardSize).join(" ");
+  const previewCaption = previewCueIndex >= 0 ? selectedClip?.captionCues[previewCueIndex]?.text || "" : "";
   useEffect(() => {
     const clip = timelineRef.current.find((item) => item.segmentId === selectedSegmentId);
     if (clip) setSplitPoint(Number(((clip.trimStartSeconds + clip.trimEndSeconds) / 2).toFixed(1)));
@@ -454,6 +453,40 @@ export function EditorStudio(props: {
   }, [selectedClip, showingFinal, previewSrc]);
   const resultMetadata = activeResult?.resultMetadata || {};
   const resultStyle = EDITOR_STYLES.find((item) => item.id === resultMetadata.style_id)?.name || "Estilo no registrado";
+  const missingTimedTakes = [...new Set(activeTimeline.filter((clip) => !clip.captionCues.length).map((clip) => clip.takeId))];
+  const transcribeMissingTakes = async () => {
+    if (busy || !missingTimedTakes.length) return;
+    setBusy("transcribe"); setError("");
+    try {
+      const results = new Map<string, Awaited<ReturnType<typeof transcribeTakeInBrowser>>>();
+      for (const [index, takeId] of missingTimedTakes.entries()) {
+        const clip = activeTimeline.find((item) => item.takeId === takeId)!;
+        setTranscriptionStage(`Toma ${index + 1} de ${missingTimedTakes.length}`);
+        const result = await transcribeTakeInBrowser({
+          takeId, durationSeconds: clip.duration, maxWords: selectedStyle.subtitle.maxWords,
+          onProgress: (stage) => setTranscriptionStage(`Toma ${index + 1} de ${missingTimedTakes.length} · ${stage}`),
+        });
+        results.set(takeId, result);
+      }
+      const current = timelineRef.current;
+      const updated = current.map((clip) => {
+        const result = results.get(clip.takeId);
+        return result ? { ...clip, transcript: result.transcript, captionCues: result.captionCues } : clip;
+      });
+      undoRef.current = [...undoRef.current.slice(-29), current];
+      redoRef.current = [];
+      timelineRef.current = updated;
+      setTimeline(updated);
+      setHistoryVersion((value) => value + 1);
+      setJob(null); setDraftPending(true);
+      window.localStorage.setItem(draftPendingKey, "1");
+      setTranscriptionStage(`${results.size} ${results.size === 1 ? "toma escuchada" : "tomas escuchadas"}. Revisa el texto antes de preparar la edición.`);
+      setTool("text");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "No pudimos transcribir las tomas.");
+      setTranscriptionStage("");
+    } finally { setBusy(""); }
+  };
   const openOverlayEditor = (kind: "caption" | "label") => {
     if (!selectedClip || busy) return;
     videoRef.current?.pause();
@@ -474,7 +507,7 @@ export function EditorStudio(props: {
   };
   const workflowSteps = [
     { label: "Tomas aprobadas", done: approvedTakes.length > 0 },
-    { label: "Libreto y texto", done: Boolean(scriptDraft.trim()) && activeTimeline.length > 0 && (!options.captions || activeTimeline.every((clip) => clip.transcript.trim())) },
+    { label: "Libreto y texto", done: Boolean(scriptDraft.trim()) && activeTimeline.length > 0 && (!options.captions || activeTimeline.every((clip) => clip.transcript.trim() && clip.captionCues.length)) },
     { label: "Edición preparada", done: Boolean(job) && !draftPending },
     { label: "MP4 listo", done: ready },
   ];
@@ -571,14 +604,25 @@ export function EditorStudio(props: {
   const plan = async () => {
     if (!scriptDraft.trim()) { setError("Sube o pega el libreto completo antes de editar."); return; }
     if (!activeTimeline.length) { setError("Activa al menos una toma en la línea de tiempo."); return; }
-    if (options.captions && activeTimeline.some((clip) => !clip.transcript.trim())) {
-      setError("Para exportar con subtítulos, escribe el texto hablado de cada toma incluida. Puedes corregirlo en la línea de tiempo.");
+    if (options.captions && activeTimeline.some((clip) => !clip.transcript.trim() || !clip.captionCues.length)) {
+      setError("Para exportar subtítulos sincronizados, escucha las tomas con IA local o importa SRT/VTT con tiempos. No repartiremos el libreto a ciegas.");
       return;
     }
     setBusy("plan"); setError("");
     try {
       await ensureScriptSaved();
-      const result = await request<{ job: Row }>("/api/editor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, style, objective, options, settings, timeline, skillProfiles: loadSkillProfiles(props.portfolioId) }) });
+      const ranks = new Map(editorialPlan.suggestedClipIds.map((id, index) => [id, index]));
+      const plannedTimeline = editorialPlan.reliableOrder
+        ? [...timeline].sort((a, b) => (ranks.get(a.segmentId) ?? 999) - (ranks.get(b.segmentId) ?? 999))
+        : timeline;
+      const result = await request<{ job: Row }>("/api/editor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, style, objective, options, settings, timeline: plannedTimeline, skillProfiles: loadSkillProfiles(props.portfolioId) }) });
+      if (plannedTimeline !== timeline) {
+        undoRef.current = [...undoRef.current.slice(-29), timeline];
+        redoRef.current = [];
+        timelineRef.current = plannedTimeline;
+        setTimeline(plannedTimeline);
+        setHistoryVersion((value) => value + 1);
+      }
       setJob(result.job);
       setSelectedResultId(result.job.id);
       setDraftPending(false);
@@ -642,6 +686,7 @@ export function EditorStudio(props: {
     {job?.status === "failed" && <div className="border-b border-red-400/20 bg-red-400/[.08] px-4 py-4 text-sm text-red-100 sm:px-6"><strong>La edición no se completó. No existe un MP4 final de este intento.</strong><p className="mt-1 text-xs text-red-200/80">{job.error || error || "Revisa el mensaje y vuelve a intentar el render."}</p></div>}
     {job?.status === "unconfirmed" && <div className="border-b border-amber-300/20 bg-amber-300/[.07] px-4 py-4 text-sm text-amber-100 sm:px-6"><strong>No pudimos confirmar el resultado de este intento.</strong><p className="mt-1 text-xs text-amber-100/80">{job.error || "Abre Mis videos para ver si apareció el MP4 antes de reintentar."}</p></div>}
     {job?.ephemeral && <div className="border-b border-amber-300/15 bg-amber-300/[.04] px-4 py-2.5 text-[11px] text-amber-100/80 sm:px-6">El plan y el progreso de esta edición solo se conservan en este navegador. El MP4 terminado aparecerá en Mis videos de esta misma sesión.</div>}
+    {options.captions && missingTimedTakes.length > 0 && <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-300/20 bg-amber-300/[.06] px-4 py-3 text-[11px] text-amber-100 sm:px-6"><span>Faltan tiempos de voz en {missingTimedTakes.length} {missingTimedTakes.length === 1 ? "toma" : "tomas"}. Sin ellos el montaje no puede generar subtítulos sincronizados.</span><button onClick={() => { setTool("text"); document.getElementById("editor-workbench")?.scrollIntoView({ behavior: "smooth" }); }} className="rounded-lg bg-violet-500 px-3 py-2 font-semibold text-white">Sincronizar subtítulos</button></div>}
 
     {selectedSession && <section id="editor-script" className="scroll-mt-24 border-b border-white/8 bg-[#10131e] p-4 sm:p-5" aria-label="Dirección por libreto">
       <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="text-[10px] font-semibold uppercase tracking-[.17em] text-violet-300">Dirección editorial</p><h2 className="mt-1 text-base font-semibold">Libreto y recursos del video</h2><p className="mt-1 max-w-2xl text-xs leading-5 text-zinc-400">El libreto guía el orden y los apoyos. Para reconocer qué toma corresponde a cada parte, añade su texto hablado en la línea de tiempo.</p></div><span className={`rounded-full px-3 py-1 text-[10px] ${scriptDraft.trim() ? "bg-emerald-400/10 text-emerald-200" : "bg-amber-300/10 text-amber-200"}`}>{scriptDraft.trim() ? "Libreto cargado" : "Libreto necesario para editar"}</span></div>
@@ -670,8 +715,23 @@ export function EditorStudio(props: {
         {tool === "media" && <><PanelTitle icon={Layers3} title="Tus escenas" text={`${approvedTakes.length} clips listos`} /><button onClick={() => props.onAddToCurrent(sessionId)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-violet-400/25 bg-violet-400/5 px-3 py-3 text-xs text-violet-200"><Plus size={15} />Añadir a este proyecto</button><div className="mt-4 grid grid-cols-2 gap-2">{approvedTakes.map((take, index) => <button key={take.id} onClick={() => { setSelectedTakeId(timeline.find((clip) => clip.takeId === take.id)?.segmentId || ""); setPreviewMode("original"); setOverlayEditor(null); }} className={`overflow-hidden rounded-xl border text-left ${selectedTake?.id === take.id ? "border-violet-400" : "border-white/8"}`}><div className="relative aspect-[9/12] bg-black"><video src={`/api/media/${take.id}`} muted preload="metadata" className="h-full w-full object-cover" /><span className="absolute bottom-1 right-1 rounded bg-black/75 px-1.5 py-0.5 text-[8px]">{seconds(take.durationMs)}</span></div><p className="truncate px-2 py-2 text-[9px] text-zinc-400">{approvedScenes[index]?.title || `Clip ${index + 1}`}</p></button>)}</div></>}
         {tool === "video" && <><PanelTitle icon={SlidersHorizontal} title="Video y color" text={selectedClip ? `Ajustes de ${selectedClip.title}` : "Selecciona una toma"} />{selectedClip && <div className="mt-5 space-y-5"><p className="text-[10px] leading-4 text-zinc-500">Cada control se aplica a esta toma al renderizar. La vista previa del color es aproximada.</p><Range label="Velocidad" value={selectedClip.playbackSpeed} min={.5} max={2} step={.05} suffix="×" onChange={(value) => updateClip(selectedClip.segmentId, { playbackSpeed: value })} /><Range label="Brillo" value={Math.round(selectedClip.brightness * 100)} min={-20} max={20} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { brightness: value / 100 })} /><Range label="Contraste" value={Math.round(selectedClip.contrast * 100)} min={80} max={130} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { contrast: value / 100 })} /><Range label="Saturación" value={Math.round(selectedClip.saturation * 100)} min={50} max={150} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { saturation: value / 100 })} /><button onClick={() => updateClip(selectedClip.segmentId, { playbackSpeed: 1, brightness: 0, contrast: 1, saturation: 1 })} className="w-full rounded-xl border border-white/10 px-3 py-2 text-xs text-zinc-300">Restablecer ajustes</button></div>}</>}
         {tool === "styles" && <><PanelTitle icon={WandSparkles} title="Estilos" text="Cambia toda la edición" /><div className="mt-4 space-y-2">{EDITOR_STYLES.map((item) => <button key={item.id} onClick={() => chooseStyle(item.id)} className={`flex w-full items-center gap-3 rounded-xl border p-2.5 text-left ${style === item.id ? "border-violet-400/40 bg-violet-400/10" : "border-white/7 bg-black/15"}`}><span className="h-12 w-9 shrink-0 rounded-lg" style={{ background: `linear-gradient(145deg,${item.palette[0]},${item.palette[1]})` }} /><span className="min-w-0"><strong className="block truncate text-xs">{item.name}</strong><small className="mt-1 block truncate text-[9px] text-zinc-600">{item.reference}</small></span>{style === item.id && <Check className="ml-auto text-violet-300" size={14} />}</button>)}</div></>}
-        {tool === "text" && <><PanelTitle icon={Captions} title="Subtítulos" text="Texto hablado de cada toma" /><div className="mt-4 space-y-4">{!hasTranscript && <p className="rounded-xl border border-amber-300/15 bg-amber-300/5 p-3 text-[10px] leading-4 text-amber-100">Escribe o importa el texto hablado de cada toma en la línea de tiempo. El video no saldrá con subtítulos hasta completarlo o desactivarlos.</p>}<p className="text-[10px] leading-4 text-zinc-500">Importa SRT o VTT para conservar tiempos exactos. Si pegas texto plano, se repartirá aproximadamente durante la toma.</p><Toggle enabled={options.captions} label="Subtítulos por toma" detail="Corrige el texto en la línea de tiempo" onChange={() => changeOptions({ captions: !options.captions })} /><Range label="Tamaño" value={settings.subtitleSize} min={38} max={100} suffix="px" onChange={(value) => changeSettings({ subtitleSize: value })} /><Select label="Posición" value={settings.subtitlePosition} onChange={(value) => changeSettings({ subtitlePosition: value as typeof settings.subtitlePosition })} options={[['top','Arriba'],['center','Centro'],['bottom','Abajo']]} /><Toggle enabled={options.labels} label="Título inicial" detail="Muestra el nombre del proyecto" onChange={() => changeOptions({ labels: !options.labels })} /></div></>}
-        {tool === "effects" && <><PanelTitle icon={Zap} title="Efectos" text="Movimiento sin complicaciones" /><div className="mt-4 space-y-3"><Toggle enabled={options.deadAir} label="Cortar silencios" detail="Elimina pausas largas" onChange={() => changeOptions({ deadAir: !options.deadAir })} />{options.deadAir && <Range label="Pausa máxima" value={settings.silenceThresholdMs} min={350} max={1500} step={50} suffix=" ms" onChange={(value) => changeSettings({ silenceThresholdMs: value })} />}{options.deadAir && <Select label="Sensibilidad al ruido" value={String(settings.silenceNoiseDb)} onChange={(value) => changeSettings({ silenceNoiseDb: Number(value) })} options={[["-35","Conservadora"],["-30","Normal"],["-25","Alta · para ruido de fondo"]]} />}<Toggle enabled={options.transitions} label="Transiciones" detail="Entre escenas" onChange={() => changeOptions({ transitions: !options.transitions })} />{options.transitions && <Select label="Tipo" value={settings.transition} onChange={(value) => changeSettings({ transition: value as typeof settings.transition })} options={[['cut','Corte'],['fade','Fundido'],['dissolve','Disolvencia']]} />}<div className="rounded-xl border border-dashed border-white/8 p-3 opacity-60"><p className="flex items-center gap-2 text-xs"><ImageIcon size={14} />B-roll e imágenes</p><small className="mt-1 block text-[9px] text-zinc-600">Se habilitará al conectar la biblioteca visual.</small></div></div></>}
+        {tool === "text" && <>
+          <PanelTitle icon={Captions} title="Subtítulos" text="Sincronizados con la voz de cada toma" />
+          <div className="mt-4 space-y-4">
+            {missingTimedTakes.length > 0 && <div className="rounded-xl border border-amber-300/20 bg-amber-300/[.06] p-3 text-[10px] leading-4 text-amber-100">
+              <strong className="block">{missingTimedTakes.length} {missingTimedTakes.length === 1 ? "toma necesita" : "tomas necesitan"} tiempos de voz.</strong>
+              <p className="mt-1">Escucha cada toma en este navegador y revisa las palabras antes de crear la edición. La primera vez se descarga un modelo de unos 120 MB. También puedes importar SRT/VTT.</p>
+              <button onClick={() => void transcribeMissingTakes()} disabled={Boolean(busy)} className="mt-3 rounded-lg bg-violet-500 px-3 py-2 font-semibold text-white disabled:opacity-40">{busy === "transcribe" ? "Escuchando…" : "Escuchar y sincronizar tomas"}</button>
+            </div>}
+            {transcriptionStage && <p role="status" className="text-[10px] text-cyan-200">{transcriptionStage}</p>}
+            {!hasTranscript && <p className="text-[10px] leading-4 text-zinc-500">El texto hablado aparecerá aquí tras escuchar las tomas.</p>}
+            <Toggle enabled={options.captions} label="Subtítulos por toma" detail="Corrige el texto en la línea de tiempo" onChange={() => changeOptions({ captions: !options.captions })} />
+            <Range label="Tamaño" value={settings.subtitleSize} min={38} max={100} suffix="px" onChange={(value) => changeSettings({ subtitleSize: value })} />
+            <Select label="Posición" value={settings.subtitlePosition} onChange={(value) => changeSettings({ subtitlePosition: value as typeof settings.subtitlePosition })} options={[["top","Arriba"],["center","Centro"],["bottom","Abajo"]]} />
+            <Toggle enabled={options.labels} label="Título inicial" detail="Muestra el nombre del proyecto" onChange={() => changeOptions({ labels: !options.labels })} />
+          </div>
+        </>}
+        {tool === "effects" && <><PanelTitle icon={Zap} title="Efectos" text="Movimiento sin complicaciones" /><div className="mt-4 space-y-3"><Toggle enabled={options.deadAir} label="Cortar silencios" detail="Elimina pausas largas" onChange={() => changeOptions({ deadAir: !options.deadAir })} />{options.deadAir && <Range label="Pausa máxima" value={settings.silenceThresholdMs} min={350} max={1500} step={50} suffix=" ms" onChange={(value) => changeSettings({ silenceThresholdMs: value })} />}{options.deadAir && <Select label="Sensibilidad al ruido" value={String(settings.silenceNoiseDb)} onChange={(value) => changeSettings({ silenceNoiseDb: Number(value) })} options={[["-35","Conservadora"],["-30","Normal"],["-25","Alta · para ruido de fondo"]]} />}<Toggle enabled={options.transitions} label="Transiciones" detail="Entre escenas" onChange={() => changeOptions({ transitions: !options.transitions })} />{options.transitions && <Select label="Tipo" value={settings.transition} onChange={(value) => changeSettings({ transition: value as typeof settings.transition })} options={[['cut','Corte'],['fade','Fundido'],['dissolve','Fundido a negro']]} />}<div className="rounded-xl border border-dashed border-white/8 p-3 opacity-60"><p className="flex items-center gap-2 text-xs"><ImageIcon size={14} />B-roll e imágenes</p><small className="mt-1 block text-[9px] text-zinc-600">Se habilitará al conectar la biblioteca visual.</small></div></div></>}
         {tool === "audio" && <><PanelTitle icon={Volume2} title="Audio" text="Voz clara y golpes precisos" /><div className="mt-4 space-y-4">{selectedClip && <><Range label={`Volumen de ${selectedClip.title}`} value={Math.round(selectedClip.audioVolume * 100)} min={0} max={200} step={5} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { audioVolume: value / 100 })} /><button onClick={() => updateClip(selectedClip.segmentId, { audioVolume: selectedClip.audioVolume === 0 ? 1 : 0 })} className="w-full rounded-xl border border-white/10 px-3 py-2 text-xs text-zinc-300">{selectedClip.audioVolume === 0 ? "Activar voz" : "Silenciar toma"}</button></>}<Toggle enabled={options.soundEffects} label="Efectos sonoros" detail="En cambios importantes" onChange={() => changeOptions({ soundEffects: !options.soundEffects })} />{options.soundEffects && <Range label="Intensidad" value={Math.round(settings.soundEffectVolume * 100)} min={0} max={100} suffix="%" onChange={(value) => changeSettings({ soundEffectVolume: value / 100 })} />}{options.soundEffects && <Select label="Sonido de los cortes" value={settings.soundPreset} onChange={(value) => changeSettings({ soundPreset: value as typeof settings.soundPreset })} options={[["auto","Según el estilo"],["soft","Suave"],["kinetic","Golpe cinético"],["cinematic","Cinematográfico"],["pop","Marca pop"],["none","Sin sonido"]]} />}<div className="rounded-xl border border-dashed border-white/8 p-3 opacity-60"><p className="flex items-center gap-2 text-xs"><Music2 size={14} />Música</p><small className="mt-1 block text-[9px] text-zinc-600">Pendiente de pistas con licencia.</small></div></div></>}
         {tool === "catalog" && <><PanelTitle icon={Layers3} title="Mapa de herramientas" text="Guía completa · 15 categorías" /><p className="mt-3 text-[10px] leading-4 text-zinc-400">Disponible: la función descrita modifica el MP4. Parcial: existe una versión limitada. En desarrollo: aún no está conectada al render.</p><input type="search" value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} placeholder="Buscar herramienta…" className="mt-4 w-full rounded-xl border border-white/10 bg-[#151822] p-2.5 text-xs text-white outline-none" /><div className="mt-4 space-y-2">{EDITOR_TOOL_CATALOG.map((category) => { const matches = category.tools.filter((item) => `${item.name} ${item.section} ${item.description}`.toLocaleLowerCase("es").includes(catalogSearch.toLocaleLowerCase("es"))); if (!matches.length) return null; return <details key={category.id} open={Boolean(catalogSearch)} className="rounded-xl border border-white/10 bg-white/[.02] p-2"><summary className="cursor-pointer text-xs font-medium">{category.id}. {category.name} <span className="text-zinc-500">({matches.length})</span></summary><div className="mt-2 space-y-2">{matches.map((item, index) => <div key={`${item.section}-${item.name}-${index}`} className="rounded-lg bg-black/20 p-2"><p className="text-[11px] text-zinc-200">{item.name}</p><p className="mt-1 text-[9px] leading-4 text-zinc-500">{item.description}</p><span className={`mt-1 inline-block text-[9px] ${item.status === "ready" ? "text-emerald-300" : item.status === "partial" ? "text-cyan-300" : "text-amber-200"}`}>{item.status === "ready" ? "Disponible" : item.status === "partial" ? "Parcial" : "En desarrollo"}</span></div>)}</div></details>; })}</div></>}
       </aside>
@@ -716,7 +776,7 @@ export function EditorStudio(props: {
           <label className="text-[10px] text-zinc-400">Inicio (s)<input type="number" min={0} max={Math.max(0, selectedClip.trimEndSeconds - .2)} step="0.1" value={selectedClip.trimStartSeconds} disabled={Boolean(busy)} onChange={(event) => updateClip(selectedClip.segmentId, { trimStartSeconds: Math.max(0, Math.min(selectedClip.trimEndSeconds - .2, Number(event.target.value) || 0)) })} className="mt-1 w-full rounded-lg border border-white/10 bg-[#151822] p-2 text-xs text-white" /></label>
           <label className="text-[10px] text-zinc-400">Final (s)<input type="number" min={selectedClip.trimStartSeconds + .2} max={selectedClip.duration} step="0.1" value={selectedClip.trimEndSeconds} disabled={Boolean(busy)} onChange={(event) => updateClip(selectedClip.segmentId, { trimEndSeconds: Math.max(selectedClip.trimStartSeconds + .2, Math.min(selectedClip.duration, Number(event.target.value) || selectedClip.duration)) })} className="mt-1 w-full rounded-lg border border-white/10 bg-[#151822] p-2 text-xs text-white" /></label>
         </div><div className="mt-3 flex flex-wrap items-end gap-2"><label className="min-w-[100px] flex-1 text-[10px] text-zinc-400">Dividir en segundo<input type="number" min={selectedClip.trimStartSeconds + .2} max={selectedClip.trimEndSeconds - .2} step="0.1" value={splitPoint} disabled={Boolean(busy)} onChange={(event) => setSplitPoint(Number(event.target.value))} className="mt-1 w-full rounded-lg border border-white/10 bg-[#151822] p-2 text-xs text-white" /></label><button onClick={splitClip} disabled={Boolean(busy) || timeline.length >= 12} className="rounded-lg border border-violet-400/30 px-3 py-2 text-[10px] text-violet-200 disabled:opacity-30">Dividir</button><button onClick={duplicateClip} disabled={Boolean(busy) || timeline.length >= 12} className="rounded-lg border border-white/10 px-3 py-2 text-[10px] text-zinc-300 disabled:opacity-30">Duplicar</button></div><p className="mt-2 text-[9px] leading-4 text-zinc-500">Después de dividir, revisa el texto hablado de cada parte.</p></div>
-        <div className="space-y-2"><label className="block text-[10px] text-zinc-400">Texto hablado para subtítulos<textarea value={selectedClip.transcript} onChange={(event) => updateClip(selectedClip.segmentId, { transcript: event.target.value, captionCues: [] })} disabled={Boolean(busy)} maxLength={1000} rows={2} placeholder="Escribe o pega las palabras de esta toma" className="mt-1 w-full resize-y rounded-lg border border-white/10 bg-[#151822] p-2 text-xs leading-5 text-white" /></label><div className="flex flex-wrap items-center gap-2"><label className="cursor-pointer rounded-lg border border-violet-400/25 px-2 py-1.5 text-[10px] text-violet-200">Importar .srt, .vtt o .txt<input type="file" accept=".srt,.vtt,.txt,text/plain,text/vtt" disabled={Boolean(busy)} className="sr-only" onChange={(event) => { void importTranscript(selectedClip, event.target.files?.[0]); event.target.value = ""; }} /></label>{selectedClip.captionCues.length > 0 && <span className="text-[10px] text-emerald-300">{selectedClip.captionCues.length} subtítulos con tiempos</span>}</div><label className="block text-[10px] text-zinc-400">Rótulo visual opcional<input value={selectedClip.label} onChange={(event) => updateClip(selectedClip.segmentId, { label: event.target.value })} disabled={Boolean(busy)} maxLength={120} placeholder="Ej. Lechona tradicional" className="mt-1 w-full rounded-lg border border-white/10 bg-[#151822] p-2 text-xs text-white" /></label></div>
+        <div className="space-y-2"><label className="block text-[10px] text-zinc-400">Texto hablado para subtítulos<textarea value={selectedClip.transcript} onChange={(event) => updateClip(selectedClip.segmentId, { transcript: event.target.value, captionCues: [] })} disabled={Boolean(busy)} readOnly={selectedClip.captionCues.length > 0} maxLength={1000} rows={2} placeholder="Importa SRT/VTT o escucha la toma para obtener subtítulos con tiempos" className="mt-1 w-full resize-y rounded-lg border border-white/10 bg-[#151822] p-2 text-xs leading-5 text-white" /></label><div className="flex flex-wrap items-center gap-2"><label className="cursor-pointer rounded-lg border border-violet-400/25 px-2 py-1.5 text-[10px] text-violet-200">Importar .srt, .vtt o .txt<input type="file" accept=".srt,.vtt,.txt,text/plain,text/vtt" disabled={Boolean(busy)} className="sr-only" onChange={(event) => { void importTranscript(selectedClip, event.target.files?.[0]); event.target.value = ""; }} /></label>{selectedClip.captionCues.length > 0 && <span className="text-[10px] text-emerald-300">{selectedClip.captionCues.length} subtítulos con tiempos</span>}</div>{selectedClip.captionCues.length > 0 && <div className="max-h-56 space-y-1 overflow-y-auto rounded-lg border border-white/10 p-2"><p className="mb-2 text-[9px] text-zinc-500">Corrige cada tarjeta sin perder los tiempos de voz.</p>{selectedClip.captionCues.map((cue, index) => <label key={`${selectedClip.segmentId}-${index}`} className="flex items-center gap-2 text-[9px] text-zinc-500"><span className="w-16 shrink-0 tabular-nums">{cue.startSeconds.toFixed(1)}–{cue.endSeconds.toFixed(1)} s</span><input value={cue.text} maxLength={250} disabled={Boolean(busy)} onChange={(event) => { const captionCues = selectedClip.captionCues.map((item, cueIndex) => cueIndex === index ? { ...item, text: event.target.value } : item); const transcript = captionCues.map((item) => item.text).join(" "); if (transcript.length <= 1_000) updateClip(selectedClip.segmentId, { captionCues, transcript }); }} className="min-w-0 flex-1 rounded border border-white/10 bg-[#151822] px-2 py-1.5 text-[10px] text-white" /></label>)}</div>}<label className="block text-[10px] text-zinc-400">Rótulo visual opcional<input value={selectedClip.label} onChange={(event) => updateClip(selectedClip.segmentId, { label: event.target.value })} disabled={Boolean(busy)} maxLength={120} placeholder="Ej. Lechona tradicional" className="mt-1 w-full rounded-lg border border-white/10 bg-[#151822] p-2 text-xs text-white" /></label></div>
       </div>}
     </div>
   </section>;

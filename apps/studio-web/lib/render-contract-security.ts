@@ -199,6 +199,10 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
   if (captionsEnabled && clips.some((clip) => !clip.transcript)) {
     throw new Error("Falta el texto hablado de una o más tomas para generar todos los subtítulos.");
   }
+  const qualityGates = optionalRow(contract.quality_gates, "Los controles de calidad");
+  if (captionsEnabled && qualityGates.timed_captions === true && clips.some((clip) => !clip.caption_cues.length)) {
+    throw new Error("Faltan subtítulos con tiempos reales. Vuelve a escuchar las tomas o importa SRT/VTT.");
+  }
   const removeDeadAir = flag(requestedDeadAir.remove, true, "El corte de silencios");
   const transitions = flag(requestedEffects.transitions, true, "Las transiciones");
   const soundEffects = flag(requestedEffects.sound_effects, true, "Los efectos sonoros");
@@ -226,6 +230,7 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
       portrait: true,
       audio: true,
       captions: captionsEnabled,
+      timed_captions: captionsEnabled && qualityGates.timed_captions === true,
       effects: (transitions && transition !== "cut" && clips.length > 1) || (labels && (clips.some((clip) => clip.label) || (titleCards && !/^edici[oó]n de \d+ videos?$/i.test(String(dbSession.title))))),
     },
   };

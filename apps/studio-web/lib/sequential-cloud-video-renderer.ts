@@ -28,7 +28,7 @@ type EditContract = {
   captions: { enabled: boolean; max_words_per_card: number };
   dead_air: { remove: boolean; threshold_ms: number; noise_db?: number };
   effects: { transitions: boolean; sound_effects: boolean; labels: boolean };
-  quality_gates?: { effects?: boolean };
+  quality_gates?: { effects?: boolean; timed_captions?: boolean };
 };
 type Analysis = { duration: number; ranges: Range[]; removed: number; hasAudio: boolean };
 type Progress = (progress: number, stage: string) => Promise<void>;
@@ -225,9 +225,10 @@ export async function renderSequentialClip(input: {
   let audioLabel = "abase";
   let cueCount = 0;
   if (contract.effects.sound_effects) {
-    let position = 0;
-    const internalCuts = analysis.ranges.slice(0, -1).map((range) => { position += range.end - range.start; return position / speed; });
-    const cueTimes = [...(index > 0 || showTitle || label ? [.15] : []), ...internalCuts];
+    // A silence trim is a technical cut, not a creative beat. Sounding every trim
+    // makes spoken reels noisy and repetitive; accent only a new scene or title.
+    const newScene = index > 0 && contract.clips[index - 1].id !== clip.id;
+    const cueTimes = newScene || showTitle ? [.15] : [];
     const cues = planCutSoundCues(cueTimes, execution.soundPreset && execution.soundPreset !== "auto" ? execution.soundPreset : (contract.style_snapshot as { id?: string }).id);
     const sound = buildSoundDesignGraph({
       inputLabel: audioLabel, cues, durationSeconds: duration,
@@ -312,7 +313,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
       zoom_percent: Math.max(0, Math.min(10, Number(input.contract.style_snapshot.execution?.zoomPercent || 0))),
       transition: transitionSeconds ? "fade" : "cut",
       transition_fallback: transitionSeconds > 0 && input.contract.style_snapshot.transition === "dissolve" ? "dip-to-black" : null,
-      release_gate: { passed: totalDuration > 0 && (!input.contract.captions.enabled || captionedClips === input.contract.clips.length) && (!input.contract.quality_gates?.effects || effects > 0) },
+      release_gate: { passed: totalDuration > 0 && (!input.contract.captions.enabled || captionedClips === input.contract.clips.length) && (!input.contract.quality_gates?.timed_captions || input.contract.clips.every((clip) => Boolean(clip.caption_cues?.length))) && (!input.contract.quality_gates?.effects || effects > 0) },
     };
   } finally {
     await rm(directory, { recursive: true, force: true });

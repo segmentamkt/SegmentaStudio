@@ -131,6 +131,9 @@ export async function POST(request: Request) {
     if (normalizedOptions.captions && ordered.some(({ scene, edit }) => !String(edit?.transcript ?? scene.script ?? "").trim())) {
       return Response.json({ error: "Falta el texto hablado de una o más tomas. Complétalo en la línea de tiempo o desactiva subtítulos." }, { status: 400 });
     }
+    if (normalizedOptions.captions && ordered.some(({ edit }) => !edit?.captionCues?.length)) {
+      return Response.json({ error: "Cada toma necesita subtítulos con tiempos reales. Usa Escuchar y sincronizar o importa un SRT/VTT." }, { status: 400 });
+    }
     const styleSnapshot = {
       ...style,
       transition: ["cut", "fade", "dissolve"].includes(String(settings.transition)) ? settings.transition : style.transition,
@@ -180,7 +183,7 @@ export async function POST(request: Request) {
         images_or_broll: normalizedOptions.broll,
         music: false,
       },
-      quality_gates: { portrait: true, audio: true, captions: normalizedOptions.captions, effects: normalizedOptions.transitions || normalizedOptions.labels },
+      quality_gates: { portrait: true, audio: true, captions: normalizedOptions.captions, timed_captions: normalizedOptions.captions, effects: normalizedOptions.transitions || normalizedOptions.labels },
       editorial_plan: planFromScript(String(session.data.script), ordered.map(({ scene, take, edit }) => ({ id: take.id, title: String(scene.title || ""), transcript: String(edit?.transcript ?? scene.script ?? "") }))),
     };
     const contractWithSkills = applySkillProfilesToContract(contract, payload.skillProfiles);

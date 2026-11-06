@@ -1,7 +1,7 @@
 /** Script-guided editorial suggestions. Scores express text overlap, not speech recognition. */
 export type EditorialClip = { id: string; title: string; transcript: string };
 export type ScriptBeat = { index: number; text: string };
-export type ClipMatch = { clipId: string; beatIndex: number | null; score: number; confidence: "alta" | "media" | "baja" };
+export type ClipMatch = { clipId: string; beatIndex: number | null; score: number; confidence: "alta" | "media" | "baja"; sequenceOffset: number };
 export type ResourceSuggestion = {
   id: string;
   beatIndex: number;
@@ -23,11 +23,33 @@ function tokens(value: string) {
 }
 
 export function splitScriptBeats(script: string): ScriptBeat[] {
+  // Production scripts often contain episode metadata followed by quoted lines.
+  // The spoken lines, rather than the metadata, define the story chronology.
+  const quoted = [...script.matchAll(/«([^»]+)»/g)].map((match) => match[1].trim()).filter(Boolean);
+  if (quoted.length >= 2) return quoted.slice(0, 36).map((text, index) => ({ index, text }));
   const paragraphs = script.trim().split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean);
   const lines = paragraphs.length > 1 ? paragraphs : script.trim().split(/\n/).map((part) => part.trim()).filter(Boolean);
   const pieces = lines.length > 1 ? lines : (script.trim().match(/[^.!?]+[.!?]+|[^.!?]+$/g) || []);
   const beats = pieces.map((part) => part.replace(/^\s*(?:escena|toma)\s*\d+\s*[:.)-]?\s*/i, "").trim()).filter(Boolean);
   return beats.slice(0, 36).map((text, index) => ({ index, text }));
+}
+
+function sequenceOffset(spoken: string, beat: string) {
+  const speech = tokens(spoken);
+  const script = tokens(beat);
+  let bestLength = 0;
+  let bestOffset = script.length;
+  for (let i = 0; i < script.length; i++) {
+    for (let j = 0; j < speech.length; j++) {
+      let length = 0;
+      while (script[i + length] && script[i + length] === speech[j + length]) length++;
+      if (length > bestLength || (length === bestLength && length > 0 && i < bestOffset)) {
+        bestLength = length;
+        bestOffset = i;
+      }
+    }
+  }
+  return bestOffset;
 }
 
 function similarity(a: string, b: string) {
@@ -71,20 +93,25 @@ function resourceFor(beat: ScriptBeat): ResourceSuggestion[] {
 export function planFromScript(script: string, clips: EditorialClip[]) {
   const beats = splitScriptBeats(script);
   const matches: ClipMatch[] = clips.map((clip) => {
-    if (!clip.transcript.trim() || !beats.length) return { clipId: clip.id, beatIndex: null, score: 0, confidence: "baja" };
+    if (!clip.transcript.trim() || !beats.length) return { clipId: clip.id, beatIndex: null, score: 0, confidence: "baja", sequenceOffset: 0 };
     const scores = beats.map((beat) => similarity(clip.transcript, beat.text));
     const score = Math.max(...scores);
-    return { clipId: clip.id, beatIndex: score >= .22 ? scores.indexOf(score) : null, score: Number(score.toFixed(2)), confidence: score >= .5 ? "alta" : score >= .22 ? "media" : "baja" };
+    const beatIndex = score >= .22 ? scores.indexOf(score) : null;
+    return { clipId: clip.id, beatIndex, score: Number(score.toFixed(2)), confidence: score >= .5 ? "alta" : score >= .22 ? "media" : "baja", sequenceOffset: beatIndex === null ? 0 : sequenceOffset(clip.transcript, beats[beatIndex].text) };
   });
   const indexed = matches.filter((match) => match.beatIndex !== null);
   const suggestedClipIds = [...clips].sort((a, b) => {
     const left = matches.find((match) => match.clipId === a.id)!;
     const right = matches.find((match) => match.clipId === b.id)!;
-    return (left.beatIndex ?? 999) - (right.beatIndex ?? 999);
+    return (left.beatIndex ?? 999) - (right.beatIndex ?? 999) || left.sequenceOffset - right.sequenceOffset;
   }).map((clip) => clip.id);
   const used = new Set(indexed.map((match) => match.beatIndex));
   const missingBeats = beats.filter((beat) => !used.has(beat.index));
   const repeatedBeats = [...used].filter((index) => indexed.filter((match) => match.beatIndex === index).length > 1);
+  const duplicateSpeech = repeatedBeats.some((index) => {
+    const spoken = matches.filter((match) => match.beatIndex === index).map((match) => normalize(clips.find((clip) => clip.id === match.clipId)?.transcript || ""));
+    return new Set(spoken).size !== spoken.length;
+  });
   const missingShots: ResourceSuggestion[] = missingBeats.map((beat) => ({
     id: `${beat.index}-missing-shot`, beatIndex: beat.index, kind: "apoyo",
     title: `Falta cubrir la parte ${beat.index + 1}`,
@@ -94,7 +121,7 @@ export function planFromScript(script: string, clips: EditorialClip[]) {
   const resources = [...missingShots, ...beats.flatMap(resourceFor)].slice(0, 24);
   return {
     beats, matches, suggestedClipIds, missingBeats, repeatedBeats, resources,
-    reliableOrder: beats.length >= 2 && indexed.length >= 2 && indexed.length === clips.length && repeatedBeats.length === 0 && indexed.every((match) => match.confidence !== "baja"),
+    reliableOrder: beats.length >= 2 && indexed.length >= 2 && indexed.length === clips.length && !duplicateSpeech && indexed.every((match) => match.confidence !== "baja"),
     transcriptCoverage: clips.length ? clips.filter((clip) => clip.transcript.trim()).length / clips.length : 0,
   };
 }
