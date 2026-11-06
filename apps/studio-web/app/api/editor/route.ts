@@ -81,7 +81,6 @@ export async function POST(request: Request) {
     if (session.error) throw session.error;
     if (!session.data) return Response.json({ error: "No encontramos esa producción." }, { status: 404 });
     if (String(session.data.title || "").length > 160 || String(session.data.script || "").length > 6_000) return Response.json({ error: "Acorta el título o el libreto de esta producción antes de editarla." }, { status: 400 });
-    if (!String(session.data.script || "").trim()) return Response.json({ error: "Sube o pega el libreto completo antes de preparar la edición." }, { status: 400 });
     const [scenes, takes] = await Promise.all([
       supabase.from("kiko_scenes").select("*").eq("session_id", sessionId).eq("owner_id", user.userId).order("position"),
       supabase.from("kiko_takes").select("*").eq("session_id", sessionId).eq("owner_id", user.userId).eq("status", "approved"),
@@ -122,7 +121,7 @@ export async function POST(request: Request) {
     if (ordered.reduce((total, item) => total + ((item.edit?.trimEndSeconds ?? Number(item.take?.duration_ms || 0) / 1000) - (item.edit?.trimStartSeconds ?? 0)) / (item.edit?.playbackSpeed ?? 1), 0) > 120) return Response.json({ error: "Este render cloud admite hasta 2 minutos de video final por edición." }, { status: 400 });
     if (ordered.some((item) => String(item.edit?.transcript ?? item.scene.script ?? "").length > 1_000) || ordered.reduce((total, item) => total + String(item.edit?.transcript ?? item.scene.script ?? "").length, 0) > 5_000) return Response.json({ error: "Acorta el texto hablado: hasta 1.000 caracteres por escena y 5.000 en total." }, { status: 400 });
     const normalizedOptions = {
-      captions: options.captions !== false,
+      captions: options.captions === true,
       deadAir: options.deadAir !== false,
       transitions: options.transitions !== false,
       soundEffects: options.soundEffects !== false,

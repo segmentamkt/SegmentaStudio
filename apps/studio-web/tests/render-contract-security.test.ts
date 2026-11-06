@@ -215,14 +215,20 @@ test("keeps timed subtitles and rejects timestamps beyond the approved take", ()
   assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /final de un subtítulo/);
 });
 
-test("requires the saved script and invalidates an older plan when it changes", () => {
+test("allows an optional script and invalidates an older plan when it changes", () => {
   const input = fixture();
   input.session.script = "Nuevo libreto";
   assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /libreto cambió/);
   input.raw.session.script = "Nuevo libreto";
   assert.equal(normalizeRenderContract(input.raw, input.session, input.scenes, input.takes).session.script, "Nuevo libreto");
   input.session.script = "";
-  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /libreto completo/);
+  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /libreto cambió/);
+  input.raw.session.script = "";
+  input.raw.captions.enabled = false;
+  input.raw.clips.forEach((clip) => { clip.transcript = ""; });
+  const withoutScript = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.equal(withoutScript.session.script, "");
+  assert.equal(withoutScript.captions.enabled, false);
 });
 
 test("only accepts the supported silence sensitivity levels", () => {

@@ -7,14 +7,14 @@ Editor de video vertical para [studio.segmenta.online](https://studio.segmenta.o
 - Grabación desde cámara, teleprompter e importación de varios videos con revisión toma por toma.
 - Portafolios, proyectos, escenas, aprobaciones y bloopers guardados en Supabase.
 - Editor con ocho estilos, 14 skills configurables por portafolio y un manifiesto que muestra qué se ejecuta.
-- Libreto completo guardado por proyecto y obligatorio antes de preparar una exportación. El estudio compara sus partes con el texto hablado de cada toma, propone el orden cuando la coincidencia es suficiente y señala huecos o repeticiones.
+- Carga directa de uno o varios videos sin rellenar nombre, libreto ni plan. El proyecto se crea automáticamente y cada archivo queda disponible en el editor. El libreto se puede añadir después para proponer el orden y señalar huecos o repeticiones.
 - Recomendaciones de planos de apoyo y rótulos basadas en el libreto. Los rótulos sugeridos se pueden aplicar a una toma y aparecen en el MP4; los planos que falten se deben grabar o subir.
 - Render MP4 vertical con recorte de silencios, encuadre, color, transiciones, títulos y subtítulos. Se pueden importar transcripciones SRT o VTT con tiempos por toma; el render conserva esos tiempos tras recortes y eliminación de silencios.
 - Efectos de sonido originales generados con FFmpeg para cortes de escena e internos; el volumen y estilo son configurables.
 - Línea de tiempo manual con división y duplicación de tomas, orden, recorte, inclusión/exclusión, deshacer y rehacer. Cada segmento puede tener velocidad de 0,5× a 2×, volumen de voz y ajustes de brillo, contraste y saturación propios; estos valores llegan al MP4, incluidos los tiempos de subtítulos tras cambiar la velocidad.
 - Catálogo consultable de las 244 herramientas de la guía de CapCut enviada por el propietario, organizado en 15 categorías y con estado **Disponible**, **Parcial** o **En desarrollo**. El catálogo no activa funciones que todavía no tienen motor.
 - Pingüino guía en la esquina inferior derecha: ayuda contextual según la etapa del proyecto, preguntas frecuentes y botones que llevan a la acción. Funciona sin claves API y distingue las herramientas disponibles de las pendientes.
-- Ruta visual de cuatro pasos en el editor: tomas aprobadas, libreto y texto, edición preparada y MP4 listo.
+- Ruta visual de cuatro referencias en el editor: tomas, detalles opcionales, edición preparada y MP4 listo. Se puede editar y exportar sin libreto ni subtítulos; los subtítulos sincronizados se activan cuando existen tiempos reales.
 - Verificación técnica de video y audio del archivo **después** de subirlo a Storage.
 
 El render actual admite hasta 12 segmentos, 120 segundos de material fuente aprobado y 120 segundos de salida. La función de Vercel tiene un [límite de ejecución](https://vercel.com/docs/functions/limitations); un video largo necesita un trabajador de procesamiento independiente.

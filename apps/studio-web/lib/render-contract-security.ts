@@ -71,7 +71,6 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
   const rawSession = row(contract.session, "La producción del contrato");
   if (rawSession.id !== sessionId) throw new Error("El plan no pertenece a esta producción.");
   const currentScript = text(dbSession.script, "El libreto de la producción", 6_000, true);
-  if (!currentScript) throw new Error("Sube el libreto completo antes de renderizar.");
   if (rawSession.script !== currentScript) throw new Error("El libreto cambió. Vuelve a preparar la edición antes de renderizar.");
 
   const dbScenes = rowList(scenes, "Las escenas");

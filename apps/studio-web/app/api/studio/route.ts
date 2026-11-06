@@ -1,7 +1,7 @@
 import { createClient } from "../../../lib/supabase/server";
 import { getRequestUser, unauthorized } from "../../../lib/request-user";
 import { clean, toAccount, toEditJob, toPortfolio, toScene, toSession, toTake } from "../../../lib/studio-data";
-import { preproductionSchema } from "../../../lib/preproduction-plan";
+import { draftPreproductionPlan, preproductionSchema } from "../../../lib/preproduction-plan";
 
 const accents = ["violet", "cyan", "rose", "amber"];
 
@@ -66,9 +66,10 @@ export async function POST(request: Request) {
       return Response.json({ portfolio: toPortfolio(result.data) }, { status: 201 });
     }
     if (action === "create_session") {
-      const planResult = preproductionSchema.safeParse(payload.preproductionPlan);
-      if (!planResult.success) return Response.json({ error: "Revisa y aprueba el plan de edición antes de crear el proyecto." }, { status: 400 });
-      const plan = planResult.data;
+      const hasPlan = payload.preproductionPlan !== undefined && payload.preproductionPlan !== null;
+      const planResult = hasPlan ? preproductionSchema.safeParse(payload.preproductionPlan) : null;
+      if (planResult && !planResult.success) return Response.json({ error: "El plan de edición no tiene un formato válido." }, { status: 400 });
+      const plan = planResult?.data;
       const portfolioId = clean(payload.portfolioId);
       const owned = await supabase.from("kiko_portfolios").select("id").eq("id", portfolioId).eq("owner_id", user.userId).maybeSingle();
       if (!owned.data) return Response.json({ error: "Ese portafolio no está disponible." }, { status: 404 });
@@ -81,9 +82,10 @@ export async function POST(request: Request) {
       if (script.length > 6_000) return Response.json({ error: "El libreto admite hasta 6.000 caracteres." }, { status: 400 });
       // Uploaded clips may arrive in any order: the complete script is a reference,
       // never a guessed transcript assigned to a file by its upload position.
-      const sceneScripts = sceneCount ? Array.from({ length: sceneCount }, () => "") : plan.scenes.map((scene) => scene.spoken || "Idea por grabar");
+      const draftedScenes = plan?.scenes || (script ? draftPreproductionPlan(script).scenes : [{ title: "Escena 1", spoken: "" }]);
+      const sceneScripts = sceneCount ? Array.from({ length: sceneCount }, () => "") : draftedScenes.map((scene) => scene.spoken || "");
       if (sceneScripts.some((item) => item.length > 1_000)) return Response.json({ error: "Cada escena admite hasta 1.000 caracteres de libreto." }, { status: 400 });
-      const sceneTitles = sceneCount && Array.isArray(payload.sceneTitles) ? payload.sceneTitles : plan.scenes.map((scene) => scene.title);
+      const sceneTitles = sceneCount && Array.isArray(payload.sceneTitles) ? payload.sceneTitles : draftedScenes.map((scene) => scene.title);
       const id = crypto.randomUUID();
       const sessionResult = await supabase.from("kiko_recording_sessions").insert({ id, owner_id: user.userId, portfolio_id: portfolioId, title, script, status: "recording" }).select().single();
       if (sessionResult.error) throw sessionResult.error;
@@ -93,14 +95,16 @@ export async function POST(request: Request) {
         await supabase.from("kiko_recording_sessions").delete().eq("id", id).eq("owner_id", user.userId);
         throw scenesResult.error;
       }
-      const planSaved = await supabase.from("kiko_edit_jobs").insert({
-        id: crypto.randomUUID(), owner_id: user.userId, session_id: id, style: plan.style,
-        objective: plan.description, status: "preproduction", stage: "Dirección aprobada antes de grabar", progress: 0,
-        contract: plan,
-      });
-      if (planSaved.error) {
-        await supabase.from("kiko_recording_sessions").delete().eq("id", id).eq("owner_id", user.userId);
-        throw planSaved.error;
+      if (plan) {
+        const planSaved = await supabase.from("kiko_edit_jobs").insert({
+          id: crypto.randomUUID(), owner_id: user.userId, session_id: id, style: plan.style,
+          objective: plan.description, status: "preproduction", stage: "Dirección aprobada antes de grabar", progress: 0,
+          contract: plan,
+        });
+        if (planSaved.error) {
+          await supabase.from("kiko_recording_sessions").delete().eq("id", id).eq("owner_id", user.userId);
+          throw planSaved.error;
+        }
       }
       return Response.json({ session: toSession(sessionResult.data), scenes: (scenesResult.data || []).map(toScene) }, { status: 201 });
     }
@@ -129,7 +133,7 @@ export async function POST(request: Request) {
     if (action === "update_session_script") {
       const sessionId = clean(payload.sessionId);
       const script = clean(payload.script);
-      if (!script || script.length > 6_000) return Response.json({ error: "Sube o escribe un libreto de hasta 6.000 caracteres." }, { status: 400 });
+      if (script.length > 6_000) return Response.json({ error: "El libreto admite hasta 6.000 caracteres." }, { status: 400 });
       const result = await supabase.from("kiko_recording_sessions")
         .update({ script, updated_at: new Date().toISOString() })
         .eq("id", sessionId).eq("owner_id", user.userId).select().maybeSingle();

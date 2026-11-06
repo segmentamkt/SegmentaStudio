@@ -154,8 +154,7 @@ export default function Home() {
   const [scrollSpeed, setScrollSpeed] = useState(2);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [importQueue, setImportQueue] = useState<File[]>([]);
-  const [pendingUploadFiles, setPendingUploadFiles] = useState<File[]>([]);
+  const [batchUpload, setBatchUpload] = useState<{ current: number; total: number; file: string } | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -267,7 +266,6 @@ export default function Home() {
 
   const startCamera = useCallback(async (nextFacing = facing) => {
     setError("");
-    setImportQueue([]);
     stopCamera();
     if (!navigator.mediaDevices?.getUserMedia) {
       setError("Este navegador no permite usar la cámara. Abre la aplicación desde Safari o Chrome actualizado.");
@@ -351,18 +349,17 @@ export default function Home() {
     return () => clearInterval(timer);
   }, [recording, teleprompter, scrollSpeed]);
 
-  const uploadTake = async (status: "approved" | "blooper") => {
-    if (!recordedBlob || !activeScene || !activeSession) throw new Error("No hay una toma lista para subir.");
+  const uploadBlobToScene = async (blob: Blob, sessionId: string, sceneId: string, durationMs: number, status: "approved" | "blooper", onProgress: (percent: number) => void) => {
     const supabase = createSupabaseClient();
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) throw new Error("Tu sesión venció. Vuelve a iniciar sesión.");
     const projectUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
     const projectId = new URL(projectUrl).hostname.split(".")[0];
-    const mimeType = videoMimeType(recordedBlob);
+    const mimeType = videoMimeType(blob);
     const extension = mimeType.includes("quicktime") ? "mov" : mimeType.includes("webm") ? "webm" : "mp4";
-    const objectKey = `${session.user.id}/${activeSession.id}/${activeScene.id}/${crypto.randomUUID()}.${extension}`;
+    const objectKey = `${session.user.id}/${sessionId}/${sceneId}/${crypto.randomUUID()}.${extension}`;
     await new Promise<void>((resolve, reject) => {
-      const upload = new Upload(recordedBlob, {
+      const upload = new Upload(blob, {
         endpoint: `https://${projectId}.storage.supabase.co/storage/v1/upload/resumable`,
         retryDelays: [0, 3000, 5000, 10000, 20000],
         headers: { authorization: `Bearer ${session.access_token}`, apikey: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY! },
@@ -371,7 +368,7 @@ export default function Home() {
         chunkSize: 6 * 1024 * 1024,
         metadata: { bucketName: "kiko-videos", objectName: objectKey, contentType: mimeType, cacheControl: "3600" },
         onError: (reason) => reject(reason),
-        onProgress: (uploaded, total) => setUploadProgress(Math.max(1, Math.round((uploaded / total) * 96))),
+        onProgress: (uploaded, total) => onProgress(Math.max(1, Math.round((uploaded / total) * 96))),
         onSuccess: () => resolve(),
       });
       upload.findPreviousUploads().then((previous) => {
@@ -379,76 +376,90 @@ export default function Home() {
         upload.start();
       }).catch(reject);
     });
-    setUploadProgress(98);
-    await api("/api/takes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ objectKey, sceneId: activeScene.id, sessionId: activeSession.id, durationMs: elapsed, status, bytes: recordedBlob.size, mimeType }) });
-    setUploadProgress(100);
+    onProgress(98);
+    await api("/api/takes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ objectKey, sceneId, sessionId, durationMs, status, bytes: blob.size, mimeType }) });
+    onProgress(100);
   };
 
-  const importVideo = (file?: File) => {
-    if (!file) return;
-    if (!isVideoFile(file)) return setError("Selecciona un archivo de video MP4, MOV o WebM.");
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    stopCamera();
-    setRecordedBlob(file);
-    const url = URL.createObjectURL(file);
-    setPreviewUrl(url);
-    setElapsed(0);
-    setUploadProgress(0);
-    setError("");
-    const probe = document.createElement("video");
-    probe.preload = "metadata";
-    probe.onloadedmetadata = () => {
-      if (Number.isFinite(probe.duration)) setElapsed(Math.round(probe.duration * 1000));
-      probe.removeAttribute("src");
-      probe.load();
-    };
-    probe.src = url;
+  const uploadTake = async (status: "approved" | "blooper") => {
+    if (!recordedBlob || !activeScene || !activeSession) throw new Error("No hay una toma lista para subir.");
+    await uploadBlobToScene(recordedBlob, activeSession.id, activeScene.id, elapsed, status, setUploadProgress);
   };
 
-  const importVideos = (files: FileList | null) => {
-    const selected = Array.from(files || []).filter(isVideoFile);
-    if (!selected.length) return setError("Selecciona al menos un archivo de video.");
-    if (selected.length > 12) return setError("Puedes subir hasta 12 videos por proyecto.");
-    setImportQueue(selected.slice(1));
-    importVideo(selected[0]);
-  };
-
-  const beginNewUpload = (files: FileList | null) => {
+  const beginNewUpload = async (files: FileList | null) => {
     const selected = Array.from(files || []);
     if (!selected.length) return;
     if (selected.length > 12) return setError("Puedes subir hasta 12 videos por proyecto.");
     if (selected.some((file) => !isVideoFile(file))) return setError("Selecciona solo videos MP4, MOV o WebM.");
-    setPendingUploadFiles(selected);
-    setTitle(selected.length === 1 ? fileTitle(selected[0]) : `Edición de ${selected.length} videos`);
-    setScript("");
-    setError("");
-    setShowNewSession(true);
+    if (!portfolioId) return setError("No pudimos identificar el portafolio. Recarga el estudio e inténtalo otra vez.");
+    setUploading(true); setUploadProgress(0); setError("");
+    let current = 0;
+    try {
+      const result = await api<{ session: { id: string }; scenes: Array<{ id: string }> }>("/api/studio", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "create_session", portfolioId, title: selected.length === 1 ? fileTitle(selected[0]) : `Edición de ${selected.length} videos`, script: "", sceneCount: selected.length, sceneTitles: selected.map(fileTitle) }),
+      });
+      setSessionId(result.session.id); setView("library");
+      await refresh();
+      for (const [index, file] of selected.entries()) {
+        current = index + 1;
+        setBatchUpload({ current, total: selected.length, file: file.name });
+        const url = URL.createObjectURL(file);
+        let durationMs = 0;
+        try { durationMs = Math.round((await videoDuration(url)) * 1000); }
+        catch { /* The video remains uploadable even when this browser cannot read its duration. */ }
+        finally { URL.revokeObjectURL(url); }
+        await uploadBlobToScene(file, result.session.id, result.scenes[index].id, durationMs, "approved", setUploadProgress);
+        await refresh();
+        setUploadProgress(0);
+      }
+      await api("/api/studio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "complete_session", sessionId: result.session.id }) });
+      await refresh();
+      setEditorSessionId(result.session.id); setEditorResultId(""); setView("edit");
+    } catch (reason) {
+      setError(`La carga se detuvo en el video ${current || 1}. ${reason instanceof Error ? reason.message : "Inténtalo nuevamente."} Los videos anteriores permanecen en el proyecto.`);
+    } finally { setBatchUpload(null); setUploading(false); setUploadProgress(0); }
   };
 
-  const importIntoCurrentSession = (files: FileList | null) => {
+  const importIntoCurrentSession = async (files: FileList | null) => {
     const selected = Array.from(files || []);
     if (!selected.length) return;
-    const remainingScenes = Math.max(0, sessionScenes.length - sceneIndex);
-    if (selected.length > remainingScenes) {
-      setError(`Quedan ${remainingScenes} escenas en esta producción. Para subir ${selected.length} videos, usa “Subir videos” y crea un proyecto nuevo.`);
-      return;
-    }
-    importVideos(files);
+    if (!activeSession) return setError("Selecciona un proyecto antes de añadir videos.");
+    if (selected.some((file) => !isVideoFile(file))) return setError("Selecciona solo videos MP4, MOV o WebM.");
+    const openScenes = sessionScenes.filter((scene) => !scene.selectedTakeId);
+    if (selected.length > openScenes.length + 12 - sessionScenes.length) return setError("Este proyecto admite hasta 12 videos. Usa «Subir videos» para crear otro proyecto.");
+    setUploading(true); setUploadProgress(0); setError("");
+    let current = 0;
+    try {
+      for (const file of selected) {
+        current += 1;
+        setBatchUpload({ current, total: selected.length, file: file.name });
+        const scene = openScenes.shift() || (await api<{ scene: { id: string } }>("/api/studio", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "add_scene", sessionId: activeSession.id, title: fileTitle(file) }),
+        })).scene;
+        const url = URL.createObjectURL(file);
+        let durationMs = 0;
+        try { durationMs = Math.round((await videoDuration(url)) * 1000); }
+        catch { /* Import remains available even if metadata needs later inspection. */ }
+        finally { URL.revokeObjectURL(url); }
+        await uploadBlobToScene(file, activeSession.id, scene.id, durationMs, "approved", setUploadProgress);
+        await refresh();
+        setUploadProgress(0);
+      }
+      setEditorSessionId(activeSession.id); setEditorResultId(""); setView("edit");
+    } catch (reason) {
+      setError(`La carga se detuvo en el video ${current || 1}. ${reason instanceof Error ? reason.message : "Inténtalo nuevamente."} Los videos anteriores permanecen en el proyecto.`);
+    } finally { setBatchUpload(null); setUploading(false); setUploadProgress(0); }
   };
 
   const classifyRecording = async (status: "approved" | "blooper") => {
     setUploading(true); setUploadProgress(1); setError("");
     try {
-      const wasImported = recordedBlob instanceof File;
       await uploadTake(status);
       await refresh();
       clearRecording();
-      if ((status === "approved" || wasImported) && sceneIndex < sessionScenes.length - 1) setSceneIndex((value) => value + 1);
-      if (importQueue.length) {
-        const [next, ...remaining] = importQueue;
-        setImportQueue(remaining);
-        importVideo(next);
-      }
+      if (status === "approved" && sceneIndex < sessionScenes.length - 1) setSceneIndex((value) => value + 1);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "No se pudo guardar la toma.");
     } finally { setUploading(false); }
@@ -456,28 +467,16 @@ export default function Home() {
 
   const discardPreview = () => {
     clearRecording();
-    if (importQueue.length) {
-      const [next, ...remaining] = importQueue;
-      setImportQueue(remaining);
-      if (sceneIndex < sessionScenes.length - 1) setSceneIndex((value) => value + 1);
-      importVideo(next);
-    }
   };
 
-  const createSession = async (preproductionPlan: PreproductionPlan) => {
+  const createSession = async (preproductionPlan?: PreproductionPlan) => {
     if (!portfolioId) return setError("Crea o selecciona un portafolio antes de subir videos.");
     setSaving(true); setError("");
     try {
-      const files = pendingUploadFiles;
-      const result = await api<{ session: { id: string } }>("/api/studio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "create_session", portfolioId, title, script, preproductionPlan, ...(files.length ? { sceneCount: files.length, sceneTitles: files.map(fileTitle) } : {}) }) });
+      const result = await api<{ session: { id: string } }>("/api/studio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "create_session", portfolioId, title, script, ...(preproductionPlan ? { preproductionPlan } : {}) }) });
       setSessionId(result.session.id); setTitle(""); setScript(""); setShowNewSession(false); setPlanStage(false); setSceneIndex(0);
       await refresh();
-      if (files.length) {
-        setPendingUploadFiles([]);
-        setView("record");
-        setImportQueue(files.slice(1));
-        importVideo(files[0]);
-      }
+      setView("record");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo crear la grabación."); }
     finally { setSaving(false); }
   };
@@ -494,8 +493,6 @@ export default function Home() {
   const closeSessionDialog = () => {
     setShowNewSession(false);
     setPlanStage(false);
-    if (pendingUploadFiles.length) { setTitle(""); setScript(""); }
-    setPendingUploadFiles([]);
   };
 
   const saveExistingPlan = async (preproductionPlan: PreproductionPlan) => {
@@ -529,12 +526,6 @@ export default function Home() {
     catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo eliminar la grabación."); }
   };
 
-  const completeSession = async () => {
-    if (!activeSession) return;
-    try { await api("/api/studio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "complete_session", sessionId: activeSession.id }) }); await refresh(); setView("library"); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo cerrar la grabación."); }
-  };
-
   const addScene = async () => {
     if (!activeSession) return;
     setAddingScene(true); setError("");
@@ -556,8 +547,8 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-[#070910] pb-24 text-white">
-      <input ref={newUploadInputRef} type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.mov,.m4v,.webm" multiple className="hidden" aria-label="Seleccionar videos para un proyecto nuevo" onChange={(event) => { beginNewUpload(event.currentTarget.files); event.currentTarget.value = ""; }} />
-      <input ref={fileInputRef} type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.mov,.m4v,.webm" multiple className="hidden" aria-label="Seleccionar videos para esta producción" onChange={(event) => { importIntoCurrentSession(event.currentTarget.files); event.currentTarget.value = ""; }} />
+      <input ref={newUploadInputRef} type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.mov,.m4v,.webm" multiple className="hidden" aria-label="Seleccionar videos para un proyecto nuevo" onChange={(event) => { void beginNewUpload(event.currentTarget.files); event.currentTarget.value = ""; }} />
+      <input ref={fileInputRef} type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.mov,.m4v,.webm" multiple className="hidden" aria-label="Seleccionar videos para esta producción" onChange={(event) => { void importIntoCurrentSession(event.currentTarget.files); event.currentTarget.value = ""; }} />
       <header className="sticky top-0 z-40 border-b border-white/8 bg-[#070910]/88 backdrop-blur-xl">
         <div className="mx-auto flex max-w-[1500px] flex-wrap items-center gap-2 px-4 py-3 sm:flex-nowrap sm:gap-3 sm:px-7">
           <div className="flex w-full min-w-0 items-center gap-3 sm:w-auto">
@@ -602,11 +593,11 @@ export default function Home() {
               <span className="grid h-11 w-11 place-items-center rounded-2xl bg-violet-400/12 text-violet-200"><Video size={20} /></span>
               <p className="mt-5 text-[9px] font-bold uppercase tracking-[.2em] text-violet-300">Tu primer rodaje</p>
               <h2 className="mt-1 text-2xl font-semibold leading-tight">Graba en orden, sin guardar errores</h2>
-              <p className="mt-2 max-w-lg text-sm leading-6 text-zinc-500">Pega el libreto, graba cada escena y decide al instante si se aprueba, se repite o va a bloopers.</p>
+              <p className="mt-2 max-w-lg text-sm leading-6 text-zinc-500">Sube videos o graba con la cámara. El libreto y el plan de edición puedes añadirlos después.</p>
               <div className="mt-5 grid grid-cols-3 gap-2 text-center text-[10px] text-zinc-400 sm:max-w-lg sm:text-xs">
-                <span className="rounded-xl border border-white/8 bg-black/20 px-2 py-3"><b className="mb-1 block text-violet-300">1</b>Libreto</span>
-                <span className="rounded-xl border border-white/8 bg-black/20 px-2 py-3"><b className="mb-1 block text-violet-300">2</b>Escenas</span>
-                <span className="rounded-xl border border-white/8 bg-black/20 px-2 py-3"><b className="mb-1 block text-violet-300">3</b>Aprobar</span>
+                <span className="rounded-xl border border-white/8 bg-black/20 px-2 py-3"><b className="mb-1 block text-violet-300">1</b>Subir</span>
+                <span className="rounded-xl border border-white/8 bg-black/20 px-2 py-3"><b className="mb-1 block text-violet-300">2</b>Editar</span>
+                <span className="rounded-xl border border-white/8 bg-black/20 px-2 py-3"><b className="mb-1 block text-violet-300">3</b>Exportar</span>
               </div>
               <button onClick={() => setShowNewSession(true)} className="mt-5 flex w-full items-center justify-center gap-2 rounded-2xl bg-violet-500 px-5 py-3.5 text-sm font-semibold sm:w-auto"><Plus size={17} />Crear mi primera grabación</button>
             </div>
@@ -626,7 +617,7 @@ export default function Home() {
 
             <section className="min-w-0">
               {activeSession && activeScene ? <>
-                <div className="mx-auto mb-3 flex max-w-[480px] items-center justify-between gap-3 rounded-2xl border border-white/8 bg-white/[.03] px-3 py-2.5"><span className="min-w-0 truncate text-xs text-zinc-400">{activeScene.title}</span><button onClick={() => fileInputRef.current?.click()} disabled={recording || uploading || Boolean(previewUrl)} className="flex shrink-0 items-center gap-2 rounded-xl border border-violet-400/25 bg-violet-400/10 px-3 py-2 text-xs font-medium text-violet-100 disabled:opacity-40"><UploadCloud size={15} />Subir a esta escena</button></div>
+                <div className="mx-auto mb-3 flex max-w-[480px] items-center justify-between gap-3 rounded-2xl border border-white/8 bg-white/[.03] px-3 py-2.5"><span className="min-w-0 truncate text-xs text-zinc-400">{activeScene.title}</span><button onClick={() => fileInputRef.current?.click()} disabled={recording || uploading || Boolean(previewUrl)} className="flex shrink-0 items-center gap-2 rounded-xl border border-violet-400/25 bg-violet-400/10 px-3 py-2 text-xs font-medium text-violet-100 disabled:opacity-40"><UploadCloud size={15} />Añadir videos</button></div>
                 <div className="relative mx-auto aspect-[9/16] max-h-[76vh] w-full max-w-[480px] overflow-hidden rounded-[2rem] border border-white/10 bg-black shadow-2xl">
                   {previewUrl ? <video src={previewUrl} controls playsInline className="h-full w-full object-contain" /> : <video ref={videoRef} muted playsInline className={`h-full w-full object-cover ${facing === "user" ? "-scale-x-100" : ""}`} />}
                   {!cameraReady && !previewUrl && <div className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_50%_25%,rgba(124,58,237,.22),transparent_55%)]"><div className="max-w-sm px-7 text-center"><span className="mx-auto grid h-16 w-16 place-items-center rounded-full border border-white/10 bg-white/5"><Camera size={28} className="text-violet-200" /></span><h2 className="mt-5 text-xl font-semibold">Graba o importa tu video</h2><p className="mt-2 text-sm leading-6 text-zinc-500">Puedes grabar desde el celular o subir el video que ya tienes. La carga se reanuda si tu conexión se interrumpe.</p><div className="mt-6 grid gap-2 sm:grid-cols-2"><button onClick={() => startCamera()} className="rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-black">Activar cámara</button><button onClick={() => fileInputRef.current?.click()} className="rounded-2xl border border-violet-300/30 bg-violet-400/10 px-4 py-3 text-sm font-semibold text-violet-100"><UploadCloud className="mr-2 inline" size={16} />Subir video</button></div></div></div>}
@@ -635,14 +626,14 @@ export default function Home() {
                   {countdown > 0 && <div className="absolute inset-0 grid place-items-center bg-black/30 text-8xl font-black">{countdown}</div>}
                   {uploading && <div className="absolute inset-0 grid place-items-center bg-black/80 p-8 text-center"><div className="w-full max-w-xs"><UploadCloud className="mx-auto text-violet-300" size={32} /><p className="mt-4 font-medium">Guardando la toma en la nube</p><div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-gradient-to-r from-violet-500 to-cyan-400 transition-all" style={{ width: `${uploadProgress}%` }} /></div><p className="mt-2 text-xs text-zinc-500">{uploadProgress}% · no cierres esta pantalla</p></div></div>}
                   {cameraReady && !previewUrl && <div className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-6 bg-gradient-to-t from-black via-black/65 to-transparent px-5 pb-7 pt-16"><button onClick={() => setTeleprompter((value) => !value)} className={`grid h-11 w-11 place-items-center rounded-full border ${teleprompter ? "border-violet-300 bg-violet-400/20" : "border-white/15 bg-black/30"}`}><Sparkles size={17} /></button><button onClick={recording ? stopRecording : beginRecording} className={`grid h-20 w-20 place-items-center rounded-full border-4 border-white shadow-xl ${recording ? "bg-red-500" : "bg-white"}`}>{recording ? <Square size={25} fill="white" /> : <Circle size={54} className="text-red-500" fill="currentColor" />}</button><span className="grid h-11 w-11 place-items-center rounded-full border border-white/15 bg-black/30"><Mic size={17} /></span></div>}
-                  {previewUrl && !uploading && <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/80 to-transparent p-5 pt-20"><p className="mb-4 text-center text-sm font-medium">¿Qué hacemos con esta toma?</p>{importQueue.length > 0 && <p className="mb-3 text-center text-xs text-violet-200">Quedan {importQueue.length} videos por revisar.</p>}<div className="grid grid-cols-3 gap-2"><button onClick={discardPreview} className="rounded-xl border border-white/15 bg-black/50 px-2 py-3 text-xs"><RotateCcw size={16} className="mx-auto mb-1" />{recordedBlob instanceof File ? "Descartar" : "Repetir"}</button><button onClick={() => classifyRecording("blooper")} className="rounded-xl border border-amber-300/25 bg-amber-300/10 px-2 py-3 text-xs text-amber-200"><Aperture size={16} className="mx-auto mb-1" />Blooper</button><button onClick={() => classifyRecording("approved")} className="rounded-xl bg-emerald-400 px-2 py-3 text-xs font-semibold text-black"><Check size={16} className="mx-auto mb-1" />Aprobar</button></div></div>}
+                  {previewUrl && !uploading && <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/80 to-transparent p-5 pt-20"><p className="mb-4 text-center text-sm font-medium">¿Qué hacemos con esta toma?</p><div className="grid grid-cols-3 gap-2"><button onClick={discardPreview} className="rounded-xl border border-white/15 bg-black/50 px-2 py-3 text-xs"><RotateCcw size={16} className="mx-auto mb-1" />Repetir</button><button onClick={() => classifyRecording("blooper")} className="rounded-xl border border-amber-300/25 bg-amber-300/10 px-2 py-3 text-xs text-amber-200"><Aperture size={16} className="mx-auto mb-1" />Blooper</button><button onClick={() => classifyRecording("approved")} className="rounded-xl bg-emerald-400 px-2 py-3 text-xs font-semibold text-black"><Check size={16} className="mx-auto mb-1" />Aprobar</button></div></div>}
                 </div>
                 <div className="mx-auto mt-4 flex max-w-[480px] items-center justify-between gap-4 rounded-2xl border border-white/8 bg-white/[.03] p-3"><label className="text-xs text-zinc-500">Velocidad del libreto</label><input type="range" min="1" max="6" value={scrollSpeed} onChange={(event) => setScrollSpeed(Number(event.target.value))} className="accent-violet-500" /><span className="text-xs text-zinc-500">{scrollSpeed}x</span></div>
               </> : <div className="grid min-h-[320px] place-items-center rounded-3xl border border-dashed border-white/10 bg-white/[.02] p-6 text-center sm:min-h-[560px] sm:p-8"><div><FolderOpen className="mx-auto text-zinc-700" size={36} /><h2 className="mt-4 text-lg font-semibold sm:mt-5 sm:text-xl">Elige una grabación</h2><p className="mt-2 max-w-sm text-sm leading-6 text-zinc-500">Selecciona una producción para continuar con sus escenas.</p></div></div>}
             </section>
 
             <aside className="space-y-4">
-              {activeSession && <><section className="rounded-2xl border border-violet-400/20 bg-violet-400/5 p-4"><p className="text-[10px] font-bold uppercase tracking-widest text-violet-300">Dirección antes de editar</p><p className="mt-2 line-clamp-3 text-xs leading-5 text-zinc-300">{String(data?.preproductionPlans?.find((item) => item.sessionId === activeSession.id)?.contract?.description || "Este proyecto aún no tiene un plan de edición previo.")}</p><button onClick={() => setEditingPlanSessionId(activeSession.id)} className="mt-3 rounded-lg border border-violet-400/30 px-3 py-2 text-xs text-violet-100">Revisar escenas, skills y sonido</button></section><section className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><div className="flex items-start justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Plan de rodaje</p><h2 className="mt-1 font-medium">{activeSession.title}</h2></div><button onClick={() => removeSession(activeSession.id)} className="text-zinc-600 hover:text-red-300"><Trash2 size={16} /></button></div><div className="mt-5 space-y-2">{sessionScenes.map((scene, index) => <button key={scene.id} onClick={() => { clearRecording(); setSceneIndex(index); }} className={`flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left ${activeScene?.id === scene.id ? "border-violet-400/30 bg-violet-400/10" : "border-white/6 bg-black/15"}`}><span className={`grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs ${scene.selectedTakeId ? "bg-emerald-400 text-black" : "bg-white/6 text-zinc-500"}`}>{scene.selectedTakeId ? <Check size={14} /> : index + 1}</span><span className="min-w-0"><strong className="block text-xs font-medium">{scene.title}</strong><small className="block truncate text-zinc-600">{scene.script}</small></span><ChevronRight className="ml-auto shrink-0 text-zinc-700" size={14} /></button>)}</div><button onClick={addScene} disabled={addingScene || sessionScenes.length >= 12 || uploading || Boolean(previewUrl)} className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-violet-400/25 px-3 py-2.5 text-xs text-violet-200 disabled:opacity-40">{addingScene ? <LoaderCircle size={14} className="animate-spin" /> : <Plus size={14} />}Añadir escena para otro video</button><SceneTranscriptEditor key={activeScene.id} sceneId={activeScene.id} initialScript={String(activeScene.script || "")} onSave={saveSceneScript} /><div className="mt-5 flex items-center justify-between text-xs text-zinc-500"><span>{approvedCount} de {sessionScenes.length} aprobadas</span><span>{Math.round((approvedCount / Math.max(1, sessionScenes.length)) * 100)}%</span></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/8"><div className="h-full bg-emerald-400 transition-all" style={{ width: `${(approvedCount / Math.max(1, sessionScenes.length)) * 100}%` }} /></div><button onClick={completeSession} disabled={approvedCount !== sessionScenes.length} className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-semibold text-black disabled:opacity-30"><CheckCircle2 size={16} />Listo para editar</button></section><section className="rounded-3xl border border-cyan-400/15 bg-cyan-400/5 p-5"><p className="flex items-center gap-2 text-sm font-medium text-cyan-200"><Cloud size={16} />Flujo conectado</p><p className="mt-2 text-xs leading-5 text-zinc-500">Las tomas aprobadas conservan el orden del libreto. Bloopers queda separado y no entra al montaje principal.</p></section></>}
+              {activeSession && <><section className="rounded-2xl border border-violet-400/20 bg-violet-400/5 p-4"><p className="text-[10px] font-bold uppercase tracking-widest text-violet-300">Dirección antes de editar</p><p className="mt-2 line-clamp-3 text-xs leading-5 text-zinc-300">{String(data?.preproductionPlans?.find((item) => item.sessionId === activeSession.id)?.contract?.description || "Este proyecto aún no tiene un plan de edición previo.")}</p><button onClick={() => setEditingPlanSessionId(activeSession.id)} className="mt-3 rounded-lg border border-violet-400/30 px-3 py-2 text-xs text-violet-100">Revisar escenas, skills y sonido</button></section><section className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><div className="flex items-start justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Plan de rodaje</p><h2 className="mt-1 font-medium">{activeSession.title}</h2></div><button onClick={() => removeSession(activeSession.id)} className="text-zinc-600 hover:text-red-300"><Trash2 size={16} /></button></div><div className="mt-5 space-y-2">{sessionScenes.map((scene, index) => <button key={scene.id} onClick={() => { clearRecording(); setSceneIndex(index); }} className={`flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left ${activeScene?.id === scene.id ? "border-violet-400/30 bg-violet-400/10" : "border-white/6 bg-black/15"}`}><span className={`grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs ${scene.selectedTakeId ? "bg-emerald-400 text-black" : "bg-white/6 text-zinc-500"}`}>{scene.selectedTakeId ? <Check size={14} /> : index + 1}</span><span className="min-w-0"><strong className="block text-xs font-medium">{scene.title}</strong><small className="block truncate text-zinc-600">{scene.script}</small></span><ChevronRight className="ml-auto shrink-0 text-zinc-700" size={14} /></button>)}</div><button onClick={addScene} disabled={addingScene || sessionScenes.length >= 12 || uploading || Boolean(previewUrl)} className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-violet-400/25 px-3 py-2.5 text-xs text-violet-200 disabled:opacity-40">{addingScene ? <LoaderCircle size={14} className="animate-spin" /> : <Plus size={14} />}Añadir escena para otro video</button><SceneTranscriptEditor key={activeScene.id} sceneId={activeScene.id} initialScript={String(activeScene.script || "")} onSave={saveSceneScript} /><div className="mt-5 flex items-center justify-between text-xs text-zinc-500"><span>{approvedCount} de {sessionScenes.length} aprobadas</span><span>{Math.round((approvedCount / Math.max(1, sessionScenes.length)) * 100)}%</span></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/8"><div className="h-full bg-emerald-400 transition-all" style={{ width: `${(approvedCount / Math.max(1, sessionScenes.length)) * 100}%` }} /></div><button onClick={() => setView("edit")} className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-semibold text-black"><CheckCircle2 size={16} />Ir al editor</button></section><section className="rounded-3xl border border-cyan-400/15 bg-cyan-400/5 p-5"><p className="flex items-center gap-2 text-sm font-medium text-cyan-200"><Cloud size={16} />Flujo conectado</p><p className="mt-2 text-xs leading-5 text-zinc-500">Las tomas aprobadas conservan el orden del libreto. Bloopers queda separado y no entra al montaje principal.</p></section></>}
             </aside>
           </div>
         ) : (
@@ -658,7 +649,24 @@ export default function Home() {
 
       <PenguinGuide context={guideContext} onAction={guideAction} />
 
-      {showNewSession && <div className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4 backdrop-blur-sm"><div role="dialog" aria-modal="true" aria-labelledby="new-session-title" className="max-h-[90dvh] w-full max-w-3xl overflow-y-auto rounded-3xl border border-white/10 bg-[#111521] p-6 shadow-2xl">{planStage ? <PreproductionPlanner title={title} script={script} essence={String(currentPortfolio?.essence || "claro, humano y visual")} busy={saving} error={error} onConfirm={(plan) => void createSession(plan)} onBack={() => setPlanStage(false)} /> : <><div className="flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Nueva producción</p><h2 id="new-session-title" className="mt-1 text-xl font-semibold">{pendingUploadFiles.length ? `Subir ${pendingUploadFiles.length} video${pendingUploadFiles.length === 1 ? "" : "s"}` : "Monta el libreto"}</h2></div><button onClick={closeSessionDialog} aria-label="Cerrar" className="grid h-9 w-9 place-items-center rounded-full bg-white/5"><X size={16} /></button></div><label className="mt-6 block text-xs text-zinc-500">Nombre del proyecto<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={160} placeholder="Ej. 3 errores al usar IA" className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none focus:border-violet-400/40" /></label>{pendingUploadFiles.length > 0 && <div className="mt-4 rounded-xl border border-white/8 bg-black/20 p-3"><p className="text-xs font-medium text-zinc-300">Archivos seleccionados ({pendingUploadFiles.length})</p><ul className="mt-2 max-h-28 space-y-1 overflow-y-auto text-[10px] text-zinc-400">{pendingUploadFiles.map((file, index) => <li key={`${file.name}-${index}`} className="truncate">{index + 1}. {file.name}</li>)}</ul></div>}<label className="mt-4 block text-xs text-zinc-500">{pendingUploadFiles.length ? "Libreto completo (obligatorio antes de exportar)" : "Libreto completo"}<textarea value={script} onChange={(event) => setScript(event.target.value)} rows={pendingUploadFiles.length ? 5 : 9} maxLength={6000} placeholder={pendingUploadFiles.length ? "Pega aquí la historia en su orden narrativo. No importa en qué orden subas los archivos." : "Separa cada escena con una línea en blanco.\n\nCada párrafo se convertirá en una escena grabable."} className="mt-2 w-full resize-none rounded-xl border border-white/10 bg-black/25 p-4 text-sm leading-6 text-white outline-none focus:border-violet-400/40" /></label><label className="mt-3 inline-flex cursor-pointer rounded-xl border border-violet-400/25 px-3 py-2 text-xs text-violet-200">Subir libreto .txt o .md<input type="file" accept=".txt,.md,text/plain,text/markdown" className="sr-only" onChange={(event) => { void importNewSessionScript(event.target.files?.[0]); event.target.value = ""; }} /></label><p className="mt-3 text-xs leading-5 text-zinc-400">{pendingUploadFiles.length ? `Se creará una escena por cada archivo. Revisarás y aprobarás los ${pendingUploadFiles.length} videos antes de editar. Antes de exportar deberás guardar el libreto y revisar lo dicho en cada toma. No asignaremos subtítulos según el orden de subida. El render cloud procesa hasta 2 minutos.` : "Segmenta Studio mantendrá este orden y solo enviará a edición las tomas que apruebes."} Escribe al menos 20 caracteres de libreto para diseñar la edición.</p><button onClick={() => { setError(""); setPlanStage(true); }} disabled={saving || !title.trim() || script.trim().length < 20} className="mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-violet-500 px-4 py-3.5 text-sm font-semibold disabled:opacity-40">{saving ? <LoaderCircle className="animate-spin" size={17} /> : pendingUploadFiles.length ? <UploadCloud size={17} /> : <Video size={17} />}Definir edición y revisar plan</button></>}</div></div>}
+      {batchUpload && <div role="status" aria-live="polite" className="fixed inset-x-3 bottom-4 z-[80] mx-auto max-w-lg rounded-2xl border border-violet-400/30 bg-[#151525] p-4 text-white shadow-2xl sm:bottom-6">
+        <div className="flex items-center gap-3"><UploadCloud size={20} className="shrink-0 text-violet-200" /><div className="min-w-0 flex-1"><p className="text-sm font-semibold">Subiendo video {batchUpload.current} de {batchUpload.total}</p><p className="truncate text-xs text-zinc-400">{batchUpload.file}</p></div><strong className="text-sm tabular-nums text-violet-200">{uploadProgress}%</strong></div>
+        <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-gradient-to-r from-violet-500 to-cyan-400 transition-all" style={{ width: String(uploadProgress) + "%" }} /></div>
+        <p className="mt-2 text-[11px] text-zinc-400">El proyecto y cada video se guardan al terminar su carga. Puedes escribir el libreto después.</p>
+      </div>}
+
+      {showNewSession && <div className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4 backdrop-blur-sm">
+        <div role="dialog" aria-modal="true" aria-labelledby="new-session-title" className="max-h-[90dvh] w-full max-w-3xl overflow-y-auto rounded-3xl border border-white/10 bg-[#111521] p-6 shadow-2xl">
+          {planStage ? <PreproductionPlanner title={title} script={script} essence={String(currentPortfolio?.essence || "claro, humano y visual")} busy={saving} error={error} onConfirm={(plan) => void createSession(plan)} onBack={() => setPlanStage(false)} /> : <>
+            <div className="flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Nueva producción</p><h2 id="new-session-title" className="mt-1 text-xl font-semibold">Empieza como quieras</h2></div><button onClick={closeSessionDialog} aria-label="Cerrar" className="grid h-9 w-9 place-items-center rounded-full bg-white/5"><X size={16} /></button></div>
+            <p className="mt-3 text-sm text-zinc-400">Puedes crear el proyecto ahora. El nombre, el libreto y el plan de edición se pueden completar después.</p>
+            <label className="mt-6 block text-xs text-zinc-400">Nombre del proyecto (opcional)<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={160} placeholder="Nueva producción" className="mt-2 w-full rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none focus:border-violet-400/40" /></label>
+            <label className="mt-4 block text-xs text-zinc-400">Libreto (opcional)<textarea value={script} onChange={(event) => setScript(event.target.value)} rows={6} maxLength={6000} placeholder="Puedes pegarlo ahora o añadirlo desde el editor." className="mt-2 w-full resize-y rounded-xl border border-white/10 bg-black/25 p-4 text-sm leading-6 text-white outline-none focus:border-violet-400/40" /></label>
+            <label className="mt-3 inline-flex cursor-pointer rounded-xl border border-violet-400/25 px-3 py-2 text-xs text-violet-200">Subir libreto .txt o .md<input type="file" accept=".txt,.md,text/plain,text/markdown" className="sr-only" onChange={(event) => { void importNewSessionScript(event.target.files?.[0]); event.target.value = ""; }} /></label>
+            <div className="mt-6 grid gap-2 sm:grid-cols-2"><button onClick={() => void createSession()} disabled={saving} className="flex items-center justify-center gap-2 rounded-2xl bg-violet-500 px-4 py-3.5 text-sm font-semibold disabled:opacity-40">{saving ? <LoaderCircle className="animate-spin" size={17} /> : <Video size={17} />}Crear proyecto ahora</button><button onClick={() => { setError(""); setPlanStage(true); }} disabled={saving} className="rounded-2xl border border-violet-400/25 px-4 py-3.5 text-sm text-violet-200 disabled:opacity-40">Diseñar edición con IA (opcional)</button></div>
+          </>}
+        </div>
+      </div>}
 
       {editingPlanSessionId && (() => {
         const session = data?.sessions.find((item) => item.id === editingPlanSessionId);
