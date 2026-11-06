@@ -62,6 +62,21 @@ test("sequential HEVC clips normalize to a playable joined portrait MP4 with tex
       if (index === 0) { assert.equal(result.labelCount, 1); assert.equal(result.duration, .6); }
       if (index === 1) assert.ok(result.cueCount > 0);
     }
+    const layered = structuredClone(contract);
+    layered.session.title = "El poder de la IA";
+    layered.style_snapshot.id = "ia-en-capas";
+    layered.style_snapshot.subtitle = { text: "#FFFFFF", box: "#09090B", size: 76, uppercase: true, position: "bottom" };
+    layered.clips[0].caption_cues = [{ startSeconds: .1, endSeconds: .9, text: "Y ESO LO CAMBIA" }];
+    const layeredOutput = join(directory, "layered.mp4");
+    const layeredResult = await renderSequentialClip({
+      command: ffmpegPath!, contract: layered,
+      analysis: { duration: 1.2, ranges: [{ start: 0, end: 1.2 }], removed: 0, hasAudio: true },
+      url: source, index: 0, output: layeredOutput, videoKbps: 2500, transitionSeconds: 0,
+      deadline: Date.now() + 60_000,
+    });
+    assert.equal(layeredResult.captionCount, 1);
+    assert.equal(layeredResult.labelCount, 1);
+    assert.match(run(["-hide_banner", "-i", layeredOutput, "-map", "0:v:0", "-map", "0:a:0", "-t", "0.3", "-f", "null", "-"]), /Video:[^\n]*\b1080x1920\b/);
     const spedUpInspection = run(["-hide_banner", "-i", outputs[0], "-f", "null", "-"]);
     const spedUpDuration = spedUpInspection.match(/Duration: 00:00:(\d+(?:\.\d+)?)/);
     assert.ok(spedUpDuration, "FFmpeg should report the encoded clip duration");

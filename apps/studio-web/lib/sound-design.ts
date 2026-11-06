@@ -26,7 +26,7 @@ export function soundPresetForStyle(styleId: unknown): SoundPreset {
     case "none": case "soft": case "kinetic": case "cinematic": case "pop": return styleId;
     case "reflexion-intima": case "autoridad-minimal": return "none";
     case "historia-cinematica": return "cinematic";
-    case "kiko-impacto": case "ia-demostrativa": return "kinetic";
+    case "kiko-impacto": case "ia-demostrativa": case "ia-en-capas": return "kinetic";
     case "storytelling-marca-pop": return "pop";
     default: return "soft";
   }

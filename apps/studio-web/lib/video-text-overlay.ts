@@ -7,6 +7,8 @@ type TextOverlayOptions = {
   textColor: string;
   boxColor: string;
   boxOpacity: number;
+  highlightLastWord?: boolean;
+  highlightColor?: string;
 };
 
 function hexColor(value: string, fallback: string) {
@@ -29,11 +31,16 @@ export async function renderTextOverlay(options: TextOverlayOptions): Promise<Bu
   if (!safeText) throw new Error("El texto de la superposición está vacío.");
   const fontSize = Number.isFinite(options.fontSize) ? Math.max(24, Math.min(100, options.fontSize)) : 54;
   const textColor = hexColor(options.textColor, "#FFFFFF");
+  const highlightColor = hexColor(options.highlightColor || "#FACC15", "#FACC15");
   const boxColor = hexColor(options.boxColor, "#09090B");
   const padding = 24;
+  const words = safeText.split(/\s+/);
+  const textMarkup = options.highlightLastWord && words.length > 1
+    ? `<span foreground="${textColor}">${escapeMarkup(words.slice(0, -1).join(" "))}</span>\n<span foreground="${highlightColor}" weight="bold">${escapeMarkup(words[words.length - 1])}</span>`
+    : `<span foreground="${options.highlightLastWord ? highlightColor : textColor}">${escapeMarkup(safeText)}</span>`;
   const textImage = await sharp({
     text: {
-      text: `<span foreground="${textColor}">${escapeMarkup(safeText)}</span>`,
+      text: textMarkup,
       font: `Inter ${Math.round(fontSize * 1.2)}`,
       fontfile: options.fontFile,
       width: 960,

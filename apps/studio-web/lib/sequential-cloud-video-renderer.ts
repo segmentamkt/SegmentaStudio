@@ -14,9 +14,10 @@ type Range = { start: number; end: number };
 type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string; trim_start_seconds?: number; trim_end_seconds?: number; playback_speed?: number; audio_volume?: number; brightness?: number; contrast?: number; saturation?: number; label?: string; caption_cues?: CaptionCue[] };
 type EditContract = {
   objective: string;
-  session: { title: string };
+  session: { title: string; script?: string };
   clips: Clip[];
   style_snapshot: {
+    id?: string;
     transition: "cut" | "fade" | "dissolve";
     transitionDuration?: number;
     subtitle: { text: string; box: string; size: number; uppercase: boolean; position?: "top" | "center" | "bottom" };
@@ -193,9 +194,14 @@ export async function renderSequentialClip(input: {
   const fontFile = join(process.cwd(), "assets", "fonts", "Inter.ttf");
   const title = contract.session.title.trim();
   const label = clip.label?.trim();
-  const showTitle = index === 0 && contract.effects.labels && execution.titleCards !== false
+  const layeredStyle = contract.style_snapshot.id === "ia-en-capas";
+  const meaningfulTitle = !/^edici[oó]n de \d+ videos?$/i.test(title) && title !== "Nueva producción" ? title : "";
+  const firstScriptLine = contract.session.script?.split(/\n/).map((line) => line.replace(/[*#_]/g, "").trim()).find(Boolean) || "";
+  const headerText = (label || meaningfulTitle || firstScriptLine).slice(0, 56);
+  const showLayeredHeader = layeredStyle && contract.effects.labels && execution.titleCards !== false && Boolean(headerText);
+  const showTitle = !layeredStyle && index === 0 && contract.effects.labels && execution.titleCards !== false
     && Boolean(title) && !label && !/^edici[oó]n de \d+ videos?$/i.test(title);
-  const addOverlay = async (text: string, start: number, end: number, position: string, title = false) => {
+  const addOverlay = async (text: string, start: number, end: number, position: string, title = false, highlight = false) => {
     if (overlays.length >= 96) throw new Error("Demasiadas tarjetas de texto en una toma.");
     const slot = 1 + Number(!analysis.hasAudio) + overlays.length;
     const out = `vo${overlays.length}`;
@@ -203,7 +209,9 @@ export async function renderSequentialClip(input: {
       text, fontFile, fontSize: title ? 54 : contract.style_snapshot.subtitle.size,
       textColor: title ? "#FFFFFF" : contract.style_snapshot.subtitle.text,
       boxColor: title ? execution.titleColor || "#09090B" : contract.style_snapshot.subtitle.box,
-      boxOpacity: title ? .9 : .85,
+      boxOpacity: title ? .9 : layeredStyle ? .34 : .85,
+      highlightLastWord: highlight,
+      highlightColor: "#FACC15",
     }));
     filters.push(`[${videoLabel}][${slot}:v]overlay=x=(W-w)/2:y=${position}:enable='between(t,${fixed(start)},${fixed(end)})':eof_action=repeat:shortest=0[${out}]`);
     videoLabel = out;
@@ -211,16 +219,19 @@ export async function renderSequentialClip(input: {
   if (showTitle) {
     await addOverlay(title, .15, Math.min(duration, 2.6), "H*0.08", true);
   }
-  if (label && contract.effects.labels) {
+  if (showLayeredHeader) {
+    await addOverlay(headerText, .05, duration, "H*0.08", true);
+  }
+  if (label && contract.effects.labels && !layeredStyle) {
     await addOverlay(label, .15, Math.min(duration, 2.6), "H*0.07", true);
   }
   if (contract.captions.enabled) {
-    const position = contract.style_snapshot.subtitle.position === "top" ? "H*0.11" : contract.style_snapshot.subtitle.position === "center" ? "(H-h)/2" : "H-h-H*0.10";
+    const position = layeredStyle ? "H-h-H*0.22" : contract.style_snapshot.subtitle.position === "top" ? "H*0.11" : contract.style_snapshot.subtitle.position === "center" ? "(H-h)/2" : "H-h-H*0.10";
     const sourceCues = clip.caption_cues?.length ? clip.caption_cues : [{ startSeconds: 0, endSeconds: analysis.duration, text: clip.transcript }];
     for (const cue of mapCaptionCues(sourceCues, analysis.ranges)) {
       const items = cards(cue.text, contract.captions.max_words_per_card || 5, contract.style_snapshot.subtitle.uppercase);
       for (const [cardIndex, text] of items.entries()) {
-        await addOverlay(text, (cue.startSeconds + (cue.endSeconds - cue.startSeconds) * cardIndex / items.length) / speed, (cue.startSeconds + (cue.endSeconds - cue.startSeconds) * (cardIndex + 1) / items.length) / speed, position);
+        await addOverlay(text, (cue.startSeconds + (cue.endSeconds - cue.startSeconds) * cardIndex / items.length) / speed, (cue.startSeconds + (cue.endSeconds - cue.startSeconds) * (cardIndex + 1) / items.length) / speed, position, false, layeredStyle);
         captionCount += 1;
       }
     }
@@ -231,7 +242,7 @@ export async function renderSequentialClip(input: {
     // A silence trim is a technical cut, not a creative beat. Sounding every trim
     // makes spoken reels noisy and repetitive; accent only a new scene or title.
     const newScene = index > 0 && contract.clips[index - 1].id !== clip.id;
-    const cueTimes = newScene || showTitle ? [.15] : [];
+    const cueTimes = newScene || showTitle || (index === 0 && showLayeredHeader) ? [.15] : [];
     const cues = planCutSoundCues(cueTimes, execution.soundPreset && execution.soundPreset !== "auto" ? execution.soundPreset : (contract.style_snapshot as { id?: string }).id);
     const sound = buildSoundDesignGraph({
       inputLabel: audioLabel, cues, durationSeconds: duration,
@@ -251,7 +262,7 @@ export async function renderSequentialClip(input: {
     "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", output,
   );
   await ffmpegFile(command, args, overlays, deadline);
-  return { duration, captionCount, cueCount, labelCount: Number(showTitle) + Number(Boolean(label && contract.effects.labels)) };
+  return { duration, captionCount, cueCount, labelCount: Number(showTitle) + Number(showLayeredHeader) + Number(Boolean(label && contract.effects.labels && !layeredStyle)) };
 }
 
 /**
