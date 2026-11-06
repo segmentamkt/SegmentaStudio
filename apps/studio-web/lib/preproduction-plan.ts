@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { EDITOR_STYLES } from "./editor-presets";
-import { splitScriptBeats } from "./editorial-director";
+import { resourcesForScript, splitScriptBeats } from "./editorial-director";
 import { SKILL_CATALOG, SKILL_IDS } from "./studio-skills";
 
 export const preproductionSchema = z.object({
@@ -22,11 +22,12 @@ export type PreproductionPlan = z.infer<typeof preproductionSchema>;
 
 export function draftPreproductionPlan(script: string, essence = "claro, humano y visual"): PreproductionPlan {
   const beats = splitScriptBeats(script).slice(0, 12);
+  const resources = resourcesForScript(script);
   const roles = ["Gancho", "Problema", "Valor", "Cierre / CTA"];
   const scenes = beats.length ? beats.map((beat, index) => ({
     title: roles[index] || `Escena ${index + 1}`,
     spoken: beat.text.slice(0, 1000),
-    visual: index === 0 ? "Primer plano, apertura clara y rótulo breve." : index === beats.length - 1 ? "Cierre con llamada a la acción legible." : "Alternar plano principal con un apoyo visual pertinente.",
+    visual: resources.filter((resource) => resource.beatIndex === index).map((resource) => resource.needsMedia ? `${resource.title}: grabar o subir toma propia.` : `${resource.title}: ${resource.generatedLabel || resource.detail}`).join(" ").slice(0, 300),
   })) : roles.map((title) => ({ title, spoken: "", visual: "Definir plano y recurso visual antes de grabar." }));
   return {
     schema: "segmenta.preproduction.v1",

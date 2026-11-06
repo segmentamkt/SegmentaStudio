@@ -84,10 +84,14 @@ function resourceFor(beat: ScriptBeat): ResourceSuggestion[] {
   }
   if (/lechona|plato|comida|producto|prepara|servicio|resultado/.test(content)) {
     add("apoyo", "Plano detalle del producto", "Usa una toma cercana y nítida del producto mientras se menciona.", null, true);
-  } else if (/equipo|companero|cliente|evento|sitio|lugar|oficina/.test(content)) {
+  } else if (/equipo|companero|cliente|evento|sitio|lugar|oficina|empresa/.test(content)) {
     add("apoyo", "Imagen de contexto", "Busca una toma propia del lugar o de las personas mencionadas.", null, true);
   }
   return suggestions;
+}
+
+export function resourcesForScript(script: string): ResourceSuggestion[] {
+  return splitScriptBeats(script).flatMap(resourceFor);
 }
 
 export function planFromScript(script: string, clips: EditorialClip[]) {

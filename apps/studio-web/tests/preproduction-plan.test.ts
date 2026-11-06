@@ -8,6 +8,8 @@ test("the E01 script becomes an editable chronological plan before any upload", 
   assert.equal(plan.scenes.length, 4);
   assert.deepEqual(plan.scenes.map((scene) => scene.title), ["Gancho", "Problema", "Valor", "Cierre / CTA"]);
   assert.match(plan.scenes[3].spoken, /WhatsApp/);
+  assert.match(plan.scenes[2].visual, /Plano detalle del producto/);
+  assert.match(plan.scenes[3].visual, /WhatsApp/);
   assert.equal(plan.technical.noiseReduction, "light");
   assert.ok(plan.skills.includes("recortes"));
   assert.ok(preproductionSchema.safeParse(plan).success);

@@ -11,7 +11,7 @@ export async function suggestPreproductionEdit(input: { script: string; descript
   generatorPromise ||= loadGenerator().catch((error) => { generatorPromise = null; throw error; });
   const generator = await generatorPromise;
   const messages = [
-    { role: "system", content: "Eres director de edición de videos verticales en español. Da una recomendación editorial concreta en máximo 100 palabras. No prometas que el video ya fue editado. Recomienda orden, cortes, subtítulos, apoyos y sonido cuando corresponda." },
+    { role: "system", content: "Eres director de edición de videos verticales en español. Responde a la pregunta del creador con 2 o 3 acciones concretas y máximo 80 palabras. Usa solo elementos presentes en el libreto. Si sugieres un recurso que aún no existe, di 'grabar o subir'. No inventes personas, lugares, tomas, mapas ni imágenes disponibles. Indica el momento de la escena, el apoyo visual y un rótulo alternativo si falta material. No afirmes que ya se editó." },
     { role: "user", content: `Libreto: ${input.script.slice(0, 3000)}\nEscenas: ${input.scenes.join(" | ").slice(0, 1000)}\nDirección actual: ${input.description.slice(0, 1000)}\nPetición del creador: ${input.question.slice(0, 500)}` },
   ];
   const result = await generator(messages, { max_new_tokens: 170, do_sample: false });
