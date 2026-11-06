@@ -4,12 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Aperture, ArrowLeft, Camera, Check, CheckCircle2, ChevronRight, Circle,
   Cloud, Film, FlipHorizontal2, FolderOpen, Library, LoaderCircle, Mic,
-  Plus, RotateCcw, Sparkles, Square, Trash2, UploadCloud, Video, X,
+  Plus, RotateCcw, Sparkles, Square, Trash2, UploadCloud, UserRound, Video, X,
 } from "lucide-react";
 import { Upload } from "tus-js-client";
 import { InstallAppButton } from "../components/install-app-button";
 import { EditorStudio } from "../components/editor-studio";
 import { PreproductionPlanner } from "../components/preproduction-planner";
+import { AccountAccess } from "../components/account-access";
 import { PenguinGuide } from "../components/penguin-guide";
 import { RenderResults, type RenderOutput } from "../components/render-results";
 import { WORKSPACE_NAV, WorkspaceStudio, type WorkspaceView } from "../components/workspace-studio";
@@ -125,6 +126,9 @@ export default function Home() {
   const [planStage, setPlanStage] = useState(false);
   const [editingPlanSessionId, setEditingPlanSessionId] = useState("");
   const [showNewPortfolio, setShowNewPortfolio] = useState(false);
+  const [showAccount, setShowAccount] = useState(false);
+  const [accountReset, setAccountReset] = useState(false);
+  const [accountSetup, setAccountSetup] = useState(false);
   const [title, setTitle] = useState("");
   const [script, setScript] = useState("");
   const [portfolioForm, setPortfolioForm] = useState({ name: "", niche: "", essence: "", accent: "violet" });
@@ -186,6 +190,18 @@ export default function Home() {
     openStudio();
     return () => { active = false; };
   }, [refresh]);
+  useEffect(() => {
+    const access = new URLSearchParams(window.location.search).get("access");
+    if (access === "1" || access === "reset" || access === "setup") {
+      const frame = window.requestAnimationFrame(() => {
+        setAccountReset(access === "reset");
+        setAccountSetup(access === "setup");
+        setShowAccount(true);
+      });
+      window.history.replaceState(null, "", window.location.pathname);
+      return () => window.cancelAnimationFrame(frame);
+    }
+  }, []);
   useEffect(() => { previewUrlRef.current = previewUrl; }, [previewUrl]);
   useEffect(() => () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -560,6 +576,7 @@ export default function Home() {
               {portfolios.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
             <button onClick={() => setShowNewPortfolio(true)} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-300" aria-label="Nuevo portafolio"><Plus size={17} /></button>
+            <button onClick={() => { setAccountReset(false); setAccountSetup(false); setShowAccount(true); }} className="flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-violet-400/25 bg-violet-400/10 px-3 text-xs font-medium text-violet-100" aria-label="Cuenta y acceso"><UserRound size={16} /><span className="hidden sm:inline">Cuenta</span></button>
           </div>
         </div>
       </header>
@@ -654,6 +671,8 @@ export default function Home() {
         const parsed = preproductionSchema.safeParse(stored);
         return session ? <div className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4 backdrop-blur-sm"><div role="dialog" aria-modal="true" aria-label="Plan de edición" className="max-h-[90dvh] w-full max-w-3xl overflow-y-auto rounded-3xl border border-white/10 bg-[#111521] p-6 shadow-2xl"><PreproductionPlanner key={editingPlanSessionId} title={String(session.title)} script={String(session.script || "")} essence={String(currentPortfolio?.essence || "claro, humano y visual")} initial={parsed.success ? parsed.data : undefined} busy={saving} error={error} onConfirm={(plan) => void saveExistingPlan(plan)} onBack={() => setEditingPlanSessionId("")} /></div></div> : null;
       })()}
+
+      {showAccount && <AccountAccess projectCount={(data?.sessions || []).length} reset={accountReset} setup={accountSetup} onClose={() => { setShowAccount(false); setAccountReset(false); setAccountSetup(false); }} onChanged={refresh} />}
 
       {showNewPortfolio && <div className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4 backdrop-blur-sm"><div className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#111521] p-6"><div className="flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-cyan-300">Identidad de contenido</p><h2 className="mt-1 text-xl font-semibold">Nuevo portafolio</h2></div><button onClick={() => setShowNewPortfolio(false)} className="grid h-9 w-9 place-items-center rounded-full bg-white/5"><X size={16} /></button></div><div className="mt-6 grid gap-4"><input value={portfolioForm.name} onChange={(event) => setPortfolioForm({ ...portfolioForm, name: event.target.value })} placeholder="Nombre del portafolio" className="rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-sm outline-none" /><input value={portfolioForm.niche} onChange={(event) => setPortfolioForm({ ...portfolioForm, niche: event.target.value })} placeholder="Nicho: educación, tecnología…" className="rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-sm outline-none" /><textarea value={portfolioForm.essence} onChange={(event) => setPortfolioForm({ ...portfolioForm, essence: event.target.value })} placeholder="Esencia: directo, divertido, elegante…" rows={3} className="rounded-xl border border-white/10 bg-black/25 p-4 text-sm outline-none" /><div className="flex gap-2">{Object.keys(accentClasses).map((accent) => <button key={accent} onClick={() => setPortfolioForm({ ...portfolioForm, accent })} className={`h-9 flex-1 rounded-xl bg-gradient-to-r ${accentClasses[accent]} ${portfolioForm.accent === accent ? "ring-2 ring-white ring-offset-2 ring-offset-[#111521]" : "opacity-45"}`} />)}</div></div><button onClick={createPortfolio} disabled={saving || !portfolioForm.name.trim()} className="mt-6 flex w-full items-center justify-center gap-2 rounded-2xl bg-white px-4 py-3.5 text-sm font-semibold text-black disabled:opacity-40">{saving && <LoaderCircle className="animate-spin" size={17} />}Crear portafolio</button></div></div>}
     </main>
