@@ -13,6 +13,9 @@ import { planFromScript } from "../lib/editorial-director";
 import { parseCaptionCues, type CaptionCue } from "../lib/caption-cues";
 import { transcribeTakeInBrowser } from "../lib/browser-transcription";
 import { EDITOR_TOOL_CATALOG } from "../lib/editor-tool-catalog";
+import { MediaReviewPanel } from "./media-review";
+import type { MediaReviewReceipt } from "../lib/media-review";
+import { alignReviewedTimeline } from "../lib/reviewed-timeline";
 
 // Session, scene, take and job rows share the editor surface.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -157,9 +160,29 @@ export function EditorStudio(props: {
   onUpload: () => void;
   onAddToCurrent: (sessionId: string) => void;
 }) {
-  const available = useMemo(() => props.sessions.filter((session) => session.portfolioId === props.portfolioId && props.scenes.some((scene) => scene.sessionId === session.id && scene.selectedTakeId)), [props.sessions, props.scenes, props.portfolioId]);
+  const available = useMemo(() => props.sessions.filter((session) => session.portfolioId === props.portfolioId && props.takes.some((take) => take.sessionId === session.id)), [props.sessions, props.takes, props.portfolioId]);
   const [sessionChoice, setSessionId] = useState(props.initialSessionId || available[0]?.id || "");
   const sessionId = available.some((item) => item.id === sessionChoice) ? sessionChoice : available[0]?.id || "";
+  const [reviewState, setReviewState] = useState<{ key: string; review: MediaReviewReceipt | null; valid: boolean; error: string }>({ key: "", review: null, valid: false, error: "" });
+  const [reviewReload, setReviewReload] = useState(0);
+  const [manualReviewSession, setManualReviewSession] = useState("");
+  const reviewSourceKey = JSON.stringify([
+    sessionId,
+    props.scenes.filter((scene) => scene.sessionId === sessionId).map((scene) => [scene.id, scene.position, scene.selectedTakeId]),
+    props.takes.filter((take) => take.sessionId === sessionId).map((take) => [take.id, take.sceneId, take.status, take.objectKey, take.durationMs, take.bytes, take.mimeType]),
+    reviewReload,
+  ]);
+  const reviewLoaded = reviewState.key === reviewSourceKey;
+  const reviewConfirmed = reviewLoaded && reviewState.valid && Boolean(reviewState.review?.orderedTakeIds.length);
+  const review = reviewConfirmed ? reviewState.review : null;
+  useEffect(() => {
+    if (!sessionId) return;
+    const controller = new AbortController();
+    void request<{ review: MediaReviewReceipt | null; valid: boolean }>(`/api/media-review?sessionId=${encodeURIComponent(sessionId)}`, { cache: "no-store", signal: controller.signal })
+      .then((result) => { if (!controller.signal.aborted) setReviewState({ key: reviewSourceKey, ...result, error: "" }); })
+      .catch((reason) => { if (!controller.signal.aborted) setReviewState({ key: reviewSourceKey, review: null, valid: false, error: reason instanceof Error ? reason.message : "No pudimos cargar la revisión." }); });
+    return () => controller.abort();
+  }, [sessionId, reviewSourceKey]);
   const [style, setStyle] = useState<EditorStyleId>("kiko-impacto");
   const [tool, setTool] = useState<ToolTab>("media");
   const [catalogSearch, setCatalogSearch] = useState("");
@@ -202,14 +225,16 @@ export function EditorStudio(props: {
   const [overlayCueIndex, setOverlayCueIndex] = useState(-1);
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  const approvedScenes = props.scenes.filter((scene) => scene.sessionId === sessionId && scene.selectedTakeId).sort((a, b) => a.position - b.position);
+  const approvedScenes = props.scenes.filter((scene) => scene.sessionId === sessionId && props.takes.some((take) => take.id === scene.selectedTakeId && take.status === "approved")).sort((a, b) => a.position - b.position);
   const approvedTakes = approvedScenes.map((scene) => props.takes.find((take) => take.id === scene.selectedTakeId)).filter(Boolean) as Row[];
   const timelineStorageKey = `segmenta.timeline.v1:${props.portfolioId}:${sessionId}`;
   const preferencesStorageKey = `segmenta.editor-preferences.v1:${props.portfolioId}:${sessionId}`;
   const draftPendingKey = `segmenta.timeline-pending.v1:${props.portfolioId}:${sessionId}`;
-  const sourceSignature = approvedScenes.map((scene) => `${scene.id}:${scene.selectedTakeId}:${scene.script || ""}`).join("|");
+  const timelineReviewKey = `segmenta.timeline-review.v1:${props.portfolioId}:${sessionId}`;
+  const sourceSignature = approvedScenes.map((scene) => `${scene.id}:${scene.position}:${scene.selectedTakeId}:${scene.script || ""}`).join("|");
 
   useEffect(() => {
+    if (!review) return;
     const defaults = approvedScenes.flatMap((scene) => {
       const take = props.takes.find((item) => item.id === scene.selectedTakeId);
       if (!take) return [];
@@ -219,9 +244,12 @@ export function EditorStudio(props: {
         transcript: String(scene.script || ""), label: "", captionCues: [] }];
     });
     let saved: TimelineClip[] = [];
+    let savedReviewId = "";
     try { saved = selectedResultId && window.localStorage.getItem(draftPendingKey) !== "1" ? [] : JSON.parse(window.localStorage.getItem(timelineStorageKey) || "[]") as TimelineClip[]; }
     catch { /* Keep the original approved order if the local draft is corrupt. */ }
+    try { savedReviewId = window.localStorage.getItem(timelineReviewKey) || ""; } catch { /* Use the confirmed order. */ }
     if (!Array.isArray(saved) || !saved.length) {
+      savedReviewId = String(latestJob?.contract?.media_review?.id || "");
       const contractClips = latestJob?.contract?.clips;
       if (Array.isArray(contractClips)) saved = contractClips.map((clip: Row, index: number) => ({
         segmentId: `${String(clip.id)}:${index}`, takeId: String(clip.id), sceneId: String(clip.scene_id || ""),
@@ -238,7 +266,7 @@ export function EditorStudio(props: {
       const original = byId.get(clip.takeId);
       if (!original) return [];
       const segmentId = String(clip.segmentId || clip.takeId);
-      if (seenSegments.has(segmentId) || seenSegments.size >= 12) return [];
+      if (seenSegments.has(segmentId)) return [];
       seenSegments.add(segmentId);
       seenTakes.add(clip.takeId);
       return [{ ...original, segmentId, included: clip.included !== false,
@@ -249,7 +277,9 @@ export function EditorStudio(props: {
         transcript: String(clip.transcript ?? original.transcript).slice(0, 1000), label: String(clip.label || "").slice(0, 120),
         captionCues: Array.isArray(clip.captionCues) ? clip.captionCues.slice(0, 100) : [] }];
     }) : [];
-    const next = [...restored, ...[...byId.values()].filter((clip) => !seenTakes.has(clip.takeId))].slice(0, 12);
+    const restoredTimeline = [...restored, ...[...byId.values()].filter((clip) => !seenTakes.has(clip.takeId))];
+    const next = savedReviewId === review.id ? restoredTimeline : alignReviewedTimeline(restoredTimeline, review.orderedTakeIds);
+    try { window.localStorage.setItem(timelineReviewKey, review.id); } catch { /* Draft persistence can be unavailable. */ }
     timelineRef.current = next;
     undoRef.current = [];
     redoRef.current = [];
@@ -258,7 +288,7 @@ export function EditorStudio(props: {
     setTimelineReadyKey(timelineStorageKey);
   // Only refresh the draft when approved source material changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timelineStorageKey, sourceSignature, latestJob?.id]);
+  }, [timelineStorageKey, sourceSignature, latestJob?.id, review?.id]);
 
   useEffect(() => {
     let saved: Row | null = null;
@@ -457,11 +487,11 @@ export function EditorStudio(props: {
     const clip = timelineRef.current.find((item) => item.segmentId === selectedSegmentId);
     if (clip) setSplitPoint(Number(((clip.trimStartSeconds + clip.trimEndSeconds) / 2).toFixed(1)));
   }, [selectedSegmentId]);
-  const needsPlan = !job || draftPending;
-  const ready = job?.status === "ready" && !draftPending;
+  const needsPlan = !job || draftPending || job.contract?.media_review?.id !== review?.id;
+  const ready = job?.status === "ready" && !needsPlan;
   const previousReadyJob = props.editJobs.find((item) => item.sessionId === sessionId && item.status === "ready");
   const activeResult = ready ? job : latestJob?.status === "ready" ? latestJob : previousReadyJob || (lastResult?.sessionId === sessionId ? lastResult : null);
-  const resultIsPrevious = Boolean(activeResult && (draftPending || job?.status !== "ready"));
+  const resultIsPrevious = Boolean(activeResult && (needsPlan || job?.status !== "ready"));
   const showingFinal = Boolean(activeResult && previewMode === "final");
   const resultSrc = activeResult ? `/api/editor/output/${activeResult.id}` : "";
   const previewSrc = showingFinal ? resultSrc : selectedTake ? `/api/media/${selectedTake.id}` : "";
@@ -526,14 +556,14 @@ export function EditorStudio(props: {
     setOverlayEditor(null);
   };
   const workflowSteps = [
-    { label: "Tomas aprobadas", done: approvedTakes.length > 0 },
+    { label: "Orden y tomas", done: reviewConfirmed },
     { label: "Detalles opcionales", done: Boolean(scriptDraft.trim()) || activeTimeline.some((clip) => clip.transcript.trim() || clip.label.trim()) },
-    { label: "Edición preparada", done: Boolean(job) && !draftPending },
+    { label: "Edición preparada", done: !needsPlan },
     { label: "MP4 listo", done: ready },
   ];
   const completedSteps = workflowSteps.filter((step) => step.done).length;
   const goToWorkflowStep = (index: number) => {
-    if (index === 0 && !approvedTakes.length) { props.onUpload(); return; }
+    if (index === 0) { if (sessionId) setManualReviewSession(sessionId); else props.onUpload(); return; }
     if (index === 2) setTool("styles");
     const target = ["editor-workbench", "editor-script", "editor-workbench", "editor-export"][index];
     document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -621,7 +651,9 @@ export function EditorStudio(props: {
   };
 
   const plan = async () => {
+    if (!reviewConfirmed) { setManualReviewSession(sessionId); return; }
     if (!activeTimeline.length) { setError("Activa al menos una toma en la línea de tiempo."); return; }
+    if (activeTimeline.length > 12) { setError("Este montaje admite hasta 12 segmentos activos. Desactiva o elimina algunos cortes de la línea de tiempo; tus originales se conservan."); return; }
     if (options.captions && activeTimeline.some((clip) => !clip.transcript.trim() || !clip.captionCues.length)) {
       setError("Para exportar subtítulos sincronizados, escucha las tomas con IA local o importa SRT/VTT con tiempos. No repartiremos el libreto a ciegas.");
       return;
@@ -629,10 +661,7 @@ export function EditorStudio(props: {
     setBusy("plan"); setError("");
     try {
       await ensureScriptSaved();
-      const ranks = new Map(editorialPlan.suggestedClipIds.map((id, index) => [id, index]));
-      const orderedTimeline = editorialPlan.reliableOrder
-        ? [...timeline].sort((a, b) => (ranks.get(a.segmentId) ?? 999) - (ranks.get(b.segmentId) ?? 999))
-        : timeline;
+      const orderedTimeline = timeline;
       const labels = new Map<string, string>();
       if (options.labels && editorialPlan.reliableOrder) {
         for (const resource of editorialPlan.resources) {
@@ -668,6 +697,8 @@ export function EditorStudio(props: {
   };
 
   const render = async () => {
+    if (!reviewConfirmed) { setManualReviewSession(sessionId); return; }
+    if (needsPlan) { await plan(); return; }
     if (!job) return;
     setBusy("render"); setError("");
     setJob({ ...job, status: "processing", progress: 0, stage: "Enviando el plan al servidor", error: null });
@@ -700,6 +731,26 @@ export function EditorStudio(props: {
     else { videoRef.current.pause(); setPlaying(false); }
   };
 
+  if (selectedSession && (!reviewConfirmed || manualReviewSession === sessionId)) return <section className="overflow-hidden rounded-2xl border border-white/10 bg-[#0a0c12] sm:rounded-3xl">
+    <header className="flex flex-wrap items-center gap-3 border-b border-white/10 p-4">
+      <button onClick={props.onBack} aria-label="Volver a proyectos" className="grid h-10 w-10 place-items-center rounded-xl border border-white/10"><ChevronLeft size={18} /></button>
+      <div className="min-w-0 flex-1"><p className="text-xs text-violet-300">Antes de editar</p><h2 className="truncate text-sm font-semibold">{selectedSession.title}</h2></div>
+      <select aria-label="Proyecto por revisar" value={sessionId} onChange={(event) => { setSessionId(event.target.value); setJob(undefined); setManualReviewSession(""); }} className="max-w-full rounded-xl border border-white/10 bg-[#151822] p-2 text-xs sm:max-w-[220px]">{available.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select>
+    </header>
+    {!reviewLoaded ? <p role="status" className="flex items-center justify-center gap-2 p-10 text-sm text-zinc-400"><LoaderCircle size={18} className="animate-spin" />Cargando revisión de tomas…</p> : reviewState.error ? <div role="alert" className="p-6"><p className="text-sm text-red-200">{reviewState.error}</p><button onClick={() => setReviewReload((value) => value + 1)} className="mt-4 rounded-xl bg-violet-500 px-4 py-3 text-sm">Reintentar</button></div> : <MediaReviewPanel
+      key={`${sessionId}:${reviewReload}`}
+      session={{ id: String(selectedSession.id), title: selectedSession.title, script: selectedSession.script }}
+      scenes={props.scenes.filter((scene) => scene.sessionId === sessionId).map((scene) => ({ id: String(scene.id), sessionId, title: scene.title, script: scene.script, position: scene.position, selectedTakeId: scene.selectedTakeId }))}
+      takes={props.takes.filter((take) => take.sessionId === sessionId).map((take) => ({ id: String(take.id), sceneId: String(take.sceneId), sessionId, status: take.status, durationMs: take.durationMs, createdAt: take.createdAt }))}
+      onBack={() => reviewConfirmed ? setManualReviewSession("") : props.onBack()}
+      onConfirmed={async () => {
+        setJob(null); setDraftPending(true); window.localStorage.setItem(draftPendingKey, "1");
+        await props.onRefresh();
+        setManualReviewSession(""); setReviewReload((value) => value + 1);
+      }}
+    />}
+  </section>;
+
   return <section className="overflow-hidden rounded-2xl border border-white/8 bg-[#0a0c12] shadow-2xl sm:rounded-3xl">
     <header className="flex flex-wrap items-center gap-3 border-b border-white/8 bg-[#0d1018] px-3 py-2.5 sm:px-4">
       <button onClick={props.onBack} className="grid h-9 w-9 place-items-center rounded-xl text-zinc-500 hover:bg-white/5 hover:text-white"><ChevronLeft size={18} /></button>
@@ -710,7 +761,7 @@ export function EditorStudio(props: {
     </header>
 
     <nav aria-label="Pasos para editar" className="border-b border-white/8 bg-[#0f1220] px-3 py-3 sm:px-5">
-      <div className="mb-2 flex items-center justify-between gap-2"><strong className="text-xs text-zinc-200">Tu ruta de edición <span className="font-normal text-zinc-500">· puedes saltar pasos</span></strong><span className="text-[10px] text-zinc-400">{completedSteps} de 4 hitos</span></div>
+      <div className="mb-2 flex items-center justify-between gap-2"><strong className="text-xs text-zinc-200">Tu ruta de edición <span className="font-normal text-zinc-500">· orden y tomas confirmados</span></strong><span className="text-[10px] text-zinc-400">{completedSteps} de 4 hitos</span></div>
       <div className="mb-3 h-1 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-gradient-to-r from-violet-500 to-cyan-400 transition-all" style={{ width: `${completedSteps * 25}%` }} /></div>
       <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">{workflowSteps.map((step, index) => <button key={step.label} onClick={() => goToWorkflowStep(index)} className={`flex items-center gap-2 rounded-xl border px-2.5 py-2 text-left text-[10px] sm:text-xs ${step.done ? "border-emerald-400/20 bg-emerald-400/[.07] text-emerald-100" : "border-white/10 bg-white/[.03] text-zinc-400 hover:border-violet-400/35 hover:text-white"}`}><span className={`grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-semibold ${step.done ? "bg-emerald-400 text-black" : "bg-white/10 text-zinc-300"}`}>{step.done ? <Check size={12} /> : index + 1}</span><span className="min-w-0">{step.label}</span></button>)}</div>
     </nav>

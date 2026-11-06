@@ -2,6 +2,8 @@ import { createClient } from "../../../lib/supabase/server";
 import { getRequestUser, unauthorized } from "../../../lib/request-user";
 import { clean, toAccount, toEditJob, toPortfolio, toScene, toSession, toTake } from "../../../lib/studio-data";
 import { draftPreproductionPlan, preproductionSchema } from "../../../lib/preproduction-plan";
+import { MEDIA_REVIEW_STATUSES, MediaReviewError, requireCurrentMediaReview } from "../../../lib/media-review";
+import { invalidateMediaReview, loadMediaReviewState } from "../../../lib/media-review-server";
 
 const accents = ["violet", "cyan", "rose", "amber"];
 
@@ -44,7 +46,7 @@ export async function GET() {
     const editJobs = await supabase.from("kiko_edit_jobs").select("*").eq("owner_id", user.userId).order("updated_at", { ascending: false });
     if (editJobs.error) console.warn("edit jobs unavailable; using stateless fallback", editJobs.error.message);
     const jobs = (editJobs.data || []).map(toEditJob);
-    return Response.json({ user, accounts: (accounts.data || []).map(toAccount), portfolios: (portfolios.data || []).map(toPortfolio), sessions: (sessions.data || []).map(toSession), scenes: (scenes.data || []).map(toScene), takes: (takes.data || []).map(toTake), preproductionPlans: jobs.filter((job) => job.status === "preproduction"), editJobs: jobs.filter((job) => job.status !== "preproduction") });
+    return Response.json({ user, accounts: (accounts.data || []).map(toAccount), portfolios: (portfolios.data || []).map(toPortfolio), sessions: (sessions.data || []).map(toSession), scenes: (scenes.data || []).map(toScene), takes: (takes.data || []).map(toTake), preproductionPlans: jobs.filter((job) => job.status === "preproduction"), editJobs: jobs.filter((job) => job.status !== "preproduction" && !MEDIA_REVIEW_STATUSES.includes(String(job.status))) });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "No se pudo abrir el estudio." }, { status: 500 });
   }
@@ -125,6 +127,7 @@ export async function POST(request: Request) {
       return Response.json({ saved: true });
     }
     if (action === "complete_session") {
+      requireCurrentMediaReview(await loadMediaReviewState(supabase, user.userId, clean(payload.sessionId)));
       const result = await supabase.from("kiko_recording_sessions").update({ status: "ready_for_edit", updated_at: new Date().toISOString() }).eq("id", clean(payload.sessionId)).eq("owner_id", user.userId).select().maybeSingle();
       if (result.error) throw result.error;
       if (!result.data) return Response.json({ error: "No encontramos esa producción." }, { status: 404 });
@@ -160,13 +163,14 @@ export async function POST(request: Request) {
       if ((existing.data || []).length >= 12) return Response.json({ error: "Esta edición admite hasta 12 escenas." }, { status: 400 });
       const position = (existing.data || []).reduce((maximum, scene) => Math.max(maximum, Number(scene.position)), -1) + 1;
       const title = clean(payload.title, `Escena ${position + 1}`).slice(0, 80);
+      await invalidateMediaReview(supabase, user.userId, sessionId);
       const inserted = await supabase.from("kiko_scenes").insert({ id: crypto.randomUUID(), owner_id: user.userId, session_id: sessionId, position, title, script: "" }).select().single();
       if (inserted.error) throw inserted.error;
       return Response.json({ scene: toScene(inserted.data) }, { status: 201 });
     }
     return Response.json({ error: "Acción no reconocida." }, { status: 400 });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "No se pudo guardar el cambio." }, { status: 500 });
+    return Response.json({ error: error instanceof Error ? error.message : "No se pudo guardar el cambio." }, { status: error instanceof MediaReviewError ? error.status : 500 });
   }
 }
 

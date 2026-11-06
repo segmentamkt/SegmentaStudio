@@ -54,16 +54,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       id: sessionId, owner_id: user.userId, portfolio_id: portfolioId,
       title: `Copia del MP4 · ${sourceTitle}`.slice(0, 160),
       script: sourceScript.trim() || "Edición manual de un video ya exportado.",
-      status: "ready_for_edit",
+      status: "review_required",
     }).select().single();
     if (session.error) throw session.error;
     createdSessionId = sessionId;
     const scene = await supabase.from("kiko_scenes").insert({ id: sceneId, owner_id: user.userId, session_id: sessionId, position: 0, title: "Video exportado", script: "" });
     if (scene.error) throw scene.error;
-    const take = await supabase.from("kiko_takes").insert({ id: takeId, owner_id: user.userId, session_id: sessionId, scene_id: sceneId, object_key: copiedKey, mime_type: "video/mp4", bytes: Number(file.metadata?.size), duration_ms: Math.round(durationSeconds * 1000), status: "approved" });
+    const take = await supabase.from("kiko_takes").insert({ id: takeId, owner_id: user.userId, session_id: sessionId, scene_id: sceneId, object_key: copiedKey, mime_type: "video/mp4", bytes: Number(file.metadata?.size), duration_ms: Math.round(durationSeconds * 1000), status: "pending" });
     if (take.error) throw take.error;
-    const selected = await supabase.from("kiko_scenes").update({ selected_take_id: takeId }).eq("id", sceneId).eq("owner_id", user.userId);
-    if (selected.error) throw selected.error;
     return Response.json({ session: toSession(session.data), mode: "flattened" }, { status: 201 });
   } catch (error) {
     console.error("continue render failed", error);

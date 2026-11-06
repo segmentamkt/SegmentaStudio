@@ -4,6 +4,8 @@ import { verifyCloudRender } from "../../../../lib/cloud-video-renderer";
 import { renderSequentialCloudEdit } from "../../../../lib/sequential-cloud-video-renderer";
 import { normalizeRenderContract } from "../../../../lib/render-contract-security";
 import { clean, toEditJob } from "../../../../lib/studio-data";
+import { MediaReviewError, requireCurrentMediaReview } from "../../../../lib/media-review";
+import { readMediaReview } from "../../../../lib/media-review-server";
 
 export const maxDuration = 300;
 
@@ -33,17 +35,20 @@ async function executeRender(request: Request, onProgress: (progress: number, st
     const job = ephemeral ? null : await supabase.from("kiko_edit_jobs").select("*").eq("id", jobId).eq("owner_id", user.userId).maybeSingle();
     if (job?.error) throw job.error;
     if (!ephemeral && !job?.data) return Response.json({ error: "No encontramos ese trabajo de edición." }, { status: 404 });
+    if (!ephemeral && ["preproduction", "media_review", "media_review_stale"].includes(String(job?.data?.status))) return Response.json({ error: "Selecciona un plan de edición para renderizar." }, { status: 400 });
     phase = "validando las tomas";
     const sessionId = clean(ephemeral ? temporaryJob?.sessionId : job?.data?.session_id);
     if (!sessionId) return Response.json({ error: "El plan no identifica una producción." }, { status: 400 });
     const [production, scenes, takes] = await Promise.all([
       supabase.from("kiko_recording_sessions").select("*").eq("id", sessionId).eq("owner_id", user.userId).maybeSingle(),
       supabase.from("kiko_scenes").select("*").eq("session_id", sessionId).eq("owner_id", user.userId).order("position"),
-      supabase.from("kiko_takes").select("*").eq("session_id", sessionId).eq("owner_id", user.userId).eq("status", "approved"),
+      supabase.from("kiko_takes").select("*").eq("session_id", sessionId).eq("owner_id", user.userId),
     ]);
     if (production.error || scenes.error || takes.error) throw production.error || scenes.error || takes.error;
     if (!production.data) return Response.json({ error: "La producción ya no existe." }, { status: 404 });
-    const contract = normalizeRenderContract(ephemeral ? temporaryJob?.contract : job?.data?.contract, production.data, scenes.data, takes.data);
+    const rawContract = (ephemeral ? temporaryJob?.contract : job?.data?.contract) as Record<string, unknown> | null;
+    requireCurrentMediaReview(await readMediaReview(supabase, user.userId, sessionId, scenes.data || [], takes.data || []), rawContract?.media_review ?? null);
+    const contract = normalizeRenderContract(rawContract, production.data, scenes.data, takes.data);
     const sourceBytes = new Map((takes.data || []).map((take) => [take.object_key, Number(take.bytes || 0)]));
     console.info("[cloud-render] input summary", {
       jobId,
@@ -101,6 +106,8 @@ async function executeRender(request: Request, onProgress: (progress: number, st
     if (completed.error) throw completed.error;
     return Response.json({ job: toEditJob(completed.data) });
   } catch (error) {
+    // Review failures happen before media work and must not overwrite a valid saved plan.
+    if (error instanceof MediaReviewError) return Response.json({ error: error.message }, { status: error.status });
     const message = `Error durante ${phase}: ${safeErrorMessage(error)}`;
     console.error("cloud render failed", { phase, message: safeErrorMessage(error), code: networkCode(error), jobId });
     if (outputObjectKey) {

@@ -5,6 +5,8 @@ import { clean, toEditJob } from "../../../lib/studio-data";
 import { applySkillProfilesToContract } from "../../../lib/studio-skills";
 import { planFromScript } from "../../../lib/editorial-director";
 import type { CaptionCue } from "../../../lib/caption-cues";
+import { MediaReviewError, requireCurrentMediaReview } from "../../../lib/media-review";
+import { readMediaReview } from "../../../lib/media-review-server";
 
 type EditOptions = {
   captions?: boolean;
@@ -51,7 +53,7 @@ export async function GET(request: Request) {
   if (!user) return unauthorized();
   const id = new URL(request.url).searchParams.get("id");
   const supabase = await createClient();
-  let query = supabase.from("kiko_edit_jobs").select("*").eq("owner_id", user.userId).neq("status", "preproduction");
+  let query = supabase.from("kiko_edit_jobs").select("*").eq("owner_id", user.userId).not("status", "in", "(preproduction,media_review,media_review_stale)");
   query = id ? query.eq("id", id) : query.order("updated_at", { ascending: false });
   const result = id ? await query.maybeSingle() : await query;
   if (result.error) {
@@ -83,20 +85,21 @@ export async function POST(request: Request) {
     if (String(session.data.title || "").length > 160 || String(session.data.script || "").length > 6_000) return Response.json({ error: "Acorta el título o el libreto de esta producción antes de editarla." }, { status: 400 });
     const [scenes, takes] = await Promise.all([
       supabase.from("kiko_scenes").select("*").eq("session_id", sessionId).eq("owner_id", user.userId).order("position"),
-      supabase.from("kiko_takes").select("*").eq("session_id", sessionId).eq("owner_id", user.userId).eq("status", "approved"),
+      supabase.from("kiko_takes").select("*").eq("session_id", sessionId).eq("owner_id", user.userId),
     ]);
     if (scenes.error) throw scenes.error;
     if (takes.error) throw takes.error;
-    const approved = new Map((takes.data || []).map((take) => [take.id, take]));
+    const review = requireCurrentMediaReview(await readMediaReview(supabase, user.userId, sessionId, scenes.data || [], takes.data || []));
+    const approved = new Map((takes.data || []).filter((take) => take.status === "approved").map((take) => [take.id, take]));
     const source = (scenes.data || []).map((scene) => ({ scene, take: approved.get(scene.selected_take_id) })).filter((item) => item.take);
     const requestedTimeline = payload.timeline === undefined ? null : payload.timeline;
-    if (requestedTimeline !== null && (!Array.isArray(requestedTimeline) || requestedTimeline.length > 12 || requestedTimeline.some((item) => !item || typeof item !== "object" || typeof item.takeId !== "string"))) {
+    if (requestedTimeline !== null && (!Array.isArray(requestedTimeline) || requestedTimeline.length > 500 || requestedTimeline.some((item) => !item || typeof item !== "object" || typeof item.takeId !== "string" || (item.included !== undefined && typeof item.included !== "boolean")))) {
       return Response.json({ error: "La línea de tiempo no tiene un formato válido." }, { status: 400 });
     }
-    const timeline = requestedTimeline as TimelineItem[] | null;
+    const timeline = requestedTimeline === null ? null : (requestedTimeline as TimelineItem[]).filter((item) => item.included !== false);
     const byTakeId = new Map(source.map((item) => [item.take!.id, item]));
     if (timeline?.some((item) => !byTakeId.has(item.takeId))) return Response.json({ error: "La línea de tiempo contiene una toma no aprobada." }, { status: 400 });
-    const ordered = timeline ? timeline.filter((item) => item.included !== false).map((item) => ({ ...byTakeId.get(item.takeId)!, edit: item })) : source.map((item) => ({ ...item, edit: null as TimelineItem | null }));
+    const ordered = timeline ? timeline.map((item) => ({ ...byTakeId.get(item.takeId)!, edit: item })) : source.map((item) => ({ ...item, edit: null as TimelineItem | null }));
     if (!ordered.length) return Response.json({ error: "Aprueba al menos una toma antes de planificar la edición." }, { status: 400 });
     if (ordered.length > 12) return Response.json({ error: "Este render cloud admite hasta 12 tomas aprobadas por edición." }, { status: 400 });
     for (const { take, edit } of ordered) {
@@ -152,6 +155,7 @@ export async function POST(request: Request) {
     };
     const contract = {
       schema: "kiko.edit-contract.v1",
+      media_review: { id: review.id, fingerprint: review.fingerprint },
       objective,
       session: { id: session.data.id, title: session.data.title, script: session.data.script },
       ordered_clip_ids: ordered.map((item) => item.take.id),
@@ -201,6 +205,6 @@ export async function POST(request: Request) {
     return Response.json({ job: toEditJob(inserted.data) }, { status: 201 });
   } catch (error) {
     console.error("editor plan creation failed", error);
-    return Response.json({ error: error instanceof Error ? error.message : "No se pudo preparar la edición." }, { status: 500 });
+    return Response.json({ error: error instanceof Error ? error.message : "No se pudo preparar la edición." }, { status: error instanceof MediaReviewError ? error.status : 500 });
   }
 }
