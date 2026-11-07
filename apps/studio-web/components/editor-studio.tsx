@@ -806,6 +806,7 @@ export function EditorStudio(props: {
     captionPreviewSeekRef.current = { segmentId, seconds: time };
     if (selectedClip?.segmentId === segmentId && !showingRendered && videoRef.current) { videoRef.current.currentTime = time; captionPreviewSeekRef.current = null; }
     setSelectedTakeId(segmentId); setPreviewMode("original"); setOverlayEditor(null); setPreviewTime(time);
+    videoRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
   };
 
   const applyVisualRecommendations = (automatic = false) => {

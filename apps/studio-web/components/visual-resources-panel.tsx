@@ -67,7 +67,7 @@ export function VisualResourcesPanel({ clips, selectedClip, enabled, disabled, m
     }
   };
   const patch = (clip: ResourceClip, resource: VisualResource, values: Partial<VisualResource>) => onChange(clip.segmentId, clip.visualResources.map((item) => item.id === resource.id ? { ...item, ...values } : item));
-  return <section aria-label="Recursos visuales" className="space-y-4">
+  return <section aria-label="Recursos visuales" className="max-h-[680px] space-y-4 overflow-y-auto overscroll-contain pr-1">
     <div><p className="flex items-center gap-2 text-sm font-semibold"><ImagePlus size={18} className="text-cyan-300" />Imágenes que acompañan tu voz</p><p className="mt-2 text-xs leading-5 text-zinc-400">Relacionamos palabras de los subtítulos con imágenes de la biblioteca. Aparecen en ese momento y se incluyen en el MP4.</p></div>
     <button type="button" aria-pressed={enabled} disabled={locked} onClick={onToggle} className={`flex min-h-11 w-full items-center justify-between gap-2 rounded-xl border p-3 text-left text-xs ${enabled ? 'border-cyan-300/30 bg-cyan-300/10 text-cyan-100' : 'border-white/10 text-zinc-400'}`}><span>Recursos en la edición automática</span><strong>{enabled ? 'Activados' : 'Desactivados'}</strong></button>
     <button type="button" onClick={onRecommend} disabled={locked} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-violet-500 p-3 text-xs font-semibold disabled:opacity-40"><Sparkles size={15} />Detectar apoyos por palabras</button>
