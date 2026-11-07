@@ -17,3 +17,14 @@ Caso observado en Chrome: «Edición de 12 videos», 11 segmentos incluidos, 10 
 ## Límites conservados
 
 Montaje final máximo 120 s y 12 segmentos, render máximo 48 MB. No se elimina material para forzar esos límites. Las palabras reconocidas pueden requerir corrección. La comprobación con el proyecto real en producción se registra después del despliegue; las pruebas sintéticas no sustituyen esa evidencia.
+
+## Producción verificada
+
+- `30a660e` y `d4f7f01`: despliegues Vercel confirmados como correctos; sitio `https://studio.segmenta.online/`.
+- Fuente pendiente real: 6,3 s, aunque el borrador antiguo mostraba 0,2 s. La reparación del servidor conservó la revisión del orden.
+- Chrome conservaba sus 10 subtítulos, pero su control remoto no respondió a la recarga. Se validó desde la sesión autenticada del navegador integrado, con el mismo material y orden, sin sobrescribir el borrador de Chrome. Durante el cambio de versiones se corrigió allí el recorte provisional antiguo que ya había sido guardado; el segundo commit cubre la restauración desde borradores con duración provisional.
+- Prueba real: 11 segmentos subtitulados → plan → render completo. MP4 `e88d7fed-64f3-488f-9163-bc704320b9f4`, visible en Mis videos / Resultados editados / Edición guardada (07:02 Bogotá).
+- Resultado reportado: 88,7 s de montaje, 56 tarjetas de subtítulos, 10 efectos, 25,6 s de silencio retirado. Contenedor descargado: 88,901 s, 24.447.366 bytes, H.264 1080×1920 y AAC estéreo.
+- Decodificación completa de imagen y audio: exit 0. Fotogramas comprobados en 3, 37 y 75 s. `kiko_release_gate` devuelve `passed:true`.
+- Evidencia y fotogramas se conservan localmente en `artifacts/automatic-edit-2026-11-07/`; el video descargado está en Downloads. No se suben estos archivos personales al repositorio.
+- Límites reales: se verificó funcionamiento/exportación, no perfección lingüística del ASR. Hay palabras que requieren revisión; tampoco se verificó el clic final dentro del borrador original de Chrome porque su control remoto no respondió.
