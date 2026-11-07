@@ -314,6 +314,9 @@ export function EditorStudio(props: {
       if (seenSegments.has(segmentId)) return [];
       seenSegments.add(segmentId);
       seenTakes.add(clip.takeId);
+      // A duration repaired on the server (or in another tab) must also replace
+      // the old placeholder draft. Real manual trims retain the source duration.
+      if (clip.duration <= .2 && original.duration > .2) clip = repairUnknownTimelineDuration([clip], clip.takeId, original.duration)[0];
       return [{ ...original, segmentId, included: clip.included !== false,
         trimStartSeconds: Math.max(0, Math.min(original.duration - .2, Number(clip.trimStartSeconds) || 0)),
         trimEndSeconds: Math.max(.2, Math.min(original.duration, Number(clip.trimEndSeconds) || original.duration)),
