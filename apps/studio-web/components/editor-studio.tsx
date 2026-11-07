@@ -18,6 +18,7 @@ import { EDITOR_TOOL_CATALOG } from "../lib/editor-tool-catalog";
 import { MediaReviewPanel } from "./media-review";
 import type { MediaReviewReceipt } from "../lib/media-review";
 import { alignReviewedTimeline } from "../lib/reviewed-timeline";
+import { repairUnknownTimelineDuration } from "../lib/editor-media-duration";
 import { runAutomaticEdit, type AutomaticEditStage } from "../lib/automatic-edit";
 import { parseRenderPreview, type RenderPreview } from "../lib/render-preview";
 import { EditingProgress } from "./editing-progress";
@@ -25,6 +26,13 @@ import { EditingProgress } from "./editing-progress";
 // Session, scene, take and job rows share the editor surface.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>;
+// Browser storage is a draft backup; it must never turn a completed server job into a failure.
+function saveEditorDraft(key: string, value: string) {
+  try { window.localStorage.setItem(key, value); return true; } catch { return false; }
+}
+function removeEditorDraft(key: string) {
+  try { window.localStorage.removeItem(key); } catch { /* Server result remains available. */ }
+}
 type ToolTab = "media" | "styles" | "text" | "effects" | "audio" | "video" | "catalog";
 type TimelineClip = { segmentId: string; takeId: string; sceneId: string; title: string; duration: number; included: boolean; trimStartSeconds: number; trimEndSeconds: number; playbackSpeed: number; audioVolume: number; brightness: number; contrast: number; saturation: number; transcript: string; label: string; captionCues: CaptionCue[] };
 
@@ -316,7 +324,7 @@ export function EditorStudio(props: {
     }) : [];
     const restoredTimeline = [...restored, ...[...byId.values()].filter((clip) => !seenTakes.has(clip.takeId))];
     const next = savedReviewId === review.id ? restoredTimeline : alignReviewedTimeline(restoredTimeline, review.orderedTakeIds);
-    try { window.localStorage.setItem(timelineReviewKey, review.id); } catch { /* Draft persistence can be unavailable. */ }
+    try { saveEditorDraft(timelineReviewKey, review.id); } catch { /* Draft persistence can be unavailable. */ }
     timelineRef.current = next;
     undoRef.current = [];
     redoRef.current = [];
@@ -369,16 +377,16 @@ export function EditorStudio(props: {
 
   useEffect(() => {
     if (preferencesReadyKey === preferencesStorageKey) {
-      window.localStorage.setItem(preferencesStorageKey, JSON.stringify({ style, objective, options, settings }));
+      saveEditorDraft(preferencesStorageKey, JSON.stringify({ style, objective, options, settings }));
     }
   }, [preferencesReadyKey, preferencesStorageKey, style, objective, options, settings]);
 
   useEffect(() => {
-    if (timelineReadyKey === timelineStorageKey) window.localStorage.setItem(timelineStorageKey, JSON.stringify(timeline));
+    if (timelineReadyKey === timelineStorageKey) saveEditorDraft(timelineStorageKey, JSON.stringify(timeline));
   }, [timeline, timelineReadyKey, timelineStorageKey]);
 
   useEffect(() => {
-    setDraftPending(window.localStorage.getItem(draftPendingKey) === "1");
+    try { setDraftPending(window.localStorage.getItem(draftPendingKey) === "1"); } catch { setDraftPending(false); }
   }, [draftPendingKey]);
 
   useEffect(() => {
@@ -406,8 +414,8 @@ export function EditorStudio(props: {
   }, [ephemeralStorageKey, latestJob, sessionId]);
 
   useEffect(() => {
-    if (localJob === null) window.localStorage.removeItem(ephemeralStorageKey);
-    else if (localJob?.ephemeral && localJob.sessionId === sessionId) window.localStorage.setItem(ephemeralStorageKey, JSON.stringify(localJob));
+    if (localJob === null) removeEditorDraft(ephemeralStorageKey);
+    else if (localJob?.ephemeral && localJob.sessionId === sessionId) saveEditorDraft(ephemeralStorageKey, JSON.stringify(localJob));
   }, [ephemeralStorageKey, localJob, sessionId]);
 
   useEffect(() => {
@@ -422,7 +430,7 @@ export function EditorStudio(props: {
 
   useEffect(() => {
     if (lastResult?.status === "ready" && lastResult.sessionId === sessionId) {
-      window.localStorage.setItem(resultStorageKey, JSON.stringify(lastResult));
+      saveEditorDraft(resultStorageKey, JSON.stringify(lastResult));
     }
   }, [lastResult, resultStorageKey, sessionId]);
 
@@ -433,7 +441,7 @@ export function EditorStudio(props: {
     setSettings((current) => ({ ...current, subtitleSize: preset.subtitle.size, subtitlePosition: preset.subtitle.position, silenceThresholdMs: preset.execution.silenceThresholdMs, silenceNoiseDb: -30, transition: preset.transition, soundEffectVolume: preset.execution.soundEffectVolume, soundPreset: "auto" }));
     setJob(null);
     setDraftPending(true);
-    window.localStorage.setItem(draftPendingKey, "1");
+    saveEditorDraft(draftPendingKey, "1");
   };
 
   const changeOptions = (next: Partial<typeof options>) => {
@@ -441,7 +449,7 @@ export function EditorStudio(props: {
     setOptions((current) => ({ ...current, ...next }));
     setJob(null);
     setDraftPending(true);
-    window.localStorage.setItem(draftPendingKey, "1");
+    saveEditorDraft(draftPendingKey, "1");
   };
 
   const changeSettings = (next: Partial<typeof settings>) => {
@@ -449,7 +457,7 @@ export function EditorStudio(props: {
     setSettings((current) => ({ ...current, ...next }));
     setJob(null);
     setDraftPending(true);
-    window.localStorage.setItem(draftPendingKey, "1");
+    saveEditorDraft(draftPendingKey, "1");
   };
 
   const changeTimeline = (next: TimelineClip[] | ((current: TimelineClip[]) => TimelineClip[])) => {
@@ -464,7 +472,7 @@ export function EditorStudio(props: {
     setHistoryVersion((value) => value + 1);
     setJob(null);
     setDraftPending(true);
-    window.localStorage.setItem(draftPendingKey, "1");
+    saveEditorDraft(draftPendingKey, "1");
   };
 
   const undoTimeline = () => {
@@ -474,7 +482,7 @@ export function EditorStudio(props: {
     timelineRef.current = previous;
     setTimeline(previous);
     setHistoryVersion((value) => value + 1);
-    setJob(null); setDraftPending(true); window.localStorage.setItem(draftPendingKey, "1");
+    setJob(null); setDraftPending(true); saveEditorDraft(draftPendingKey, "1");
   };
 
   const redoTimeline = () => {
@@ -484,7 +492,7 @@ export function EditorStudio(props: {
     timelineRef.current = next;
     setTimeline(next);
     setHistoryVersion((value) => value + 1);
-    setJob(null); setDraftPending(true); window.localStorage.setItem(draftPendingKey, "1");
+    setJob(null); setDraftPending(true); saveEditorDraft(draftPendingKey, "1");
   };
 
   const updateClip = (segmentId: string, patch: Partial<TimelineClip>) => changeTimeline((current) => current.map((clip) => clip.segmentId === segmentId ? { ...clip, ...patch } : clip));
@@ -559,27 +567,43 @@ export function EditorStudio(props: {
   };
   const transcribeMissingTakes = async (scope: "missing" | "selected" = "missing", signal?: AbortSignal): Promise<boolean> => {
     if (busy || transcriptionRunRef.current || !reviewConfirmed || signal?.aborted) return false;
-    const targets = getCaptionGenerationTargets(timelineRef.current, { scope, selectedSegmentId: selectedClip?.segmentId });
-    if (!targets.length) return true;
     const controller = new AbortController();
     transcriptionRunRef.current = controller;
     const abort = () => controller.abort();
     signal?.addEventListener("abort", abort, { once: true });
     const isCurrent = () => transcriptionRunRef.current === controller && !controller.signal.aborted;
     setBusy("transcribe"); setError(""); setTool("text"); setTranscriptionStage("Preparando subtítulos automáticos…");
-    setTranscriptionTasks(targets.map((target) => ({ takeId: target.takeId, title: timelineRef.current.find((clip) => clip.takeId === target.takeId)?.title || "Toma", status: "pending" })));
+    let targets: ReturnType<typeof getCaptionGenerationTargets> = [];
+    setTranscriptionTasks([]);
     const updateTask = (takeId: string, patch: Partial<CaptionTask>) => {
       if (isCurrent()) setTranscriptionTasks((current) => current.map((item) => item.takeId === takeId ? { ...item, ...patch } : item));
     };
     let generated = 0;
     let failed = 0;
     try {
+      // Old uploads may have no duration. Resolve it from the actual file before
+      // treating the 0.2-second UI placeholder as an intentional trim.
+      const unknown = [...new Set(timelineRef.current.filter((clip) => (scope === "selected" ? clip.segmentId === selectedClip?.segmentId : clip.included) &&
+        !(Number(props.takes.find((take) => take.id === clip.takeId)?.durationMs) > 0)).map((clip) => clip.takeId))];
+      for (const takeId of unknown) {
+        setTranscriptionStage("Comprobando la duración real del video…");
+        const response = await fetch(`/api/media/${encodeURIComponent(takeId)}/audio`, { method: "HEAD", cache: "no-store", signal: controller.signal });
+        if (!response.ok) throw new Error("No pudimos leer la duración de una toma. Tu material y los subtítulos anteriores se conservan.");
+        const duration = Number(response.headers.get("X-Source-Duration-Seconds"));
+        if (!(duration > 0) || !Number.isFinite(duration)) throw new Error("No pudimos medir la duración del video. Intenta subir de nuevo únicamente esa toma.");
+        if (!isCurrent()) return false;
+        const repaired = repairUnknownTimelineDuration(timelineRef.current, takeId, duration);
+        timelineRef.current = repaired; setTimeline(repaired);
+        saveEditorDraft(timelineStorageKey, JSON.stringify(repaired));
+      }
+      targets = getCaptionGenerationTargets(timelineRef.current, { scope, selectedSegmentId: selectedClip?.segmentId });
+      setTranscriptionTasks(targets.map((target) => ({ takeId: target.takeId, title: timelineRef.current.find((clip) => clip.takeId === target.takeId)?.title || "Toma", status: "pending" })));
       for (const [index, target] of targets.entries()) {
         if (!isCurrent()) break;
         updateTask(target.takeId, { status: "processing", detail: "Preparando audio", percent: undefined });
         try {
           const result = await transcribeTakeInBrowser({
-            takeId: target.takeId, durationSeconds: target.durationSeconds, maxWords: selectedStyle.subtitle.maxWords, signal: controller.signal,
+            takeId: target.takeId, durationSeconds: target.durationSeconds, ranges: target.ranges, maxWords: selectedStyle.subtitle.maxWords, signal: controller.signal,
             onProgress: (stage, percent) => {
               if (!isCurrent()) return;
               setTranscriptionStage(`Toma ${index + 1} de ${targets.length} · ${stage}`);
@@ -603,8 +627,9 @@ export function EditorStudio(props: {
             setJob(null); setDraftPending(true);
             try {
               // Save every completed take so a later failure/cancellation never loses earlier work.
-              window.localStorage.setItem(timelineStorageKey, JSON.stringify(merged.timeline));
-              window.localStorage.setItem(draftPendingKey, "1");
+              if (!saveEditorDraft(timelineStorageKey, JSON.stringify(merged.timeline)) || !saveEditorDraft(draftPendingKey, "1")) {
+                setError("Los subtítulos están en pantalla. Este navegador no pudo guardar el borrador; mantén la pestaña abierta hasta terminar la exportación.");
+              }
             } catch { setError("Los subtítulos están listos en pantalla, pero este navegador no pudo guardar el borrador. Evita cerrar la pestaña antes de preparar la edición."); }
           }
           const problems = [...merged.failedSegments.map((item) => item.message), ...(merged.skippedSegmentIds.length ? ["Se conservó un segmento que cambió durante la generación."] : [])];
@@ -619,8 +644,14 @@ export function EditorStudio(props: {
       if (transcriptionRunRef.current === controller) setTranscriptionStage(controller.signal.aborted
         ? `Generación detenida. Se conserva${generated === 1 ? "" : "n"} ${generated} segmento${generated === 1 ? "" : "s"} generado${generated === 1 ? "" : "s"}; puedes continuar con los pendientes.`
         : failed ? `Se generó${generated === 1 ? "" : " un total de"} ${generated} segmento${generated === 1 ? "" : "s"}. Revisa las tomas con aviso y vuelve a intentar las pendientes.`
-        : `Subtítulos listos en ${generated} ${generated === 1 ? "segmento" : "segmentos"}. Ya están activados: revisa el texto y prepara el MP4.`);
+        : `Subtítulos listos en ${generated} ${generated === 1 ? "segmento" : "segmentos"}. Continuando con la edición…`);
       return isCurrent() && !failed;
+    } catch (reason) {
+      if (isCurrent()) {
+        const message = reason instanceof Error ? reason.message : "No pudimos preparar la voz de esta toma.";
+        setError(message); setTranscriptionStage(message);
+      }
+      return false;
     } finally {
       signal?.removeEventListener("abort", abort);
       if (transcriptionRunRef.current === controller) { transcriptionRunRef.current = null; setBusy(""); }
@@ -649,14 +680,14 @@ export function EditorStudio(props: {
     setScriptDraft(value.slice(0, 6_000));
     setJob(null);
     setDraftPending(true);
-    window.localStorage.setItem(draftPendingKey, "1");
+    saveEditorDraft(draftPendingKey, "1");
   };
 
-  const ensureScriptSaved = async () => {
+  const ensureScriptSaved = async (deferRefresh = false) => {
     const script = scriptDraft.trim();
     if (script === String(selectedSession?.script || "").trim()) return;
     await request("/api/studio", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "update_session_script", sessionId, script }) });
-    await props.onRefresh();
+    if (!deferRefresh) await props.onRefresh();
   };
 
   const saveScript = async () => {
@@ -739,7 +770,7 @@ export function EditorStudio(props: {
     setBusy("plan"); setError("");
     try {
       signal?.throwIfAborted();
-      await ensureScriptSaved();
+      await ensureScriptSaved(Boolean(signal));
       signal?.throwIfAborted();
       const orderedTimeline = draft;
       const labels = new Map<string, string>();
@@ -771,9 +802,9 @@ export function EditorStudio(props: {
       setJob(result.job);
       setSelectedResultId(result.job.id);
       setDraftPending(false);
-      window.localStorage.removeItem(draftPendingKey);
-      if (result.job.ephemeral) window.localStorage.setItem(ephemeralStorageKey, JSON.stringify(result.job));
-      else await props.onRefresh();
+      removeEditorDraft(draftPendingKey);
+      if (result.job.ephemeral) saveEditorDraft(ephemeralStorageKey, JSON.stringify(result.job));
+      else if (!signal) await props.onRefresh();
       return result.job;
     } catch (reason) { if (isCurrent()) setError(reason instanceof Error ? reason.message : "No se pudo crear el plan."); return null; }
     finally { if (isCurrent()) setBusy(""); }
@@ -797,13 +828,13 @@ export function EditorStudio(props: {
       });
       signal?.throwIfAborted();
       setJob(completedJob);
-      if (completedJob.ephemeral) window.localStorage.setItem(ephemeralStorageKey, JSON.stringify(completedJob));
+      if (completedJob.ephemeral) saveEditorDraft(ephemeralStorageKey, JSON.stringify(completedJob));
       if (completedJob.status === "ready") {
-        window.localStorage.setItem(resultStorageKey, JSON.stringify(completedJob));
+        saveEditorDraft(resultStorageKey, JSON.stringify(completedJob));
         setLastResult(completedJob); setPreviewMode("final"); setDraftPending(false);
-        window.localStorage.removeItem(draftPendingKey);
+        removeEditorDraft(draftPendingKey);
       }
-      if (!completedJob.ephemeral) await props.onRefresh();
+      if (!completedJob.ephemeral && !signal) await props.onRefresh();
       return completedJob.status === "ready" ? completedJob : null;
     } catch (reason) {
       if (!isCurrent()) return null;
@@ -828,6 +859,7 @@ export function EditorStudio(props: {
     document.getElementById("editor-live-progress")?.scrollIntoView({ behavior: "smooth", block: "start" });
     const automaticOptions = { ...options, captions: true };
     setOptions(automaticOptions);
+    let completed = false;
     try {
       await runAutomaticEdit({
         signal: controller.signal,
@@ -837,12 +869,14 @@ export function EditorStudio(props: {
         render: (preparedJob) => render(preparedJob, controller.signal),
         onStage: setAutomaticStage,
       });
+      completed = true;
     } catch (reason) {
       if (automaticRunRef.current !== controller) return;
       setAutomaticStage(controller.signal.aborted ? "cancelled" : "error");
       if (!controller.signal.aborted) setError((current) => current || (reason instanceof Error ? reason.message : "La edición se detuvo. Tus avances se conservan."));
     } finally {
       if (automaticRunRef.current === controller) { automaticRunRef.current = null; setAutomaticRunning(false); setBusy(""); }
+      if (completed) void props.onRefresh().catch(() => { /* The ready result is already visible. */ });
     }
   };
 
@@ -878,7 +912,7 @@ export function EditorStudio(props: {
       onBack={() => reviewConfirmed ? setManualReviewSession("") : props.onBack()}
       offerAutomaticEdit
       onConfirmed={async (confirmedReview, automatic) => {
-        setJob(null); setDraftPending(true); window.localStorage.setItem(draftPendingKey, "1");
+        setJob(null); setDraftPending(true); saveEditorDraft(draftPendingKey, "1");
         await props.onRefresh();
         setAutomaticRequest(automatic ? { sessionId, reviewId: confirmedReview.id } : null);
         setManualReviewSession(""); setReviewReload((value) => value + 1);
@@ -982,7 +1016,7 @@ export function EditorStudio(props: {
 
       <aside id="editor-export" className="order-4 scroll-mt-24 border-t border-white/8 bg-[#0c0f17] p-4 xl:order-none xl:border-l xl:border-t-0">
         <PanelTitle icon={Settings2} title="Director de edición" text="Describe el resultado" />
-        <textarea value={objective} maxLength={2000} onChange={(event) => { setObjective(event.target.value); setJob(null); setDraftPending(true); window.localStorage.setItem(draftPendingKey, "1"); }} disabled={Boolean(busy || automaticRunning)} rows={5} className="mt-4 w-full resize-none rounded-xl border border-white/8 bg-black/20 p-3 text-xs leading-5 text-zinc-300 outline-none focus:border-violet-400/40 disabled:opacity-50" placeholder="Ej. Quiero un reel energético, directo y con pausas mínimas…" />
+        <textarea value={objective} maxLength={2000} onChange={(event) => { setObjective(event.target.value); setJob(null); setDraftPending(true); saveEditorDraft(draftPendingKey, "1"); }} disabled={Boolean(busy || automaticRunning)} rows={5} className="mt-4 w-full resize-none rounded-xl border border-white/8 bg-black/20 p-3 text-xs leading-5 text-zinc-300 outline-none focus:border-violet-400/40 disabled:opacity-50" placeholder="Ej. Quiero un reel energético, directo y con pausas mínimas…" />
         <div className="mt-4 rounded-xl border border-white/7 bg-black/15 p-3"><p className="text-[10px] font-medium text-zinc-300">Ajustes actuales de edición</p><div className="mt-3 space-y-2 text-[9px] text-zinc-500"><p className="flex justify-between"><span>Estilo</span><b className="text-zinc-300">{selectedStyle.name}</b></p><p className="flex justify-between"><span>Escenas</span><b className="text-zinc-300">{activeTimeline.length}</b></p><p className="flex justify-between"><span>Silencios</span><b className="text-zinc-300">{options.deadAir ? `${settings.silenceThresholdMs} ms` : "No"}</b></p><p className="flex justify-between"><span>Subtítulos</span><b className="text-zinc-300">{options.captions ? `${activeTimeline.filter((clip) => clip.transcript.trim()).length}/${activeTimeline.length}` : "No"}</b></p></div></div>
         {missingTimedTakes.length > 0 && <div className="mt-3 rounded-xl border border-violet-400/20 bg-violet-400/[.06] p-3 text-[11px] leading-5 text-violet-100"><strong className="block">Crea subtítulos desde el audio.</strong><p className="mt-1 text-zinc-400">No necesitas escribir el libreto. Genera el texto y corrige cualquier palabra antes de exportar.</p><button type="button" onClick={() => { showCaptionTools(); void transcribeMissingTakes(); }} disabled={Boolean(busy || automaticRunning)} className="mt-2 rounded-lg bg-violet-500 px-3 py-2 font-semibold text-white disabled:opacity-40">Generar subtítulos automáticos</button></div>}
         {job && <div className={`mt-4 rounded-xl border p-3 ${ready ? "border-emerald-400/20 bg-emerald-400/6" : job.status === "failed" ? "border-red-400/20 bg-red-400/6" : job.status === "unconfirmed" ? "border-amber-300/20 bg-amber-300/6" : "border-violet-400/20 bg-violet-400/6"}`}><div className="flex items-center justify-between text-[10px]"><span>{ready ? "MP4 generado" : job.status === "failed" ? "Render falló" : job.stage}</span><b>{job.status === "failed" ? "Error" : job.status === "unconfirmed" ? "Sin confirmar" : `${job.progress || 0}%`}</b></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/8"><div className={`h-full transition-all ${job.status === "failed" ? "bg-red-400" : job.status === "unconfirmed" ? "bg-amber-300" : "bg-gradient-to-r from-violet-500 to-cyan-400"}`} style={{ width: `${job.status === "failed" || job.status === "unconfirmed" ? 0 : Math.max(2, Number(job.progress || 0))}%` }} /></div>{job.error && <p className="mt-2 text-[9px] leading-4 text-red-200">{job.error}</p>}</div>}

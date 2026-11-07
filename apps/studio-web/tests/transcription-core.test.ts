@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decodeSpeechWav, timedCaptionCards, transcriptionFromChunks } from "../lib/transcription-core";
+import { decodeSpeechWav, timedCaptionCards, transcriptionFromChunks, planSpeechWindows, normalizeSpeechRanges, sourceWordsForWindow, mergeSpeechWindowWords } from "../lib/transcription-core";
 
 function wav(samples: number[], sampleRate = 16_000) {
   // A RIFF metadata chunk with odd byte padding, as emitted by common audio encoders.
@@ -53,4 +53,41 @@ test("close word timestamps never overlap cards or silently discard text at the 
     assert.ok(cue.startSeconds >= 0 && cue.endSeconds <= 1);
     if (index > 0) assert.ok(cue.startSeconds >= cards[index - 1].endSeconds);
   });
+});
+
+test("long sources request only selected intervals and each PCM window stays bounded", () => {
+  const ranges = normalizeSpeechRanges([{ startSeconds: 360, endSeconds: 370 }, { startSeconds: 365, endSeconds: 400 }, { startSeconds: 1200, endSeconds: 1425 }], 7200);
+  assert.deepEqual(ranges, [{ startSeconds: 360, endSeconds: 400 }, { startSeconds: 1200, endSeconds: 1425 }]);
+  const windows = planSpeechWindows(ranges, 7200);
+  assert.equal(windows.length, 4);
+  assert.ok(windows.every((window) => window.endSeconds - window.startSeconds <= 92));
+  assert.deepEqual(windows.map((window) => [window.ownedStartSeconds, window.ownedEndSeconds]), [[360, 400], [1200, 1290], [1290, 1380], [1380, 1425]]);
+  assert.deepEqual([windows[0].startSeconds, windows[0].endSeconds], [359, 401]);
+  assert.throws(() => planSpeechWindows(undefined, 0), /duración real/);
+  assert.throws(() => planSpeechWindows(undefined, 3601), /una hora/);
+  assert.throws(() => planSpeechWindows([{ startSeconds: 5, endSeconds: 4 }], 10), /intervalo/);
+});
+
+test("word context at chunk seams is owned once and timestamps remain absolute", () => {
+  const [first, second] = planSpeechWindows([{ startSeconds: 300, endSeconds: 480 }], 600);
+  const firstWords = sourceWordsForWindow([
+    { text: "Abrimos", startInSeconds: .8, endInSeconds: 1.5 },
+    { text: "juntos", startInSeconds: 90.5, endInSeconds: 91.2 },
+  ], first);
+  const secondWords = sourceWordsForWindow([
+    { text: "juntos", startInSeconds: .5, endInSeconds: 1.2 },
+    { text: "ahora", startInSeconds: 2, endInSeconds: 2.5 },
+  ], second);
+  const merged = mergeSpeechWindowWords([...firstWords, ...secondWords]);
+  assert.deepEqual(merged.map((word) => word.text), ["Abrimos", "juntos", "ahora"]);
+  assert.equal(merged[0].startInSeconds, 300);
+  assert.equal(merged.at(-1)!.startInSeconds, 391);
+  assert.equal(mergeSpeechWindowWords([
+    { text: "no", startInSeconds: 1, endInSeconds: 1.2 },
+    { text: "no", startInSeconds: 1.3, endInSeconds: 1.5 },
+  ]).length, 2, "intentional repeated words are not removed");
+});
+
+test("PCM safety bounds remain enforced before allocating float audio", () => {
+  assert.throws(() => decodeSpeechWav(new ArrayBuffer(4_500_001)), /demasiado grande/);
 });

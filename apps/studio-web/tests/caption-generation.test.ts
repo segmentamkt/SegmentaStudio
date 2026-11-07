@@ -22,9 +22,37 @@ test("automatic captions transcribe each source once and target only requested m
     ["a", ["a-first", "a-second"]], ["c", ["c"]],
   ]);
   assert.equal(targets[0].durationSeconds, 10);
+  assert.deepEqual(targets[0].ranges, [{ startSeconds: 0, endSeconds: 10 }]);
   assert.deepEqual(getCaptionGenerationTargets(timeline, { scope: "selected", selectedSegmentId: "a-corrected" })[0].segments.map((segment) => segment.segmentId), ["a-corrected"]);
   assert.deepEqual(getCaptionGenerationTargets(timeline, { scope: "selected", selectedSegmentId: "b-excluded" })[0].segments.map((segment) => segment.segmentId), ["b-excluded"]);
   assert.deepEqual(getCaptionGenerationTargets(timeline, { scope: "selected", selectedSegmentId: "absent" }), []);
+});
+
+test("long-source targets only transcribe the montage trims and preserve corrected gaps", () => {
+  const timeline = [
+    clip("intro", "long", { duration: 3600, trimStartSeconds: 300, trimEndSeconds: 315 }),
+    clip("overlap", "long", { duration: 3600, trimStartSeconds: 310, trimEndSeconds: 325 }),
+    clip("later", "long", { duration: 3600, trimStartSeconds: 900, trimEndSeconds: 920 }),
+    clip("manual", "long", { duration: 3600, trimStartSeconds: 600, trimEndSeconds: 620, captionCues: [{ startSeconds: 601, endSeconds: 603, text: "Texto corregido" }] }),
+  ];
+  const [target] = getCaptionGenerationTargets(timeline, { scope: "missing" });
+  assert.deepEqual(target.ranges, [{ startSeconds: 300, endSeconds: 325 }, { startSeconds: 900, endSeconds: 920 }]);
+  const result = mergeCaptionGenerationResult(timeline, target, { captionCues: [{ startSeconds: 311, endSeconds: 312, text: "Primera parte" }, { startSeconds: 905, endSeconds: 907, text: "Otra parte" }] });
+  assert.deepEqual(result.updatedSegmentIds, ["intro", "overlap", "later"]);
+  assert.equal(result.timeline[3], timeline[3]);
+  assert.equal(result.timeline[2].captionCues[0].startSeconds, 905);
+});
+
+test("a subtitle card crossing a cut does not copy neighbouring words into both clips", () => {
+  const timeline = [clip("before", "a", { trimEndSeconds: 2 }), clip("after", "a", { trimStartSeconds: 2 })];
+  const [target] = getCaptionGenerationTargets(timeline, { scope: "missing" });
+  const result = mergeCaptionGenerationResult(timeline, target, {
+    captionCues: [{ startSeconds: 1, endSeconds: 3, text: "Hola mundo" }],
+    words: [{ text: "Hola", startInSeconds: 1, endInSeconds: 1.8 }, { text: "mundo", startInSeconds: 2.1, endInSeconds: 3 }], maxWords: 4,
+  });
+  assert.equal(result.timeline[0].transcript, "Hola");
+  assert.equal(result.timeline[1].transcript, "mundo");
+  assert.equal(result.timeline[1].captionCues[0].startSeconds, 2.1);
 });
 
 test("split captions use their own source-time interval and preserve corrected or excluded duplicates", () => {

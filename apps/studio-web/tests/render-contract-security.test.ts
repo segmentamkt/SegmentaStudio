@@ -111,7 +111,7 @@ test("rejects a take whose approved status was revoked", () => {
   assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /ya no está aprobada/);
 });
 
-test("allows exactly 12 clips and 120 known seconds, then rejects either excess", () => {
+test("allows exactly 12 clips and 120 edited seconds, then rejects either excess", () => {
   const atLimit = fixture(12, 10_000);
   assert.equal(normalizeRenderContract(atLimit.raw, atLimit.session, atLimit.scenes, atLimit.takes).clips.length, 12);
 
@@ -120,6 +120,27 @@ test("allows exactly 12 clips and 120 known seconds, then rejects either excess"
 
   const tooLong = fixture(2, 60_001);
   assert.throws(() => normalizeRenderContract(tooLong.raw, tooLong.session, tooLong.scenes, tooLong.takes), /120 segundos/);
+});
+
+test("long sources are valid when only their selected intervals fit the output limit", () => {
+  const input = fixture(11, 15_000);
+  input.raw.clips.forEach((clip) => Object.assign(clip, { trim_start_seconds: 5, trim_end_seconds: 15 }));
+  const output = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.equal(output.clips.length, 11);
+  assert.equal(output.clips.reduce((sum, clip) => sum + clip.duration_seconds, 0), 165);
+  assert.equal(output.clips.reduce((sum, clip) => sum + (clip.trim_end_seconds - clip.trim_start_seconds) / clip.playback_speed, 0), 110);
+});
+
+test("late source timestamps and speed survive normalization without weakening the 120s output limit", () => {
+  const input = fixture(1, 900_000);
+  Object.assign(input.raw.clips[0], { trim_start_seconds: 500, trim_end_seconds: 740, playback_speed: 2,
+    caption_cues: [{ startSeconds: 501, endSeconds: 502, text: "Voz real al final" }] });
+  const output = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.equal(output.clips[0].duration_seconds, 900);
+  assert.equal(output.clips[0].trim_start_seconds, 500);
+  assert.equal(output.clips[0].caption_cues[0].startSeconds, 501);
+  Object.assign(input.raw.clips[0], { trim_end_seconds: 741 });
+  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /120 segundos/);
 });
 
 test("rejects a plan after the selected take of a scene changes", () => {

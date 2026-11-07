@@ -6,7 +6,6 @@ type Transition = EditorStyle["transition"];
 type SubtitlePosition = EditorStyle["subtitle"]["position"];
 
 const MAX_CLIPS = 12;
-const MAX_KNOWN_DURATION_MS = 120_000;
 
 function row(value: unknown, label: string): Row {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -101,9 +100,7 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
     throw new Error("Las tomas del plan ya no coinciden con las aprobadas.");
   }
   const sceneByTake = new Map(selectedScenes.map((scene) => [scene.selected_take_id, scene]));
-  let knownDurationMs = 0;
   let plannedDurationSeconds = 0;
-  const countedTakes = new Set<string>();
   let captionCharacters = 0;
   let cueCharacters = 0;
   const clips = rawClips.map((requestedClip, index) => {
@@ -123,9 +120,8 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
       throw new Error("El plan cambió o contiene una ruta de video no autorizada. Vuelve a crear la edición.");
     }
     const measuredMs = durationMs(take.duration_ms);
-    if (!countedTakes.has(takeId)) knownDurationMs += measuredMs;
-    countedTakes.add(takeId);
-    if (knownDurationMs > MAX_KNOWN_DURATION_MS) throw new Error("La duración conocida de las tomas supera los 120 segundos permitidos por render.");
+    // Bound the edited intervals below, not unused footage in their originals.
+    // The sequential renderer seeks to each interval before analysis/encoding.
     const transcript = text(requestedClip.transcript ?? scene.script, "El texto hablado de una escena", 1_000, true);
     captionCharacters += transcript.length;
     if (captionCharacters > 5_000) throw new Error("El libreto completo es demasiado largo para este render.");

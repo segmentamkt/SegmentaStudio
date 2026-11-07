@@ -47,20 +47,30 @@ type RenderInput = {
 
 const safeSeconds = (value: number) => Math.max(0, Number.isFinite(value) ? value : 0);
 const fixed = (value: number) => safeSeconds(value).toFixed(3);
+const MAX_OUTPUT_SECONDS = 120;
+// At the maximum 2x speed, 240s of selected source produces 120s of output.
+const MAX_SELECTED_SOURCE_SECONDS = MAX_OUTPUT_SECONDS * 2;
 
-export async function analyzeSequentialClip(command: string, url: string, durationHint: number, remove: boolean, thresholdMs: number, noiseDb = -35): Promise<Analysis> {
+export async function analyzeSequentialClip(command: string, url: string, durationHint: number, remove: boolean, thresholdMs: number, noiseDb = -35, sourceWindow?: Range, deadline?: number): Promise<Analysis> {
   const threshold = Math.max(.35, thresholdMs / 1000);
-  const limit = Math.min(120, Math.max(1, safeSeconds(durationHint) + .5));
+  const window = sourceWindow ?? { start: 0, end: durationHint };
+  const limit = window.end - window.start;
+  if (!Number.isFinite(window.start) || !Number.isFinite(window.end) || window.start < 0 || limit < .2 || limit > MAX_SELECTED_SOURCE_SECONDS) {
+    throw new Error("El intervalo de análisis no es válido. Conserva un montaje de hasta 2 minutos.");
+  }
+  const timeoutMs = Math.min(45_000, 15_000 + limit * 3_000, deadline === undefined ? Infinity : deadline - Date.now());
+  if (timeoutMs <= 0) throw new Error("El proyecto excedió el tiempo seguro de exportación.");
   const events: Range[] = [];
   let pending: number | null = null;
   let tooManyEvents = false;
   const result = await capture(command, [
-    "-hide_banner", "-nostdin", "-nostats", "-threads", "1", "-filter_threads", "1", "-i", url,
+    "-hide_banner", "-nostdin", "-nostats", "-threads", "1", "-filter_threads", "1",
+    "-ss", fixed(window.start), "-t", fixed(limit), "-i", url,
     "-map", "0:a:0?", "-vn", "-sn", "-dn",
     ...(remove ? ["-af", `silencedetect=noise=${[-35, -30, -25].includes(noiseDb) ? noiseDb : -30}dB:d=${threshold}`] : []),
     "-t", fixed(limit), "-f", "null", "-",
   ], {
-    timeoutMs: Math.min(45_000, 15_000 + durationHint * 3_000),
+    timeoutMs,
     onStderrLine: (line) => {
       const start = line.match(/silence_start:\s*(-?\d+(?:\.\d+)?)/);
       if (start) pending = safeSeconds(Number(start[1]));
@@ -79,25 +89,32 @@ export async function analyzeSequentialClip(command: string, url: string, durati
   if (hasAudio && result.code !== 0) throw new Error(`El audio no pudo analizarse: ${result.stderr.slice(-400)}`);
   const mediaDuration = result.stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
   const measured = mediaDuration ? Number(mediaDuration[1]) * 3600 + Number(mediaDuration[2]) * 60 + Number(mediaDuration[3]) : durationHint;
-  const duration = Math.min(limit, Math.max(.1, measured));
-  if (!hasAudio || !remove) return { duration, ranges: [{ start: 0, end: duration }], removed: 0, hasAudio };
-  if (pending !== null) events.push({ start: pending, end: duration });
+  if (!Number.isFinite(measured) || measured <= 0 || measured < window.end - .1) {
+    throw new Error("El recorte solicitado supera el video disponible. Actualiza la duración de la toma.");
+  }
+  const duration = measured;
+  const windowDuration = Math.min(window.end, duration) - window.start;
+  if (windowDuration < .2) throw new Error("El recorte no contiene video suficiente.");
+  if (!hasAudio || !remove) return { duration, ranges: [{ start: window.start, end: window.start + windowDuration }], removed: 0, hasAudio };
+  if (pending !== null) events.push({ start: pending, end: windowDuration });
   const ranges: Range[] = [];
   let cursor = 0;
   let removed = 0;
   for (const event of events) {
-    const start = Math.min(duration, safeSeconds(event.start));
-    const end = Math.min(duration, safeSeconds(event.end));
+    const start = Math.min(windowDuration, safeSeconds(event.start));
+    const end = Math.min(windowDuration, safeSeconds(event.end));
     if (end - start < threshold) continue;
-    const keepEnd = Math.min(duration, start + .1);
+    const keepEnd = Math.min(windowDuration, start + .1);
     if (keepEnd - cursor > .16) ranges.push({ start: cursor, end: keepEnd });
     const next = Math.max(0, end - .1);
     removed += Math.max(0, next - keepEnd);
     cursor = next;
   }
-  if (duration - cursor > .16) ranges.push({ start: cursor, end: duration });
-  if (!ranges.length) ranges.push({ start: 0, end: duration });
-  return { duration, ranges, removed, hasAudio };
+  if (windowDuration - cursor > .16) ranges.push({ start: cursor, end: windowDuration });
+  if (!ranges.length) ranges.push({ start: 0, end: windowDuration });
+  // FFmpeg resets timestamps after input seeking. Restore source coordinates
+  // once here so manual trims and timed captions share the same timeline.
+  return { duration, ranges: ranges.map((range) => ({ start: range.start + window.start, end: range.end + window.start })), removed, hasAudio };
 }
 
 /** Keep source timestamps intact so FFmpeg can select the exact manual range. */
@@ -181,8 +198,13 @@ export async function renderSequentialClip(input: {
   const volume = Math.max(0, Math.min(2, Number(clip.audio_volume ?? 1)));
   const sourceDuration = analysis.ranges.reduce((total, range) => total + range.end - range.start, 0);
   const duration = sourceDuration / speed;
+  const sourceStart = analysis.ranges[0]?.start ?? NaN;
+  const sourceEnd = analysis.ranges[analysis.ranges.length - 1]?.end ?? NaN;
+  if (!Number.isFinite(sourceStart) || !Number.isFinite(sourceEnd) || sourceStart < 0 || sourceEnd - sourceStart < .2 || sourceEnd - sourceStart > MAX_SELECTED_SOURCE_SECONDS || duration > MAX_OUTPUT_SECONDS) {
+    throw new Error("El intervalo del render no es válido.");
+  }
   const clipTransition = Math.min(transitionSeconds, duration / 3);
-  const select = analysis.ranges.map((range) => `between(t,${fixed(range.start)},${fixed(range.end)})`).join("+");
+  const select = analysis.ranges.map((range) => `between(t,${fixed(range.start - sourceStart)},${fixed(range.end - sourceStart)})`).join("+");
   const fit = execution.framing === "fit";
   const zoom = Math.max(0, Math.min(10, Number(execution.zoomPercent || 0)));
   const brightness = Math.max(-.2, Math.min(.2, Number(clip.brightness ?? 0)));
@@ -274,7 +296,8 @@ export async function renderSequentialClip(input: {
     audioLabel = sound.outputLabel;
     cueCount = sound.renderedCueCount;
   }
-  const args = ["-y", "-hide_banner", "-nostdin", "-loglevel", "error", "-filter_complex_threads", "1", "-threads", "1", "-i", url];
+  const args = ["-y", "-hide_banner", "-nostdin", "-loglevel", "error", "-filter_complex_threads", "1", "-threads", "1",
+    "-ss", fixed(sourceStart), "-t", fixed(sourceEnd - sourceStart), "-i", url];
   if (!analysis.hasAudio) args.push("-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
   overlays.forEach((_, overlayIndex) => args.push("-f", "image2pipe", "-framerate", "30", "-c:v", "png", "-i", `pipe:${overlayIndex + 3}`));
   args.push(
@@ -299,13 +322,25 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
   const deadline = Date.now() + 250_000;
   await input.onProgress(14, "Analizando voz y silencios");
   const analyses: Analysis[] = [];
+  let plannedDuration = 0;
+  for (const clip of input.contract.clips) {
+    const start = clip.trim_start_seconds ?? 0;
+    const end = clip.trim_end_seconds ?? clip.duration_seconds;
+    const speed = clip.playback_speed ?? 1;
+    if (![start, end, speed].every(Number.isFinite) || start < 0 || end > clip.duration_seconds || end - start < .2 || speed < .5 || speed > 2) {
+      throw new Error("Un recorte o su velocidad no es válido.");
+    }
+    plannedDuration += (end - start) / speed;
+  }
+  if (plannedDuration > MAX_OUTPUT_SECONDS) throw new Error("Esta versión cloud procesa hasta 2 minutos de video final por edición.");
   for (const [index, clip] of input.contract.clips.entries()) {
-    const result = await analyzeSequentialClip(command, input.signedUrls[index], clip.duration_seconds, input.contract.dead_air.remove, input.contract.dead_air.threshold_ms, input.contract.dead_air.noise_db ?? -30);
+    const result = await analyzeSequentialClip(command, input.signedUrls[index], clip.duration_seconds, input.contract.dead_air.remove, input.contract.dead_air.threshold_ms, input.contract.dead_air.noise_db ?? -30,
+      { start: clip.trim_start_seconds ?? 0, end: clip.trim_end_seconds ?? clip.duration_seconds }, deadline);
     analyses.push(trimSequentialAnalysis(result, clip));
     await input.onProgress(14 + Math.round((index + 1) / input.contract.clips.length * 20), `Analizando toma ${index + 1} de ${input.contract.clips.length}`);
   }
   const totalDuration = analyses.reduce((sum, item, index) => sum + item.ranges.reduce((value, range) => value + range.end - range.start, 0) / Math.max(.5, Math.min(2, Number(input.contract.clips[index].playback_speed ?? 1))), 0);
-  if (totalDuration > 120) throw new Error("Esta versión cloud procesa hasta 2 minutos por edición.");
+  if (totalDuration > MAX_OUTPUT_SECONDS) throw new Error("Esta versión cloud procesa hasta 2 minutos por edición.");
   const transitionSeconds = input.contract.effects.transitions && input.contract.style_snapshot.transition !== "cut"
     ? Math.max(0, Math.min(.35, Number(input.contract.style_snapshot.transitionDuration ?? .18))) : 0;
   const kbps = Math.max(800, Math.min(8000, Math.floor((44_000_000 * 8 / Math.max(1, totalDuration) - 160_000) / 1000)));

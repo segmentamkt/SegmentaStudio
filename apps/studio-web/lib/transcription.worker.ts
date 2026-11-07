@@ -5,7 +5,7 @@ export type SpeechWorkerRequest = { id: string; waveform: Float32Array; duration
 export type SpeechWorkerMessage =
   | { id: string; type: "progress"; stage: string; percent?: number }
   | { id: string; type: "result"; result: SpeechTranscription }
-  | { id: string; type: "error"; error: string };
+  | { id: string; type: "error"; error: string; code?: "no-speech" };
 
 const scope = self as unknown as { onmessage: ((event: MessageEvent<SpeechWorkerRequest>) => void) | null; postMessage: (message: SpeechWorkerMessage) => void };
 const MODEL = "onnx-community/whisper-base_timestamped";
@@ -36,11 +36,12 @@ scope.onmessage = async ({ data }) => {
     const result = transcriptionFromChunks(output.chunks || [], data.durationSeconds, data.maxWords);
     scope.postMessage({ id: data.id, type: "result", result });
   } catch (reason) {
-    transcriber = null;
     const message = reason instanceof Error ? reason.message : "";
+    const noSpeech = /No reconocimos/.test(message);
+    if (!noSpeech) transcriber = null;
     console.warn("Segmenta: error del reconocimiento local", message.slice(0, 600));
     const network = /fetch|network|download|load.*model|HTTP|Unauthorized|Forbidden|404|403/i.test(message);
-    scope.postMessage({ id: data.id, type: "error", error: network
+    scope.postMessage({ id: data.id, type: "error", ...(noSpeech ? { code: "no-speech" as const } : {}), error: network
       ? "No pudimos descargar el modelo de voz. Revisa la conexión y vuelve a intentarlo; no necesitas una clave API."
       : /No reconocimos/.test(message) ? message : "El reconocimiento local no pudo terminar en este dispositivo. Cierra otras pestañas pesadas y vuelve a intentarlo." });
   }

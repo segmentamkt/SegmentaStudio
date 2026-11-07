@@ -1,4 +1,5 @@
 import type { CaptionCue } from "./caption-cues";
+import { normalizeSpeechRanges, timedCaptionCards, type SpeechRange, type SpeechWord } from "./transcription-core";
 
 export type CaptionGenerationClip = {
   segmentId: string;
@@ -14,6 +15,7 @@ export type CaptionGenerationClip = {
 export type CaptionGenerationTarget = {
   takeId: string;
   durationSeconds: number;
+  ranges: SpeechRange[];
   segments: Array<{ segmentId: string; signature: string }>;
 };
 
@@ -24,7 +26,7 @@ function captionSignature(clip: CaptionGenerationClip) {
   ]);
 }
 
-/** Transcribe a source once, while retaining the exact segments the user requested. */
+/** Combine requested trims per source while retaining the exact segments to update. */
 export function getCaptionGenerationTargets(
   timeline: CaptionGenerationClip[],
   input: { scope: "missing" | "selected"; selectedSegmentId?: string },
@@ -35,19 +37,20 @@ export function getCaptionGenerationTargets(
       ? clip.segmentId === input.selectedSegmentId
       : clip.included && !clip.captionCues.length;
     if (!selected) continue;
-    const target = targets.get(clip.takeId) || { takeId: clip.takeId, durationSeconds: clip.duration, segments: [] };
+    const target = targets.get(clip.takeId) || { takeId: clip.takeId, durationSeconds: clip.duration, ranges: [], segments: [] };
     target.durationSeconds = Math.max(target.durationSeconds, clip.duration);
     target.segments.push({ segmentId: clip.segmentId, signature: captionSignature(clip) });
+    target.ranges.push({ startSeconds: clip.trimStartSeconds, endSeconds: clip.trimEndSeconds });
     targets.set(clip.takeId, target);
   }
-  return [...targets.values()];
+  return [...targets.values()].map((target) => ({ ...target, ranges: normalizeSpeechRanges(target.ranges, target.durationSeconds) }));
 }
 
 /** Apply only requested, unchanged segments. Captions retain source-media timestamps. */
 export function mergeCaptionGenerationResult<T extends CaptionGenerationClip>(
   timeline: T[],
   target: CaptionGenerationTarget,
-  result: { captionCues: CaptionCue[] },
+  result: { captionCues: CaptionCue[]; words?: SpeechWord[]; maxWords?: number },
 ) {
   const requested = new Map(target.segments.map((segment) => [segment.segmentId, segment.signature]));
   const updatedSegmentIds: string[] = [];
@@ -64,7 +67,13 @@ export function mergeCaptionGenerationResult<T extends CaptionGenerationClip>(
     }
     const start = Math.max(0, clip.trimStartSeconds);
     const end = Math.min(clip.duration, clip.trimEndSeconds);
-    const captionCues = result.captionCues
+    // Rebuild cards inside this trim. Clipping a four-word card alone would
+    // repeat words from the neighbouring split even when they were not spoken here.
+    const sourceCues = result.words ? timedCaptionCards(result.words
+      .filter((word) => word.endInSeconds > start && word.startInSeconds < end)
+      .map((word) => ({ ...word, startInSeconds: Math.max(start, word.startInSeconds), endInSeconds: Math.min(end, word.endInSeconds) })), clip.duration, result.maxWords)
+      : result.captionCues;
+    const captionCues = sourceCues
       .filter((cue) => Number.isFinite(cue.startSeconds) && Number.isFinite(cue.endSeconds) && cue.text.trim())
       .map((cue) => ({
         startSeconds: Math.max(start, cue.startSeconds),

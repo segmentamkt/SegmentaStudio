@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import ffmpegPath from "ffmpeg-static";
-import { createRenderPreview, renderSequentialClip, trimSequentialAnalysis } from "../lib/sequential-cloud-video-renderer";
+import { analyzeSequentialClip, createRenderPreview, renderSequentialClip, trimSequentialAnalysis } from "../lib/sequential-cloud-video-renderer";
+import { mapCaptionCues } from "../lib/caption-cues";
 import { MAX_RENDER_PREVIEW_BYTES, parseRenderPreview } from "../lib/render-preview";
 
 test("manual trim intersects voice ranges without moving source timestamps", () => {
@@ -13,6 +14,69 @@ test("manual trim intersects voice ranges without moving source timestamps", () 
   const result = trimSequentialAnalysis(analysis, { id: "one", name: "Toma", object_key: "one", duration_seconds: 10, transcript: "", trim_start_seconds: 1, trim_end_seconds: 7 });
   assert.deepEqual(result.ranges, [{ start: 1, end: 3 }, { start: 5, end: 7 }]);
   assert.equal(result.removed, 2);
+});
+
+test("late intervals of a long source preserve manual trims, silence cuts, speech and timed captions", async () => {
+  assert.ok(ffmpegPath);
+  const directory = await mkdtemp(join(tmpdir(), "segmenta-late-trim-test-"));
+  const source = join(directory, "long.mp4");
+  const output = join(directory, "late.mp4");
+  const run = (args: string[]) => {
+    const result = spawnSync(ffmpegPath!, args, { encoding: "utf8", timeout: 60_000 });
+    assert.equal(result.status, 0, result.stderr?.slice(-1800));
+    return result.stderr;
+  };
+  try {
+    // Red before 125s, blue afterwards; voice only at the two ends of the cut.
+    run(["-y", "-hide_banner", "-loglevel", "error", "-threads", "1",
+      "-f", "lavfi", "-i", "color=c=red:s=160x90:r=5:d=129",
+      "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000:duration=129",
+      "-vf", "drawbox=x=0:y=0:w=iw:h=ih:color=blue:t=fill:enable='gte(t,125)'",
+      "-af", "volume=0:enable='not(between(t,125,125.8)+between(t,127,128.5))'",
+      "-c:v", "libx264", "-threads", "1", "-preset", "ultrafast", "-g", "5", "-c:a", "aac", "-b:a", "32k", "-shortest", source]);
+    const clip = { id: "late", name: "Toma larga", object_key: "late", duration_seconds: 129, transcript: "PRIMERA SEGUNDA",
+      trim_start_seconds: 125, trim_end_seconds: 128.5, caption_cues: [
+        { startSeconds: 125.1, endSeconds: 125.6, text: "PRIMERA" },
+        { startSeconds: 127.2, endSeconds: 128.2, text: "SEGUNDA" },
+      ] };
+    const analysis = await analyzeSequentialClip(ffmpegPath!, source, 129, true, 500, -30, { start: 125, end: 128.5 });
+    assert.ok(Math.abs(analysis.duration - 129) < .15);
+    assert.equal(analysis.ranges.length, 2, JSON.stringify(analysis));
+    assert.ok(analysis.ranges.every((range) => range.start >= 125 && range.end <= 128.5));
+    const trimmed = trimSequentialAnalysis(analysis, clip);
+    assert.ok(trimmed.removed > .6 && trimmed.removed < 1.3, JSON.stringify(trimmed));
+    const mapped = mapCaptionCues(clip.caption_cues, trimmed.ranges);
+    assert.equal(mapped.length, 2);
+    assert.ok(mapped[0].startSeconds >= 0 && mapped[0].startSeconds < .2);
+    assert.ok(mapped[1].startSeconds > .8 && mapped[1].startSeconds < 1.6, JSON.stringify(mapped));
+    const contract: Parameters<typeof renderSequentialClip>[0]["contract"] = {
+      objective: "Recorte tardío", session: { title: "Edición de 1 video" }, clips: [clip],
+      style_snapshot: { transition: "cut", subtitle: { text: "#FFFFFF", box: "#000000", size: 48, uppercase: false }, execution: { framing: "fill", titleCards: false } },
+      captions: { enabled: true, max_words_per_card: 4 }, dead_air: { remove: true, threshold_ms: 500 },
+      effects: { transitions: false, sound_effects: false, labels: false }, quality_gates: { timed_captions: true },
+    };
+    const rendered = await renderSequentialClip({ command: ffmpegPath!, contract, analysis: trimmed, url: source, index: 0,
+      output, videoKbps: 1200, transitionSeconds: 0, deadline: Date.now() + 60_000 });
+    assert.equal(rendered.captionCount, 2);
+    assert.ok(rendered.duration > 2.2 && rendered.duration < 2.9);
+    const inspection = run(["-hide_banner", "-i", output, "-map", "0:a:0", "-af", "volumedetect", "-f", "null", "-"]);
+    const peak = Number(inspection.match(/max_volume:\s*(-?[\d.]+) dB/)?.[1]);
+    assert.ok(Number.isFinite(peak) && peak > -40, `Voice must survive source seeking: ${peak}`);
+    // Sample the top-left area, away from subtitles: blue proves we sought to
+    // the requested source interval instead of rendering its initial red frames.
+    const pixel = spawnSync(ffmpegPath!, ["-hide_banner", "-loglevel", "error", "-ss", "0.2", "-i", output,
+      "-vf", "crop=16:16:0:0,scale=1:1", "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"], { timeout: 15_000 });
+    assert.equal(pixel.status, 0, pixel.stderr?.toString());
+    assert.ok(pixel.stdout[2] > 150 && pixel.stdout[0] < 100, `Expected blue source frame, received ${Array.from(pixel.stdout)}`);
+    await assert.rejects(analyzeSequentialClip(ffmpegPath!, source, 129, false, 500, -30, { start: 128, end: 132 }), /supera el video disponible/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("analysis rejects unbounded source intervals before opening media", async () => {
+  for (const window of [{ start: 0, end: 241 }, { start: -1, end: 2 }, { start: 2, end: 2.1 }, { start: 0, end: Infinity }]) {
+    await assert.rejects(analyzeSequentialClip("unused", "unused", 900, true, 500, -30, window), /intervalo de análisis/);
+  }
+  await assert.rejects(analyzeSequentialClip("unused", "unused", 10, true, 500, -30, { start: 0, end: 2 }, Date.now() - 1), /tiempo seguro/);
 });
 
 test("sequential HEVC clips normalize to a playable joined portrait MP4 with text and sound", async () => {

@@ -1,14 +1,64 @@
 "use client";
 
-import { decodeSpeechWav, type SpeechTranscription } from "./transcription-core";
+import {
+  decodeSpeechWav, MAX_SPEECH_AUDIO_BYTES, mergeSpeechWindowWords, planSpeechWindows,
+  sourceWordsForWindow, SpeechAudioError, SPEECH_SAMPLE_RATE, timedCaptionCards,
+  type SpeechRange, type SpeechTranscription, type SpeechWord,
+} from "./transcription-core";
 import type { SpeechWorkerMessage, SpeechWorkerRequest } from "./transcription.worker";
 
 export { timedCaptionCards } from "./transcription-core";
-export type { SpeechWord, SpeechTranscription } from "./transcription-core";
+export type { SpeechWord, SpeechTranscription, SpeechRange } from "./transcription-core";
 
 let speechWorker: Worker | null = null;
 let transcriptionActive = false;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
+// Only small timestamped text results are cached, never PCM buffers or video.
+const windowCache = new Map<string, SpeechWord[]>();
+const MAX_CACHED_WINDOWS = 48;
+const MAX_CACHED_WORDS = 30_000;
+
+export function clearSpeechTranscriptionCache() {
+  windowCache.clear();
+  if (!transcriptionActive) releaseWorker();
+}
+
+function cacheWords(key: string, words: SpeechWord[]) {
+  windowCache.delete(key);
+  windowCache.set(key, words);
+  let count = [...windowCache.values()].reduce((total, value) => total + value.length, 0);
+  while (windowCache.size > MAX_CACHED_WINDOWS || count > MAX_CACHED_WORDS) {
+    const oldest = windowCache.keys().next().value;
+    if (oldest === undefined) break;
+    count -= windowCache.get(oldest)!.length;
+    windowCache.delete(oldest);
+  }
+}
+
+async function readSpeechAudio(response: Response, signal?: AbortSignal): Promise<ArrayBuffer> {
+  if (Number(response.headers.get("content-length") || 0) > MAX_SPEECH_AUDIO_BYTES) throw new Error("El fragmento de audio es demasiado grande. Intenta generar los subtítulos por tramos.");
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("No recibimos el audio de este tramo. Inténtalo de nuevo.");
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      signal?.throwIfAborted();
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_SPEECH_AUDIO_BYTES) {
+        await reader.cancel();
+        throw new Error("El fragmento de audio es demasiado grande. Intenta generar los subtítulos por tramos.");
+      }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  const result = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length; }
+  return result.buffer;
+}
 
 function releaseWorker() {
   speechWorker?.terminate();
@@ -43,7 +93,12 @@ function recognize(input: { waveform: Float32Array; durationSeconds: number; max
       if (event.data.id !== id) return;
       if (event.data.type === "progress") { input.onProgress?.(event.data.stage, event.data.percent); return; }
       cleanup();
-      if (event.data.type === "error") { releaseWorker(); reject(new Error(event.data.error)); }
+      if (event.data.type === "error") {
+        if (event.data.code === "no-speech") {
+          idleTimer = setTimeout(releaseWorker, 120_000);
+          reject(new SpeechAudioError(event.data.error, "silent"));
+        } else { releaseWorker(); reject(new Error(event.data.error)); }
+      }
       else {
         // Keep the loaded model for the next take in a batch, then release its memory.
         idleTimer = setTimeout(releaseWorker, 120_000);
@@ -65,6 +120,8 @@ function recognize(input: { waveform: Float32Array; durationSeconds: number; max
 export async function transcribeTakeInBrowser(input: {
   takeId: string;
   durationSeconds: number;
+  /** Absolute source intervals. Omit only to transcribe the complete source. */
+  ranges?: SpeechRange[];
   maxWords: number;
   signal?: AbortSignal;
   onProgress?: (stage: string, percent?: number) => void;
@@ -72,17 +129,52 @@ export async function transcribeTakeInBrowser(input: {
   if (input.signal?.aborted) throw abortError();
   if (transcriptionActive) throw new Error("Ya hay una transcripción en curso. Espera a que termine o cancélala.");
   if (typeof Worker === "undefined" || typeof WebAssembly === "undefined") throw new Error("Este navegador no admite el reconocimiento local. Usa un navegador actualizado o importa SRT/VTT.");
-  if (!Number.isFinite(input.durationSeconds) || input.durationSeconds <= 0 || input.durationSeconds > 120) throw new Error("La transcripción admite tomas de hasta 2 minutos.");
+  const windows = planSpeechWindows(input.ranges, input.durationSeconds);
   transcriptionActive = true;
   try {
-    input.onProgress?.("Preparando el audio de la toma");
-    const response = await fetch(`/api/media/${encodeURIComponent(input.takeId)}/audio`, { cache: "no-store", signal: input.signal });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({})) as { error?: string };
-      throw new Error(payload.error || "No pudimos extraer la voz de esta toma.");
+    const words: SpeechWord[] = [];
+    for (const [index, window] of windows.entries()) {
+      input.signal?.throwIfAborted();
+      const prefix = windows.length > 1 ? `Tramo ${index + 1} de ${windows.length} · ` : "";
+      const key = JSON.stringify([input.takeId, window.startSeconds, window.endSeconds]);
+      let recognized = windowCache.get(key);
+      if (recognized) {
+        // Touch LRU order without copying audio or repeating inference after a retry.
+        windowCache.delete(key); windowCache.set(key, recognized);
+        input.onProgress?.(`${prefix}Recuperando palabras ya reconocidas`, Math.round(index / windows.length * 100));
+      } else {
+        input.onProgress?.(`${prefix}Preparando el audio de este recorte`, Math.round(index / windows.length * 100));
+        const params = new URLSearchParams({ startSeconds: String(window.startSeconds), endSeconds: String(window.endSeconds) });
+        const response = await fetch(`/api/media/${encodeURIComponent(input.takeId)}/audio?${params}`, { cache: "no-store", signal: input.signal });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({})) as { error?: string };
+          throw new Error(`${prefix}${payload.error || "No pudimos extraer la voz de este tramo."}`);
+        }
+        try {
+          const waveform = decodeSpeechWav(await readSpeechAudio(response, input.signal));
+          input.signal?.throwIfAborted();
+          const result = await recognize({ waveform, durationSeconds: Math.min(window.endSeconds - window.startSeconds, waveform.length / SPEECH_SAMPLE_RATE), maxWords: input.maxWords, signal: input.signal,
+            onProgress: (stage, percent) => input.onProgress?.(`${prefix}${stage}`, percent === undefined ? undefined : Math.round((index + percent / 100) / windows.length * 100)),
+          });
+          // Old worker bundles can still return timestamped cards after a deploy;
+          // preserving them is safer than discarding already recognized text.
+          recognized = result.words ?? result.captionCues.map((cue) => ({ text: cue.text, startInSeconds: cue.startSeconds, endInSeconds: cue.endSeconds }));
+        } catch (error) {
+          if (error instanceof SpeechAudioError && error.code === "silent") recognized = [];
+          else throw error;
+        }
+        cacheWords(key, recognized);
+      }
+      words.push(...sourceWordsForWindow(recognized, window));
+      input.onProgress?.(`${prefix}Palabras sincronizadas`, Math.round((index + 1) / windows.length * 100));
     }
-    const waveform = decodeSpeechWav(await response.arrayBuffer());
     input.signal?.throwIfAborted();
-    return await recognize({ waveform, durationSeconds: Math.min(input.durationSeconds, waveform.length / 16_000), maxWords: input.maxWords, signal: input.signal, onProgress: input.onProgress });
-  } finally { transcriptionActive = false; }
+    const sourceWords = mergeSpeechWindowWords(words);
+    const captionCues = timedCaptionCards(sourceWords, input.durationSeconds, input.maxWords);
+    if (!captionCues.length) throw new Error("No reconocimos voz con tiempos en los recortes seleccionados. Revisa el audio o importa SRT/VTT.");
+    return { transcript: captionCues.map((cue) => cue.text).join(" "), captionCues, words: sourceWords, maxWords: input.maxWords };
+  } finally {
+    transcriptionActive = false;
+    if (input.signal?.aborted) releaseWorker();
+  }
 }
