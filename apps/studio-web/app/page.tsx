@@ -136,6 +136,7 @@ export default function Home() {
   const [addingScene, setAddingScene] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  const cameraPanelRef = useRef<HTMLElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const newUploadInputRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -648,6 +649,7 @@ export default function Home() {
     if (!mayNavigate()) return;
     clearRecording(); setSceneIndex(index); setRecordingNotice("");
     if (!cameraReady && !cameraOpening) void startCamera();
+    if (window.innerWidth < 1280) requestAnimationFrame(() => cameraPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
   };
 
   const openScriptImporter = () => {
@@ -693,7 +695,7 @@ export default function Home() {
           <div className="min-w-0 pl-1"><strong className="block text-xs font-medium text-white sm:text-sm">¿Ya tienes videos grabados?</strong><span className="block truncate text-[10px] text-zinc-500 sm:text-xs">Sube varios MP4, MOV o WebM a un proyecto nuevo.</span></div>
           <button onClick={() => newUploadInputRef.current?.click()} disabled={navigationLocked || saving} className="flex shrink-0 items-center justify-center gap-2 rounded-xl bg-violet-500 px-3 py-3 text-xs font-semibold text-white disabled:opacity-40 sm:px-5 sm:text-sm"><UploadCloud size={16} />Subir videos</button>
         </div>
-        <section className={`mb-3 overflow-hidden rounded-2xl bg-gradient-to-r sm:mb-5 sm:rounded-3xl ${view === "record" || view === "edit" ? "hidden sm:block" : ""} ${accentClasses[currentPortfolio?.accent] || accentClasses.violet} p-[1px]`}>
+        <section className={`mb-3 overflow-hidden rounded-2xl bg-gradient-to-r sm:mb-5 sm:rounded-3xl ${view === "record" ? "hidden" : view === "edit" ? "hidden sm:block" : ""} ${accentClasses[currentPortfolio?.accent] || accentClasses.violet} p-[1px]`}>
           <div className="flex flex-col justify-between gap-3 rounded-[15px] bg-[#0c0f18]/95 p-3.5 sm:gap-4 sm:rounded-[23px] sm:p-5 sm:flex-row sm:items-center">
             <div className="min-w-0"><p className="truncate text-[9px] font-bold uppercase tracking-[.18em] text-violet-300 sm:text-[10px]">{currentPortfolio?.niche}</p><h1 className="mt-0.5 truncate text-lg font-semibold sm:mt-1 sm:text-2xl">{currentPortfolio?.name || "Tu portafolio"}</h1><p className="mt-0.5 truncate text-xs text-zinc-500 sm:mt-1 sm:text-sm">{currentPortfolio?.essence}</p></div>
             <div className="flex w-full min-w-0 rounded-2xl border border-white/8 bg-black/25 p-1 sm:w-auto">
@@ -719,7 +721,7 @@ export default function Home() {
               <button onClick={() => { if (mayNavigate()) setShowNewSession(true); }} className="mt-5 flex w-full items-center justify-center gap-2 rounded-2xl bg-violet-500 px-5 py-3.5 text-sm font-semibold sm:w-auto"><Plus size={17} />Crear mi primera grabación</button>
             </div>
           </section> :
-          <div className="grid gap-5 xl:grid-cols-[300px_minmax(0,1fr)_330px]">
+          <div className="grid min-w-0 grid-cols-1 gap-5 xl:grid-cols-[260px_minmax(0,1fr)_300px]">
             <aside className="min-w-0 space-y-4">
               <div className="flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-zinc-600">Carpetas de rodaje</p><h2 className="mt-1 font-medium">Tus libretos y videos</h2></div><button onClick={() => { if (mayNavigate()) setShowNewSession(true); }} className="grid h-9 w-9 place-items-center rounded-xl bg-violet-500 text-white"><Plus size={16} /></button></div>
               <div className="flex gap-2 overflow-x-auto pb-2 xl:max-h-[70vh] xl:flex-col xl:overflow-y-auto">
@@ -732,7 +734,7 @@ export default function Home() {
               </div>
             </aside>
 
-            <section className="min-w-0">
+            <section ref={cameraPanelRef} className="min-w-0 scroll-mt-32">
               {activeSession && activeScene ? <>
                 <div className="mx-auto mb-3 max-w-[480px]"><p className="truncate text-xs text-violet-200"><FolderOpen size={14} className="mr-1 inline" />{activeSession.title} / {activeScene.title}</p><p className="mt-1 text-[11px] text-zinc-500">La toma se guardará aquí. Aprueba para avanzar o conserva el error como blooper.</p></div>
                 {recordingNotice && <p role="status" className="mx-auto mb-3 max-w-[480px] rounded-xl border border-emerald-300/20 bg-emerald-300/5 p-3 text-xs leading-5 text-emerald-200">{recordingNotice}</p>}
@@ -752,7 +754,7 @@ export default function Home() {
               </> : <div className="grid min-h-[320px] place-items-center rounded-3xl border border-dashed border-white/10 bg-white/[.02] p-6 text-center sm:min-h-[560px] sm:p-8"><div><FolderOpen className="mx-auto text-zinc-700" size={36} /><h2 className="mt-4 text-lg font-semibold sm:mt-5 sm:text-xl">Elige una grabación</h2><p className="mt-2 max-w-sm text-sm leading-6 text-zinc-500">Selecciona una producción para continuar con sus escenas.</p></div></div>}
             </section>
 
-            <aside className="space-y-4">
+            <aside className="min-w-0 space-y-4">
               {activeSession && <><section className="rounded-2xl border border-violet-400/20 bg-violet-400/5 p-4"><p className="text-[10px] font-bold uppercase tracking-widest text-violet-300">Dirección antes de editar</p><p className="mt-2 line-clamp-3 text-xs leading-5 text-zinc-300">{String(data?.preproductionPlans?.find((item) => item.sessionId === activeSession.id)?.contract?.description || "Este proyecto aún no tiene un plan de edición previo.")}</p><button disabled={navigationLocked} onClick={() => setEditingPlanSessionId(activeSession.id)} className="mt-3 rounded-lg border border-violet-400/30 px-3 py-2 text-xs text-violet-100">Revisar escenas, skills y sonido</button></section><section className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><div className="flex items-start justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Plan de rodaje</p><h2 className="mt-1 font-medium">{activeSession.title}</h2></div><button disabled={navigationLocked} aria-label="Eliminar carpeta" onClick={() => removeSession(activeSession.id)} className="text-zinc-600 hover:text-red-300"><Trash2 size={16} /></button></div><div className="mt-5 space-y-2">{sessionScenes.map((scene, index) => <button key={scene.id} disabled={navigationLocked} aria-label={`Grabar ${scene.title}`} onClick={() => openRecordingScene(index)} className={`flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left ${activeScene?.id === scene.id ? "border-violet-400/30 bg-violet-400/10" : "border-white/6 bg-black/15"}`}><span className={`grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs ${scene.selectedTakeId ? "bg-emerald-400 text-black" : "bg-white/6 text-zinc-500"}`}>{scene.selectedTakeId ? <Check size={14} /> : index + 1}</span><span className="min-w-0"><strong className="block text-xs font-medium">{scene.title}</strong><small className="block truncate text-zinc-600">{scene.script}</small></span><Camera className="ml-auto shrink-0 text-violet-300" size={15} /></button>)}</div><button onClick={addScene} disabled={addingScene || sessionScenes.length >= 12 || navigationLocked} className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-violet-400/25 px-3 py-2.5 text-xs text-violet-200 disabled:opacity-40">{addingScene ? <LoaderCircle size={14} className="animate-spin" /> : <Plus size={14} />}Añadir escena para otro video</button>{activeScene && <SceneTranscriptEditor key={activeScene.id} sceneId={activeScene.id} initialScript={String(activeScene.script || "")} onSave={saveSceneScript} />}<div className="mt-5 flex items-center justify-between text-xs text-zinc-500"><span>{approvedCount} de {sessionScenes.length} aprobadas</span><span>{Math.round((approvedCount / Math.max(1, sessionScenes.length)) * 100)}%</span></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/8"><div className="h-full bg-emerald-400 transition-all" style={{ width: `${(approvedCount / Math.max(1, sessionScenes.length)) * 100}%` }} /></div><button disabled={navigationLocked} onClick={() => { setEditorSessionId(activeSession.id); setEditorResultId(""); setView("edit"); }} className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-semibold text-black"><CheckCircle2 size={16} />Ir al editor</button></section><section className="rounded-3xl border border-cyan-400/15 bg-cyan-400/5 p-5"><p className="flex items-center gap-2 text-sm font-medium text-cyan-200"><Cloud size={16} />Flujo conectado</p><p className="mt-2 text-xs leading-5 text-zinc-500">Antes de editar, clasifica cada toma y confirma el orden. Los bloopers se conservan separados del montaje principal.</p></section></>}
             </aside>
           </div>
