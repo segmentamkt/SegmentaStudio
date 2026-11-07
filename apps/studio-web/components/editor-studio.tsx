@@ -169,6 +169,8 @@ function Toggle({ enabled, label, detail, onChange }: { enabled: boolean; label:
 export function EditorStudio(props: {
   initialSessionId?: string;
   initialResultId?: string;
+  initialTakeId?: string;
+  initialManualSegmentation?: boolean;
   portfolioId: string;
   sessions: Row[];
   scenes: Row[];
@@ -183,6 +185,11 @@ export function EditorStudio(props: {
   const available = useMemo(() => props.sessions.filter((session) => session.portfolioId === props.portfolioId && props.takes.some((take) => take.sessionId === session.id)), [props.sessions, props.takes, props.portfolioId]);
   const [sessionChoice, setSessionId] = useState(props.initialSessionId || available[0]?.id || "");
   const sessionId = available.some((item) => item.id === sessionChoice) ? sessionChoice : available[0]?.id || "";
+  const gallerySessionId = props.initialSessionId || props.takes.find((take) => take.id === props.initialTakeId)?.sessionId || "";
+  const galleryEntryKey = props.initialTakeId ? `${gallerySessionId}:${props.initialTakeId}:${Boolean(props.initialManualSegmentation)}` : "";
+  const [appliedGalleryEntry, setAppliedGalleryEntry] = useState("");
+  const galleryEntryPending = Boolean(galleryEntryKey && appliedGalleryEntry !== galleryEntryKey && gallerySessionId === sessionId);
+  const [segmentationFocus, setSegmentationFocus] = useState("");
   const [reviewState, setReviewState] = useState<{ key: string; review: MediaReviewReceipt | null; valid: boolean; error: string }>({ key: "", review: null, valid: false, error: "" });
   const [reviewReload, setReviewReload] = useState(0);
   const [manualReviewSession, setManualReviewSession] = useState("");
@@ -195,6 +202,7 @@ export function EditorStudio(props: {
   const reviewLoaded = reviewState.key === reviewSourceKey;
   const reviewConfirmed = reviewLoaded && reviewState.valid && Boolean(reviewState.review?.orderedTakeIds.length);
   const review = reviewConfirmed ? reviewState.review : null;
+  const galleryTakeNeedsReview = galleryEntryPending && reviewLoaded && !review?.orderedTakeIds.includes(props.initialTakeId!);
   useEffect(() => {
     if (!sessionId) return;
     const controller = new AbortController();
@@ -535,9 +543,37 @@ export function EditorStudio(props: {
     setScriptDraft(String(selectedSession?.script || ""));
   }, [sessionId, selectedSession?.script]);
   const selectedStyle = EDITOR_STYLES.find((item) => item.id === style) || EDITOR_STYLES[0];
-  const selectedClip = timeline.find((clip) => clip.segmentId === selectedTakeId) || timeline[0];
-  const selectedTake = approvedTakes.find((take) => take.id === selectedClip?.takeId) || approvedTakes[0];
+  // A gallery request names a source take, while the editor selects a segment.
+  // Do not flash a different source while approval or draft restoration finishes.
+  const selectedClip = galleryEntryPending ? timeline.find((clip) => clip.takeId === props.initialTakeId)
+    : timeline.find((clip) => clip.segmentId === selectedTakeId) || timeline[0];
+  const selectedTake = approvedTakes.find((take) => take.id === selectedClip?.takeId) || (galleryEntryPending ? undefined : approvedTakes[0]);
   const selectedSegmentId = selectedClip?.segmentId;
+  useEffect(() => {
+    if (!galleryEntryPending || !reviewConfirmed || galleryTakeNeedsReview || manualReviewSession === sessionId
+        || timelineReadyKey !== timelineStorageKey) return;
+    const clip = timeline.find((item) => item.takeId === props.initialTakeId && item.included)
+      || timeline.find((item) => item.takeId === props.initialTakeId);
+    if (!clip) return;
+    setSelectedTakeId(clip.segmentId);
+    setPreviewMode("original"); setOverlayEditor(null);
+    captionPreviewSeekRef.current = { segmentId: clip.segmentId, seconds: clip.trimStartSeconds };
+    setPreviewTime(clip.trimStartSeconds);
+    if (props.initialManualSegmentation) { setTool("video"); setSegmentationFocus(clip.segmentId); }
+    setAppliedGalleryEntry(galleryEntryKey);
+  }, [galleryEntryPending, galleryEntryKey, reviewConfirmed, galleryTakeNeedsReview, manualReviewSession, sessionId, timelineReadyKey, timelineStorageKey, timeline, props.initialTakeId, props.initialManualSegmentation]);
+  useEffect(() => {
+    if (!segmentationFocus || selectedSegmentId !== segmentationFocus || !reviewConfirmed || manualReviewSession === sessionId || tool !== "video") return;
+    const frame = window.requestAnimationFrame(() => {
+      const heading = document.getElementById("editor-manual-segmentation-title");
+      const panel = document.getElementById("editor-manual-segmentation");
+      if (!heading || !panel) return;
+      heading.focus({ preventScroll: true });
+      panel.scrollIntoView({ behavior: "smooth", block: "start" });
+      setSegmentationFocus("");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [segmentationFocus, selectedSegmentId, reviewConfirmed, manualReviewSession, sessionId, tool]);
   const previewCueIndex = selectedClip?.captionCues.findIndex((cue) => previewTime >= cue.startSeconds && previewTime < cue.endSeconds) ?? -1;
   const previewCue = previewCueIndex >= 0 ? selectedClip?.captionCues[previewCueIndex] : undefined;
   const cueWords = previewCue?.text.trim().split(/\s+/).filter(Boolean) || [];
@@ -966,19 +1002,20 @@ export function EditorStudio(props: {
     else { videoRef.current.pause(); setPlaying(false); }
   };
 
-  if (selectedSession && (!reviewConfirmed || manualReviewSession === sessionId)) return <section className="overflow-hidden rounded-2xl border border-white/10 bg-[#0a0c12] sm:rounded-3xl">
+  if (selectedSession && (!reviewConfirmed || manualReviewSession === sessionId || galleryTakeNeedsReview)) return <section className="overflow-hidden rounded-2xl border border-white/10 bg-[#0a0c12] sm:rounded-3xl">
     <header className="flex flex-wrap items-center gap-3 border-b border-white/10 p-4">
       <button onClick={props.onBack} aria-label="Volver a proyectos" className="grid h-10 w-10 place-items-center rounded-xl border border-white/10"><ChevronLeft size={18} /></button>
       <div className="min-w-0 flex-1"><p className="text-xs text-violet-300">Antes de editar</p><h2 className="truncate text-sm font-semibold">{selectedSession.title}</h2></div>
       <select aria-label="Proyecto por revisar" value={sessionId} onChange={(event) => { transcriptionRunRef.current?.abort(); setSessionId(event.target.value); setJob(undefined); setManualReviewSession(""); }} className="max-w-full rounded-xl border border-white/10 bg-[#151822] p-2 text-xs sm:max-w-[220px]">{available.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select>
     </header>
+    {galleryEntryPending && <p role="status" className="border-b border-violet-400/15 bg-violet-400/5 px-4 py-3 text-xs leading-5 text-violet-100">Para segmentar el video que elegiste en la galería, aprueba esa toma y confirma el orden. Después abrirás sus controles de recorte y división.</p>}
     {!reviewLoaded ? <p role="status" className="flex items-center justify-center gap-2 p-10 text-sm text-zinc-400"><LoaderCircle size={18} className="animate-spin" />Cargando revisión de tomas…</p> : reviewState.error ? <div role="alert" className="p-6"><p className="text-sm text-red-200">{reviewState.error}</p><button onClick={() => setReviewReload((value) => value + 1)} className="mt-4 rounded-xl bg-violet-500 px-4 py-3 text-sm">Reintentar</button></div> : <MediaReviewPanel
       key={`${sessionId}:${reviewReload}`}
       session={{ id: String(selectedSession.id), title: selectedSession.title, script: selectedSession.script }}
       scenes={props.scenes.filter((scene) => scene.sessionId === sessionId).map((scene) => ({ id: String(scene.id), sessionId, title: scene.title, script: scene.script, position: scene.position, selectedTakeId: scene.selectedTakeId }))}
       takes={props.takes.filter((take) => take.sessionId === sessionId).map((take) => ({ id: String(take.id), sceneId: String(take.sceneId), sessionId, status: take.status, durationMs: take.durationMs, createdAt: take.createdAt }))}
-      onBack={() => reviewConfirmed ? setManualReviewSession("") : props.onBack()}
-      offerAutomaticEdit
+      onBack={() => reviewConfirmed && !galleryTakeNeedsReview ? setManualReviewSession("") : props.onBack()}
+      offerAutomaticEdit={!(props.initialManualSegmentation && gallerySessionId === sessionId)}
       onConfirmed={async (confirmedReview, automatic) => {
         setJob(null); setDraftPending(true); saveEditorDraft(draftPendingKey, "1");
         await props.onRefresh();
@@ -1105,8 +1142,8 @@ export function EditorStudio(props: {
       </aside>
     </div>
 
-    <div className="border-t border-white/8 bg-[#0b0e15] p-3 sm:p-4">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-medium">Línea de tiempo manual</p><p className="text-[10px] text-zinc-500">Ordena, divide y ajusta video, audio y subtítulos antes de exportar.</p></div><div className="flex flex-wrap items-center gap-2"><span className="rounded-lg bg-white/5 px-2 py-1 text-[10px] text-zinc-400">{activeTimeline.length} de {timeline.length} segmentos</span><button onClick={undoTimeline} disabled={Boolean(busy || automaticRunning) || !undoRef.current.length} className="rounded-lg border border-white/10 px-2 py-1.5 text-[10px] text-zinc-300 disabled:opacity-30">Deshacer</button><button onClick={redoTimeline} disabled={Boolean(busy || automaticRunning) || !redoRef.current.length} className="rounded-lg border border-white/10 px-2 py-1.5 text-[10px] text-zinc-300 disabled:opacity-30">Rehacer</button><button onClick={applySuggestedOrder} disabled={Boolean(busy || automaticRunning) || !editorialPlan.reliableOrder} className="rounded-lg border border-violet-400/30 px-2 py-1.5 text-[10px] text-violet-200 disabled:opacity-40">Aplicar orden del libreto</button></div></div>
+    <div id="editor-manual-segmentation" role="region" aria-labelledby="editor-manual-segmentation-title" className="scroll-mt-24 border-t border-white/8 bg-[#0b0e15] p-3 sm:p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h3 id="editor-manual-segmentation-title" tabIndex={-1} className="rounded text-sm font-medium focus-visible:outline-2 focus-visible:outline-violet-300">Segmentar video</h3><p className="text-[10px] text-zinc-500">Línea de tiempo manual · recorta el inicio y final, divide en partes y ordena tus segmentos. El video original se conserva.</p></div><div className="flex flex-wrap items-center gap-2"><span className="rounded-lg bg-white/5 px-2 py-1 text-[10px] text-zinc-400">{activeTimeline.length} de {timeline.length} segmentos</span><button onClick={undoTimeline} disabled={Boolean(busy || automaticRunning) || !undoRef.current.length} className="rounded-lg border border-white/10 px-2 py-1.5 text-[10px] text-zinc-300 disabled:opacity-30">Deshacer</button><button onClick={redoTimeline} disabled={Boolean(busy || automaticRunning) || !redoRef.current.length} className="rounded-lg border border-white/10 px-2 py-1.5 text-[10px] text-zinc-300 disabled:opacity-30">Rehacer</button><button onClick={applySuggestedOrder} disabled={Boolean(busy || automaticRunning) || !editorialPlan.reliableOrder} className="rounded-lg border border-violet-400/30 px-2 py-1.5 text-[10px] text-violet-200 disabled:opacity-40">Aplicar orden del libreto</button></div></div>
       <div className="flex gap-2 overflow-x-auto pb-2" aria-label="Orden de las tomas">
         {timeline.map((clip, index) => <div key={clip.segmentId} className={`min-w-[165px] max-w-[190px] flex-1 rounded-xl border p-2 ${selectedClip?.segmentId === clip.segmentId ? "border-violet-400 bg-violet-400/10" : "border-white/10 bg-white/[.03]"} ${clip.included ? "" : "opacity-50"}`}>
           <button onClick={() => { setSelectedTakeId(clip.segmentId); setPreviewMode("original"); setOverlayEditor(null); }} className="w-full text-left" aria-label={`Editar toma ${index + 1}: ${clip.title}`}><span className="text-[10px] text-violet-300">{index + 1} · {Math.max(.1, (clip.trimEndSeconds - clip.trimStartSeconds) / clip.playbackSpeed).toFixed(1)} s · {clip.playbackSpeed}×</span><strong className="mt-1 block truncate text-xs">{clip.title}</strong><small className="mt-1 block truncate text-[9px] text-zinc-500">{clip.transcript || "Sin texto hablado"}</small></button>

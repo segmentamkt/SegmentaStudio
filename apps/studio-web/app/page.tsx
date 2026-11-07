@@ -7,6 +7,8 @@ import {
   Plus, RotateCcw, Sparkles, Square, Trash2, UploadCloud, UserRound, Video, X,
 } from "lucide-react";
 import { Upload } from "tus-js-client";
+import { saveVideoToDevice, videoDeviceFilename } from "../lib/save-video-device";
+import { TakeGalleryCard } from "../components/take-gallery-card";
 import { InstallAppButton } from "../components/install-app-button";
 import { ScriptImporter } from "../components/script-importer";
 import { captureRecordingTarget, nextPendingRecordingScene, type RecordingTarget } from "../lib/recording-session";
@@ -81,10 +83,6 @@ function formatTime(milliseconds: number) {
   return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-function statusLabel(status: string) {
-  return status === "approved" ? "Aprobada" : status === "blooper" ? "Blooper" : status === "rejected" ? "Descartada" : "Pendiente";
-}
-
 function isVideoFile(file: File) {
   return /\.(mp4|mov|m4v|webm)$/i.test(file.name) || ["video/mp4", "video/quicktime", "video/webm", "video/x-m4v"].includes(file.type);
 }
@@ -121,6 +119,15 @@ export default function Home() {
   const [sessionId, setSessionIdState] = useState("");
   const [editorSessionId, setEditorSessionId] = useState("");
   const [editorResultId, setEditorResultId] = useState("");
+  const [editorTakeId, setEditorTakeId] = useState("");
+  const [manualSegmentation, setManualSegmentation] = useState(false);
+  const [quickStarting, setQuickStarting] = useState(false);
+  const quickStartingRef = useRef(false);
+  const quickRequestRef = useRef<{ portfolioId: string; requestId: string } | null>(null);
+  const [quickSessionId, setQuickSessionId] = useState("");
+  const [lastSavedRecording, setLastSavedRecording] = useState<{ blob: Blob; filename: string; sessionId: string; takeId: string } | null>(null);
+  const [deviceSaving, setDeviceSaving] = useState(false);
+  const [deviceNotice, setDeviceNotice] = useState("");
   const [sceneIndex, setSceneIndex] = useState(0);
   const [showNewSession, setShowNewSession] = useState(false);
   const [showScriptImporter, setShowScriptImporter] = useState(false);
@@ -144,6 +151,7 @@ export default function Home() {
   const captureRef = useRef<{ target: RecordingTarget; durationMs: number } | null>(null);
   const captureTokenRef = useRef(0);
   const captureBusyRef = useRef(false);
+  const savingCaptureRef = useRef(false);
   const cameraRequestRef = useRef(0);
   const uploadRecordsRef = useRef(new WeakMap<Blob, { objectKey: string; takeId: string; uploaded: boolean }>());
   const startedAtRef = useRef(0);
@@ -164,13 +172,17 @@ export default function Home() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [batchUpload, setBatchUpload] = useState<{ current: number; total: number; file: string } | null>(null);
 
-  const navigationLocked = recording || countdown > 0 || uploading || Boolean(recordedBlob);
+  const navigationLocked = quickStarting || recording || countdown > 0 || uploading || Boolean(recordedBlob);
   const mayNavigate = () => {
-    if (!navigationLocked && !captureBusyRef.current) return true;
+    if (!navigationLocked && !captureBusyRef.current && !quickStartingRef.current) return true;
     setError("Primero termina la toma y elige Aprobar, Blooper o Repetir. Así se conserva en su carpeta.");
     return false;
   };
-  const setView = (next: StudioView) => { if (mayNavigate()) setViewState(next); };
+  const setView = (next: StudioView) => {
+    if (!mayNavigate()) return;
+    setEditorTakeId(""); setManualSegmentation(false);
+    setViewState(next);
+  };
   const setSessionId = (next: React.SetStateAction<string>) => { if (typeof next === "function" || mayNavigate()) setSessionIdState(next); };
   const setPortfolioId = (next: React.SetStateAction<string>) => { if (typeof next === "function" || mayNavigate()) setPortfolioIdState(next); };
 
@@ -320,7 +332,7 @@ export default function Home() {
     const requestId = ++cameraRequestRef.current;
     if (!navigator.mediaDevices?.getUserMedia) {
       setError("Este navegador no permite usar la cámara. Abre la aplicación desde Safari o Chrome actualizado.");
-      return;
+      return false;
     }
     setCameraOpening(true);
     try {
@@ -328,14 +340,15 @@ export default function Home() {
         video: { facingMode: { ideal: nextFacing }, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: { echoCancellation: true, noiseSuppression: true },
       });
-      if (requestId !== cameraRequestRef.current) { stream.getTracks().forEach((track) => track.stop()); return; }
+      if (requestId !== cameraRequestRef.current) { stream.getTracks().forEach((track) => track.stop()); return false; }
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
-      if (requestId !== cameraRequestRef.current) return;
+      if (requestId !== cameraRequestRef.current) return false;
       setCameraReady(true);
+      return true;
     } catch {
       if (requestId === cameraRequestRef.current) {
         streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -343,8 +356,60 @@ export default function Home() {
         setCameraReady(false);
         setError("No pudimos abrir la cámara. Permite cámara y micrófono en el navegador y vuelve a intentarlo.");
       }
+      return false;
     } finally { if (requestId === cameraRequestRef.current) setCameraOpening(false); }
   }, [facing, stopCamera]);
+
+  const openQuickCamera = async () => {
+    if (!mayNavigate() || !portfolioId || quickStartingRef.current) return;
+    const targetPortfolio = portfolioId;
+    quickStartingRef.current = true; setQuickStarting(true); setViewState("record");
+    setShowNewSession(false); setRecordingNotice(""); setDeviceNotice(""); setError("");
+    try {
+      // Open only after the user's click; recording still requires its own button.
+      if (!await startCamera()) return;
+      const key = `segmenta.quick-recording.v1:${targetPortfolio}`;
+      if (quickRequestRef.current?.portfolioId !== targetPortfolio) {
+        let requestId = "";
+        try { requestId = sessionStorage.getItem(key) || ""; } catch { /* In-memory retry remains available. */ }
+        quickRequestRef.current = { portfolioId: targetPortfolio, requestId: /^[0-9a-f-]{36}$/i.test(requestId) ? requestId : crypto.randomUUID() };
+        try { sessionStorage.setItem(key, quickRequestRef.current.requestId); } catch { /* In-memory retry remains available. */ }
+      }
+      const result = await api<{ session: Row; scenes: Row[] }>("/api/recordings/quick", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(quickRequestRef.current),
+      });
+      setData((current) => current ? { ...current, sessions: [result.session, ...current.sessions.filter((item) => item.id !== result.session.id)], scenes: [...current.scenes.filter((item) => !result.scenes.some((scene) => scene.id === item.id)), ...result.scenes] } : current);
+      setSessionIdState(result.session.id); setSceneIndex(0); setQuickSessionId(result.session.id);
+      setTeleprompter(false); setEditorTakeId(""); setManualSegmentation(false);
+      quickRequestRef.current = null;
+      try { sessionStorage.removeItem(key); } catch { /* Destination is now visible in Studio. */ }
+    } catch (reason) {
+      stopCamera();
+      setError(reason instanceof Error ? reason.message : "No pudimos preparar la grabación. Reintenta; conservaremos el mismo destino.");
+    } finally { quickStartingRef.current = false; setQuickStarting(false); }
+  };
+
+  useEffect(() => {
+    if (!quickSessionId || quickStarting || view !== "record") return;
+    const frame = requestAnimationFrame(() => cameraPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    return () => cancelAnimationFrame(frame);
+  }, [quickSessionId, quickStarting, view]);
+
+  const saveDeviceCopy = async (blob: Blob, filename: string) => {
+    if (deviceSaving) return;
+    setDeviceSaving(true); setDeviceNotice("");
+    try {
+      const result = await saveVideoToDevice(blob, filename);
+      setDeviceNotice(result.mode === "shared" ? "El video se envió a la opción que elegiste en el dispositivo." : result.mode === "download" ? "Descarga solicitada. Busca el video en las descargas de tu navegador." : "Cancelaste la copia. Tu video sigue disponible en Studio.");
+    } catch (reason) { setDeviceNotice(reason instanceof Error ? reason.message : "No pudimos preparar la copia."); }
+    finally { setDeviceSaving(false); }
+  };
+
+  const openTakeForSegmentation = (targetSessionId: string, takeId: string) => {
+    if (!mayNavigate()) return;
+    setSessionIdState(targetSessionId); setEditorSessionId(targetSessionId); setEditorResultId("");
+    setEditorTakeId(takeId); setManualSegmentation(true); setViewState("edit");
+  };
 
   const toggleCamera = async () => {
     const next = facing === "user" ? "environment" : "user";
@@ -371,7 +436,7 @@ export default function Home() {
   }, []);
 
   const beginRecording = async () => {
-    if (captureBusyRef.current || countdown || recording || uploading || recordedBlob) return;
+    if (quickStartingRef.current || captureBusyRef.current || countdown || recording || uploading || recordedBlob) return;
     if (!activeSession || !activeScene) return;
     if (!cameraReady || !streamRef.current) return startCamera();
     if (typeof MediaRecorder === "undefined") return setError("Este navegador no permite grabar. Puedes subir un video grabado con la cámara del celular.");
@@ -461,12 +526,13 @@ export default function Home() {
     onProgress(98);
     await api("/api/takes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ takeId, objectKey, sceneId, sessionId, durationMs, status, bytes: blob.size, mimeType }) });
     onProgress(100);
+    return takeId;
   };
 
-  const uploadTake = async (status: "approved" | "blooper") => {
+  const uploadTake = async (status: "pending" | "approved" | "blooper") => {
     const captured = captureRef.current;
     if (!recordedBlob || !captured) throw new Error("No hay una toma lista para subir.");
-    await uploadBlobToScene(recordedBlob, captured.target.sessionId, captured.target.sceneId, captured.durationMs, status, setUploadProgress);
+    return await uploadBlobToScene(recordedBlob, captured.target.sessionId, captured.target.sceneId, captured.durationMs, status, setUploadProgress);
   };
 
   const beginNewUpload = async (files: FileList | null) => {
@@ -537,23 +603,32 @@ export default function Home() {
     } finally { setBatchUpload(null); setUploading(false); setUploadProgress(0); }
   };
 
-  const classifyRecording = async (status: "approved" | "blooper") => {
-    if (uploading) return;
+  const classifyRecording = async (status: "pending" | "approved" | "blooper", destination?: "library" | "edit") => {
+    if (uploading || savingCaptureRef.current) return;
     const target = captureRef.current?.target;
-    if (!target) return;
+    if (!target || !recordedBlob) return;
+    const blob = recordedBlob;
+    savingCaptureRef.current = true;
     setUploading(true); setUploadProgress(1); setError("");
     try {
-      await uploadTake(status);
+      const takeId = await uploadTake(status);
       await refresh({ throwOnError: true });
+      setLastSavedRecording({ blob, filename: videoDeviceFilename(target.sessionTitle, blob.type), sessionId: target.sessionId, takeId });
+      setDeviceNotice("");
       clearRecording();
+      if (destination === "edit") {
+        stopCamera(); setEditorSessionId(target.sessionId); setEditorResultId(""); setEditorTakeId(takeId); setManualSegmentation(true); setViewState("edit");
+      } else if (destination === "library" || target.sessionId === quickSessionId) {
+        stopCamera(); setViewState("library");
+      }
       if (status === "approved") {
         const next = nextPendingRecordingScene(sessionScenes, target.sessionId, target.sceneId);
         if (next) setSceneIndex(sessionScenes.findIndex((scene) => scene.id === next.id));
         setRecordingNotice(next ? `Toma guardada en ${target.sceneTitle}. Continúa con ${next.title}.` : "Todas las escenas tienen una toma aprobada. Ya puedes revisar la cronología en el editor.");
-      } else setRecordingNotice(`Blooper guardado en ${target.sceneTitle}. Puedes repetir esta escena.`);
+      } else setRecordingNotice(status === "blooper" ? `Blooper guardado en ${target.sceneTitle}. Puedes repetir esta escena.` : "Video guardado en la galería de Studio. Puedes revisarlo y dividirlo cuando quieras.");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "No se pudo guardar la toma.");
-    } finally { setUploading(false); }
+    } finally { savingCaptureRef.current = false; setUploading(false); }
   };
 
   const discardPreview = () => {
@@ -607,13 +682,13 @@ export default function Home() {
   };
 
   const removeTake = async (id: string) => {
-    try { await api("/api/takes", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) }); await refresh(); }
+    try { await api("/api/takes", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) }); setLastSavedRecording((current) => current?.takeId === id ? null : current); await refresh(); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo eliminar la toma."); }
   };
 
   const removeSession = async (id: string) => {
     if (!confirm("¿Eliminar esta grabación y todas sus tomas?")) return;
-    try { await api("/api/studio", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: id }) }); setSessionId(""); await refresh(); }
+    try { await api("/api/studio", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: id }) }); setLastSavedRecording((current) => current?.sessionId === id ? null : current); setSessionId(""); await refresh(); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo eliminar la grabación."); }
   };
 
@@ -687,6 +762,7 @@ export default function Home() {
         <div className="min-w-0">
         <nav className="mb-3 flex gap-1 overflow-x-auto rounded-2xl border border-white/8 bg-white/[.025] p-1.5 lg:hidden">{STUDIO_NAV.map((item) => <button key={item.id} onClick={() => setView(item.id)} className={`shrink-0 rounded-xl px-3 py-2 text-[10px] ${view === item.id ? "bg-violet-500 text-white" : "text-zinc-500"}`}>{item.label}</button>)}</nav>
         {error && <div className="mb-5 flex items-start justify-between rounded-2xl border border-red-400/20 bg-red-400/8 p-4 text-sm text-red-100"><span>{error}</span><button onClick={() => setError("")}><X size={16} /></button></div>}
+        {view !== "record" && <section aria-label="Grabación directa" className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-violet-400/25 bg-violet-400/10 p-4"><div><h2 className="flex items-center gap-2 text-sm font-semibold"><Camera size={18} />Abre la cámara y empieza</h2><p className="mt-1 text-xs text-zinc-400">Graba → guarda en tu galería de Studio → recorta y divide. Sin formularios ni libreto obligatorio.</p></div><button type="button" onClick={() => void openQuickCamera()} disabled={navigationLocked || !portfolioId} className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-violet-500 px-5 py-3 text-sm font-semibold disabled:opacity-40"><Camera size={17} />Grabar ahora</button></section>}
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-cyan-400/15 bg-cyan-400/[.04] p-3 sm:mb-5 sm:p-4">
           <div className="min-w-0"><strong className="flex items-center gap-2 text-sm font-medium"><FolderOpen size={17} className="text-cyan-300" />Tus libretos, listos para grabar</strong><span className="mt-1 block text-xs text-zinc-400">Sube un archivo → separamos carpetas y escenas → graba cada toma en su lugar.</span></div>
           <button onClick={openScriptImporter} disabled={navigationLocked || !portfolioId} className="flex items-center gap-2 rounded-xl bg-cyan-300 px-4 py-3 text-xs font-semibold text-slate-950 disabled:opacity-40"><UploadCloud size={16} />Importar libretos</button>
@@ -699,15 +775,15 @@ export default function Home() {
           <div className="flex flex-col justify-between gap-3 rounded-[15px] bg-[#0c0f18]/95 p-3.5 sm:gap-4 sm:rounded-[23px] sm:p-5 sm:flex-row sm:items-center">
             <div className="min-w-0"><p className="truncate text-[9px] font-bold uppercase tracking-[.18em] text-violet-300 sm:text-[10px]">{currentPortfolio?.niche}</p><h1 className="mt-0.5 truncate text-lg font-semibold sm:mt-1 sm:text-2xl">{currentPortfolio?.name || "Tu portafolio"}</h1><p className="mt-0.5 truncate text-xs text-zinc-500 sm:mt-1 sm:text-sm">{currentPortfolio?.essence}</p></div>
             <div className="flex w-full min-w-0 rounded-2xl border border-white/8 bg-black/25 p-1 sm:w-auto">
-              <button onClick={() => setView("record")} className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs sm:gap-2 sm:px-4 sm:text-sm ${view === "record" ? "bg-white text-black" : "text-zinc-400"}`}><Camera size={15} />Grabar</button>
+              <button onClick={() => void openQuickCamera()} disabled={navigationLocked || !portfolioId} className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs sm:gap-2 sm:px-4 sm:text-sm ${view === "record" ? "bg-white text-black" : "text-zinc-400"}`}><Camera size={15} />Grabar</button>
               <button onClick={() => setView("library")} className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs sm:gap-2 sm:px-4 sm:text-sm ${view === "library" ? "bg-white text-black" : "text-zinc-400"}`}><Library size={15} />Tomas</button>
               <button onClick={() => setView("edit")} className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl px-2 py-2.5 text-xs sm:gap-2 sm:px-4 sm:text-sm ${view === "edit" ? "bg-white text-black" : "text-zinc-400"}`}><Sparkles size={15} />Editor</button>
             </div>
           </div>
         </section>
 
-        {WORKSPACE_NAV.some((item) => item.id === view) ? <WorkspaceStudio view={view as WorkspaceView} portfolioId={portfolioId} portfolio={currentPortfolio} sessions={data?.sessions || []} scenes={data?.scenes || []} onOpenEditor={() => setView("edit")} onOpenResults={() => setView("library")} /> : view === "edit" ? <EditorStudio initialSessionId={editorSessionId} initialResultId={editorResultId} portfolioId={portfolioId} sessions={data?.sessions || []} scenes={data?.scenes || []} takes={data?.takes || []} editJobs={data?.editJobs || []} preproductionPlans={data?.preproductionPlans || []} onRefresh={refresh} onBack={() => setView("record")} onUpload={() => newUploadInputRef.current?.click()} onAddToCurrent={(id) => { setSessionId(id); setSceneIndex(Math.max(0, (data?.scenes || []).filter((scene) => scene.sessionId === id).length - 1)); setView("record"); }} /> : view === "record" ? (
-          !sessions.length ? <section className="overflow-hidden rounded-2xl border border-white/8 bg-white/[.025] sm:rounded-3xl">
+        {WORKSPACE_NAV.some((item) => item.id === view) ? <WorkspaceStudio view={view as WorkspaceView} portfolioId={portfolioId} portfolio={currentPortfolio} sessions={data?.sessions || []} scenes={data?.scenes || []} onOpenEditor={() => setView("edit")} onOpenResults={() => setView("library")} /> : view === "edit" ? <EditorStudio initialSessionId={editorSessionId} initialResultId={editorResultId} initialTakeId={editorTakeId} initialManualSegmentation={manualSegmentation} portfolioId={portfolioId} sessions={data?.sessions || []} scenes={data?.scenes || []} takes={data?.takes || []} editJobs={data?.editJobs || []} preproductionPlans={data?.preproductionPlans || []} onRefresh={refresh} onBack={() => setView(manualSegmentation ? "library" : "record")} onUpload={() => newUploadInputRef.current?.click()} onAddToCurrent={(id) => { setSessionId(id); setSceneIndex(Math.max(0, (data?.scenes || []).filter((scene) => scene.sessionId === id).length - 1)); setView("record"); }} /> : view === "record" ? (
+          quickStarting ? <section role="status" className="grid min-h-[420px] place-items-center rounded-3xl border border-violet-400/20 bg-violet-400/5 p-6 text-center"><div><LoaderCircle className="mx-auto animate-spin text-violet-300" size={32} /><h2 className="mt-4 text-lg font-semibold">Abriendo tu cámara</h2><p className="mt-2 text-sm text-zinc-400">Permite cámara y micrófono. Prepararemos un lugar para guardar tu video.</p></div></section> : !sessions.length ? <section className="overflow-hidden rounded-2xl border border-white/8 bg-white/[.025] sm:rounded-3xl">
             <div className="bg-[radial-gradient(circle_at_100%_0%,rgba(124,58,237,.18),transparent_42%)] p-5 sm:p-10">
               <span className="grid h-11 w-11 place-items-center rounded-2xl bg-violet-400/12 text-violet-200"><Video size={20} /></span>
               <p className="mt-5 text-[9px] font-bold uppercase tracking-[.2em] text-violet-300">Tu primer rodaje</p>
@@ -718,12 +794,13 @@ export default function Home() {
                 <span className="rounded-xl border border-white/8 bg-black/20 px-2 py-3"><b className="mb-1 block text-violet-300">2</b>Editar</span>
                 <span className="rounded-xl border border-white/8 bg-black/20 px-2 py-3"><b className="mb-1 block text-violet-300">3</b>Exportar</span>
               </div>
-              <button onClick={() => { if (mayNavigate()) setShowNewSession(true); }} className="mt-5 flex w-full items-center justify-center gap-2 rounded-2xl bg-violet-500 px-5 py-3.5 text-sm font-semibold sm:w-auto"><Plus size={17} />Crear mi primera grabación</button>
+              <button onClick={() => { if (mayNavigate()) setShowNewSession(true); }} className="mt-5 flex w-full items-center justify-center gap-2 rounded-2xl bg-violet-500 px-5 py-3.5 text-sm font-semibold sm:w-auto"><Plus size={17} />Crear mi primera grabación</button><button type="button" onClick={() => void openQuickCamera()} disabled={!portfolioId} className="mt-3 flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-white px-5 py-3 text-sm font-semibold text-black sm:w-auto"><Camera size={17} />Grabar ahora</button>
             </div>
           </section> :
           <div className="grid min-w-0 grid-cols-1 gap-5 xl:grid-cols-[260px_minmax(0,1fr)_300px]">
             <aside className="min-w-0 space-y-4">
               <div className="flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-zinc-600">Carpetas de rodaje</p><h2 className="mt-1 font-medium">Tus libretos y videos</h2></div><button onClick={() => { if (mayNavigate()) setShowNewSession(true); }} className="grid h-9 w-9 place-items-center rounded-xl bg-violet-500 text-white"><Plus size={16} /></button></div>
+              <button type="button" disabled={navigationLocked} onClick={() => void openQuickCamera()} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-violet-500 px-3 py-3 text-xs font-semibold disabled:opacity-40"><Camera size={16} />Nueva grabación directa</button>
               <div className="flex gap-2 overflow-x-auto pb-2 xl:max-h-[70vh] xl:flex-col xl:overflow-y-auto">
                 {sessions.map((item) => {
                   const scenesForItem = (data?.scenes || []).filter((scene) => scene.sessionId === item.id);
@@ -748,8 +825,9 @@ export default function Home() {
                   {countdown > 0 && <div className="absolute inset-0 grid place-items-center bg-black/30 text-8xl font-black">{countdown}</div>}
                   {uploading && <div className="absolute inset-0 grid place-items-center bg-black/80 p-8 text-center"><div className="w-full max-w-xs"><UploadCloud className="mx-auto text-violet-300" size={32} /><p className="mt-4 font-medium">Guardando la toma en la nube</p><div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-gradient-to-r from-violet-500 to-cyan-400 transition-all" style={{ width: `${uploadProgress}%` }} /></div><p className="mt-2 text-xs text-zinc-500">{uploadProgress}% · no cierres esta pantalla</p></div></div>}
                   {cameraReady && !previewUrl && <div className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-6 bg-gradient-to-t from-black via-black/65 to-transparent px-5 pb-7 pt-16"><button onClick={() => setTeleprompter((value) => !value)} className={`grid h-11 w-11 place-items-center rounded-full border ${teleprompter ? "border-violet-300 bg-violet-400/20" : "border-white/15 bg-black/30"}`}><Sparkles size={17} /></button><button aria-label={recording ? "Detener grabación" : "Grabar escena"} disabled={countdown > 0 || cameraOpening} onClick={recording ? stopRecording : beginRecording} className={`grid h-20 w-20 place-items-center rounded-full border-4 border-white shadow-xl ${recording ? "bg-red-500" : "bg-white"}`}>{recording ? <Square size={25} fill="white" /> : <Circle size={54} className="text-red-500" fill="currentColor" />}</button><span className="grid h-11 w-11 place-items-center rounded-full border border-white/15 bg-black/30"><Mic size={17} /></span></div>}
-                  {previewUrl && !uploading && <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/80 to-transparent p-5 pt-20"><p className="mb-4 text-center text-sm font-medium">¿Guardamos esta toma en su escena?</p><div className="grid grid-cols-3 gap-2"><button onClick={discardPreview} className="rounded-xl border border-white/15 bg-black/50 px-2 py-3 text-xs"><RotateCcw size={16} className="mx-auto mb-1" />Repetir</button><button onClick={() => classifyRecording("blooper")} className="rounded-xl border border-amber-300/25 bg-amber-300/10 px-2 py-3 text-xs text-amber-200"><Aperture size={16} className="mx-auto mb-1" />Blooper</button><button onClick={() => classifyRecording("approved")} className="rounded-xl bg-emerald-400 px-2 py-3 text-xs font-semibold text-black"><Check size={16} className="mx-auto mb-1" />Aprobar</button></div></div>}
+                  {previewUrl && !uploading && <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/80 to-transparent p-5 pt-20"><p className="mb-4 text-center text-sm font-medium">{activeSession.id === quickSessionId ? "Tu video está listo para guardarse" : "¿Guardamos esta toma en su escena?"}</p><div className="grid grid-cols-3 gap-2"><button onClick={discardPreview} className="rounded-xl border border-white/15 bg-black/50 px-2 py-3 text-xs"><RotateCcw size={16} className="mx-auto mb-1" />Repetir</button><button onClick={() => classifyRecording("blooper")} className="rounded-xl border border-amber-300/25 bg-amber-300/10 px-2 py-3 text-xs text-amber-200"><Aperture size={16} className="mx-auto mb-1" />Blooper</button><button onClick={() => classifyRecording(activeSession.id === quickSessionId ? "pending" : "approved", activeSession.id === quickSessionId ? "library" : undefined)} className="rounded-xl bg-emerald-400 px-2 py-3 text-xs font-semibold text-black"><Check size={16} className="mx-auto mb-1" />{activeSession.id === quickSessionId ? "Guardar en galería" : "Aprobar"}</button></div></div>}
                 </div>
+                {recordedBlob && <div className="mx-auto mt-3 max-w-[480px] space-y-2"><button type="button" disabled={uploading} onClick={() => void classifyRecording("approved", "edit")} className="min-h-11 w-full rounded-xl bg-violet-500 px-4 py-3 text-sm font-semibold disabled:opacity-40">Aprobar y segmentar video</button><button type="button" disabled={deviceSaving} onClick={() => void saveDeviceCopy(recordedBlob, captureRef.current?.target.sessionTitle || "Grabación Studio")} className="min-h-11 w-full rounded-xl border border-white/15 px-4 py-3 text-xs disabled:opacity-40">{deviceSaving ? "Abriendo opciones…" : "Guardar copia en el dispositivo"}</button><p className="text-[11px] leading-5 text-zinc-400">Si tu celular ofrece «Guardar video», elígelo para llevarlo a Fotos/Galería. Si no, quedará en Descargas. Guardar esta copia no sustituye la subida a Studio.</p>{deviceNotice && <p role="status" className="text-xs text-cyan-200">{deviceNotice}</p>}</div>}
                 <div className="mx-auto mt-4 flex max-w-[480px] items-center justify-between gap-4 rounded-2xl border border-white/8 bg-white/[.03] p-3"><label className="text-xs text-zinc-500">Velocidad del libreto</label><input type="range" min="1" max="6" value={scrollSpeed} onChange={(event) => setScrollSpeed(Number(event.target.value))} className="accent-violet-500" /><span className="text-xs text-zinc-500">{scrollSpeed}x</span></div>
               </> : <div className="grid min-h-[320px] place-items-center rounded-3xl border border-dashed border-white/10 bg-white/[.02] p-6 text-center sm:min-h-[560px] sm:p-8"><div><FolderOpen className="mx-auto text-zinc-700" size={36} /><h2 className="mt-4 text-lg font-semibold sm:mt-5 sm:text-xl">Elige una grabación</h2><p className="mt-2 max-w-sm text-sm leading-6 text-zinc-500">Selecciona una producción para continuar con sus escenas.</p></div></div>}
             </section>
@@ -760,9 +838,10 @@ export default function Home() {
           </div>
         ) : (
           <section>
+            {lastSavedRecording && sessions.some((item) => item.id === lastSavedRecording.sessionId) && <div role="status" className="mb-4 rounded-2xl border border-emerald-400/25 bg-emerald-400/10 p-4"><h2 className="text-sm font-semibold text-emerald-200">Video guardado en tu galería de Studio</h2><p className="mt-1 text-xs text-zinc-400">Ya puedes reproducirlo, llevar una copia al dispositivo o dividirlo en segmentos.</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => openTakeForSegmentation(lastSavedRecording.sessionId, lastSavedRecording.takeId)} className="min-h-11 rounded-xl bg-violet-500 px-4 py-3 text-xs font-semibold">Recortar y dividir este video</button><button type="button" disabled={deviceSaving} onClick={() => void saveDeviceCopy(lastSavedRecording.blob, lastSavedRecording.filename)} className="min-h-11 rounded-xl border border-white/20 px-4 py-3 text-xs disabled:opacity-40">{deviceSaving ? "Abriendo opciones…" : "Guardar en el dispositivo"}</button></div><p className="mt-2 text-[11px] text-zinc-400">En el celular, elige «Guardar video» si aparece. Las opciones dependen del dispositivo.</p>{deviceNotice && <p className="mt-2 text-xs text-cyan-200">{deviceNotice}</p>}</div>}
             <RenderResults sessions={sessions} editableOutputIds={(data?.editJobs || []).filter((job) => job.status === "ready" && sessions.some((item) => item.id === job.sessionId && (data?.scenes || []).some((scene) => scene.sessionId === item.id && scene.selectedTakeId)) && Array.isArray(job.contract?.clips) && job.contract.clips.length).map((job) => job.id)} onEditOutput={continueOutput} />
             <div className="mb-5 flex items-end justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Biblioteca cloud</p><h2 className="mt-1 text-2xl font-semibold">Tomas de {currentPortfolio?.name}</h2></div><div className="hidden gap-2 sm:flex"><button onClick={() => setView("edit")} className="flex items-center gap-2 rounded-xl bg-violet-500 px-4 py-2.5 text-sm font-semibold"><Sparkles size={15} />Abrir editor</button><button onClick={() => setView("record")} className="flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2.5 text-sm"><ArrowLeft size={15} />Volver a grabar</button></div></div>
-            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{sessions.map((session) => { const sceneRows = (data?.scenes || []).filter((scene) => scene.sessionId === session.id); const allTakes = (data?.takes || []).filter((take) => take.sessionId === session.id); return <article key={session.id} className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><div className="flex items-start justify-between"><div><span className={`rounded-full px-2.5 py-1 text-[10px] ${session.status === "ready_for_edit" ? "bg-emerald-400/10 text-emerald-300" : "bg-violet-400/10 text-violet-300"}`}>{session.status === "ready_for_edit" ? "Orden confirmado" : allTakes.length ? "Revisar tomas" : "En grabación"}</span><h3 className="mt-3 font-medium">{session.title}</h3><p className="mt-1 text-xs text-zinc-600">{sceneRows.filter((scene) => scene.selectedTakeId).length}/{sceneRows.length} escenas aprobadas · {allTakes.filter((take) => take.status === "blooper").length} bloopers</p></div><button onClick={() => removeSession(session.id)} className="text-zinc-700 hover:text-red-300"><Trash2 size={16} /></button></div><div className="mt-5 grid grid-cols-3 gap-2">{allTakes.slice(0, 6).map((take) => <div key={take.id} className="group relative aspect-[9/16] overflow-hidden rounded-xl bg-black"><video src={`/api/media/${take.id}`} className="h-full w-full object-cover" preload="metadata" /><span className={`absolute bottom-1.5 left-1.5 rounded-full bg-black/70 px-2 py-1 text-[8px] ${take.status === "approved" ? "text-emerald-300" : take.status === "blooper" ? "text-amber-200" : "text-zinc-300"}`}>{statusLabel(take.status)}</span><button onClick={() => removeTake(take.id)} aria-label="Eliminar toma" className="absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-full bg-black/70 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100"><Trash2 size={11} /></button></div>)}</div><button onClick={() => { setSessionId(session.id); setEditorSessionId(session.id); setEditorResultId(""); setView(allTakes.length ? "edit" : "record"); }} className="mt-5 flex w-full items-center justify-between rounded-xl border border-white/8 bg-black/20 px-4 py-3 text-sm">{allTakes.length ? "Revisar tomas y editar" : "Abrir producción"} <ChevronRight size={15} /></button></article>; })}</div>
+            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">{sessions.map((session) => { const sceneRows = (data?.scenes || []).filter((scene) => scene.sessionId === session.id); const allTakes = (data?.takes || []).filter((take) => take.sessionId === session.id); return <article key={session.id} className="rounded-3xl border border-white/8 bg-white/[.03] p-5"><div className="flex items-start justify-between"><div><span className={`rounded-full px-2.5 py-1 text-[10px] ${session.status === "ready_for_edit" ? "bg-emerald-400/10 text-emerald-300" : "bg-violet-400/10 text-violet-300"}`}>{session.status === "ready_for_edit" ? "Orden confirmado" : allTakes.length ? "Revisar tomas" : "En grabación"}</span><h3 className="mt-3 font-medium">{session.title}</h3><p className="mt-1 text-xs text-zinc-600">{sceneRows.filter((scene) => scene.selectedTakeId).length}/{sceneRows.length} escenas aprobadas · {allTakes.filter((take) => take.status === "blooper").length} bloopers</p></div><button onClick={() => removeSession(session.id)} className="text-zinc-700 hover:text-red-300"><Trash2 size={16} /></button></div><div className="mt-5 space-y-3">{allTakes.map((take) => <TakeGalleryCard key={take.id} take={{ id: String(take.id), status: String(take.status), durationMs: take.durationMs, mimeType: take.mimeType, bytes: take.bytes }} title={String(sceneRows.find((scene) => scene.id === take.sceneId)?.title || "Video")} onDelete={() => void removeTake(take.id)} onSegment={() => openTakeForSegmentation(session.id, take.id)} />)}</div><button onClick={() => { setSessionId(session.id); setEditorSessionId(session.id); setEditorResultId(""); setView(allTakes.length ? "edit" : "record"); }} className="mt-5 flex w-full items-center justify-between rounded-xl border border-white/8 bg-black/20 px-4 py-3 text-sm">{allTakes.length ? "Revisar tomas y editar" : "Abrir producción"} <ChevronRight size={15} /></button></article>; })}</div>
             {!sessions.length && <div className="grid min-h-[420px] place-items-center rounded-3xl border border-dashed border-white/10 text-center"><div><Library className="mx-auto text-zinc-700" size={40} /><p className="mt-4 text-zinc-500">Todavía no hay tomas en este portafolio.</p></div></div>}
           </section>
         )}
