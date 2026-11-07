@@ -32,18 +32,25 @@ Las carpetas son agrupaciones dentro de Studio, disponibles en la cuenta; no son
 
 - 111 pruebas automatizadas aprobadas; ESLint y compilación Next de producción aprobados.
 - Prueba de interfaz Word: 2 carpetas / 7 escenas creadas con componentes, parser y persistencia reales contra repositorio local de prueba.
-- Simulación de respuesta perdida tras guardar carpeta2: reintento recuperó exactamente2 carpetas /7 escenas.
+- Simulación de respuesta perdida tras guardar carpeta2: reintento recuperó exactamente 2 carpetas / 7 escenas.
 - TXT, DOCX y PDF comprobados; PDF escaneado rechaza con explicación sin inventar texto.
 - [x] MediaRecorder real con cámara sintética: MP4 aprobado de 28,7 s guardado en Gancho; avance a Problema. Segunda toma de 12,2 s guardada como Blooper en Problema sin avanzar. Cambio de pantalla durante captura bloqueado con aviso; cámara reconectada tras cada preview.
-- [ ] Publicación y comprobación autenticada en producción.
-- [ ] Prueba de cámara física en el teléfono que se usará mañana. Una cámara sintética no demuestra permisos/cámara/micrófono de iPhone o Android.
+- [x] Vercel confirmó el commit 37d82e2. PDF y Word extraídos en la sesión autenticada de producción. Se creó «E01 Prueba PDF 7 nov — ¿Le tocó organizar la despedida?» con Gancho, Problema, Valor y Cierre / CTA. Una recarga confirmó persistencia; el proyecto anterior conserva sus 11/12 escenas aprobadas.
+- [x] Producción a 390 px: ancho del documento 390 px, sin desbordamiento horizontal. Sin errores de consola capturados en la comprobación final.
+- [ ] Prueba de cámara física en el teléfono que se usará en la prueba. Una cámara sintética no demuestra permisos/cámara/micrófono de iPhone o Android.
 
 La fixture local está fuera del repositorio, en /tmp/segmenta-scripts-fixture (puerto8893). No utiliza datos ni almacenamiento de producción. Las evidencias deben identificar explícitamente si son de fixture o de producción.
 
 ## Límites
 
-Máximo20 libretos por archivo,12 escenas por libreto,1000 caracteres por escena y6000 por libreto incluyendo indicaciones. PDF necesita texto seleccionable; no incluye OCR. El importador usa reglas de estructura, no promete interpretación generativa de documentos arbitrarios. No guardar credenciales, cookies, tokens o archivos privados en este repositorio.
+Máximo 20 libretos por archivo, 12 escenas por libreto, 1000 caracteres por escena y 6000 por libreto incluyendo indicaciones. PDF necesita texto seleccionable; no incluye OCR. El importador usa reglas de estructura, no promete interpretación generativa de documentos arbitrarios. No guardar credenciales, cookies, tokens o archivos privados en este repositorio.
 
-## Continuación nocturna
+## Cierre de la continuación nocturna
 
-Automatización en este chat: segmenta-prueba-de-libretos-para-ma-ana, cada hora hasta el7 de noviembre a las08:00 de Bogotá. Consultar este documento y el estado Git para continuar solo pendientes relevantes. Si todo está verificado, hacer una comprobación final del despliegue y pausar; no ampliar el alcance ni alterar videos existentes.
+La implementación y comprobación autenticada concluyeron el 7 de noviembre por la mañana. Se eliminó el seguimiento automático segmenta-prueba-de-libretos-para-ma-ana después de verificar el despliegue. La cámara física del teléfono queda para la prueba del usuario. No abrir ni grabar su cámara en una revisión desatendida.
+
+Checkout persistente para continuar: /Users/federicovelasquezperdomo/Documents/ChatGPT/SegmentaStudio-cloud. El checkout anterior en /tmp perdió archivos de metadatos Git a medianoche; no usarlo como base de trabajo. Se conservó sin reconstruirlo ni borrar el workspace original.
+
+Evidencia visual local: /Users/federicovelasquezperdomo/Documents/ChatGPT/Kiko Orator 🎙️/artifacts/prueba-pdf-2026-11-07.png. Corresponde al sitio real después de recargar, con la cámara apagada.
+
+La grabación sintética validó MediaRecorder, clasificación y asociación de la toma. No verifica permisos físicos, hardware móvil ni transporte externo TUS; no presentar estas comprobaciones como realizadas.
