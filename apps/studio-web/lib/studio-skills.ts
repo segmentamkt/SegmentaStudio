@@ -102,12 +102,12 @@ export const SKILL_CATALOG: SkillDefinition[] = [
     settings: [{ key: "saturation", label: "Saturación", kind: "range", defaultValue: 1.06, min: 0.7, max: 1.4, step: 0.01 }],
   },
   {
-    id: "generador", name: "Imágenes generadas", icon: "🖼️", category: "imagen", execution: "pending",
-    description: "Preparado para ilustraciones y B-roll aprobados por el creador.",
-    capability: "Todavía no genera ni inserta imágenes en el render de Vercel.",
-    defaultEnabled: false,
-    defaultInstruction: "Propón imágenes simples que aclaren una idea del libreto.",
-    settings: [{ key: "visualStyle", label: "Estilo deseado", kind: "select", defaultValue: "fotografia", options: choice([["fotografia", "Fotografía"], ["ilustracion", "Ilustración"], ["cinematico", "Cinematográfico"]]), plannedOnly: true }],
+    id: "generador", name: "Recursos visuales", icon: "🖼️", category: "imagen", execution: "render",
+    description: "Recomienda imágenes del catálogo según palabras de los subtítulos y permite usar fotos propias.",
+    capability: "Inserta los recursos elegidos con sus tiempos en el MP4: catálogo incluido o imágenes subidas. No genera imágenes nuevas con un modelo externo.",
+    defaultEnabled: true,
+    defaultInstruction: "Usa imágenes breves que aclaren la idea sin cubrir el rostro ni los subtítulos.",
+    settings: [],
   },
   {
     id: "superposiciones", name: "Superposiciones", icon: "🧩", category: "imagen", execution: "partial",
@@ -331,7 +331,7 @@ export function applySkillProfilesToContract<T extends SkillAwareContract>(contr
   const efectos = byId.get("efectos")!;
   if (!efectos.enabled) updated.style_snapshot.execution.titleCards = false;
   else if (changed(efectos, "titleCards")) updated.style_snapshot.execution.titleCards = value(efectos, "titleCards");
-  decisions.push(decision("efectos", "partial", efectos.enabled, efectos.enabled ? "Rótulo visual de apertura según el estilo; gráficos contextuales pendientes." : "Efectos visuales desactivados.", !efectos.enabled || changed(efectos, "titleCards") ? ["style_snapshot.execution.titleCards"] : []));
+  decisions.push(decision("efectos", "partial", efectos.enabled, efectos.enabled ? "Rótulo visual de apertura según el estilo; las imágenes de apoyo se configuran en Recursos visuales." : "Efectos visuales desactivados.", !efectos.enabled || changed(efectos, "titleCards") ? ["style_snapshot.execution.titleCards"] : []));
 
   const recortes = byId.get("recortes")!;
   if (!recortes.enabled) updated.dead_air.remove = false;
@@ -350,8 +350,17 @@ export function applySkillProfilesToContract<T extends SkillAwareContract>(contr
 
   const generador = byId.get("generador")!;
   const brollRequestedInEditor = updated.effects.images_or_broll === true;
-  updated.effects.images_or_broll = false; // A plan must never claim that missing images were inserted.
-  decisions.push(decision("generador", "pending", generador.enabled, generador.enabled ? `Imágenes ${value(generador, "visualStyle")} solicitadas; no se generan ni insertan aún.` : brollRequestedInEditor ? "B-roll solicitado en el editor; la inserción aún no está disponible." : "Generación de imágenes desactivada."));
+  const imageCount = Array.isArray(updated.clips)
+    ? updated.clips.reduce((count, clip) => count + (isRecord(clip) && Array.isArray(clip.visual_resources) ? clip.visual_resources.length : 0), 0)
+    : 0;
+  const imagesEnabled = generador.enabled && brollRequestedInEditor && imageCount > 0;
+  updated.effects.images_or_broll = imagesEnabled;
+  decisions.push(decision("generador", "render", generador.enabled,
+    imagesEnabled ? `${imageCount} ${imageCount === 1 ? "imagen de apoyo programada" : "imágenes de apoyo programadas"} para el render, con sus tiempos y encuadres.`
+      : !generador.enabled ? "Recursos visuales desactivados en las skills; las imágenes guardadas se conservan."
+      : !brollRequestedInEditor ? "Recursos visuales desactivados en el editor; las imágenes guardadas se conservan."
+      : "No hay imágenes de apoyo elegidas para esta edición.",
+    imagesEnabled ? ["effects.images_or_broll", "clips.visual_resources"] : []));
 
   const superposiciones = byId.get("superposiciones")!;
   if (!superposiciones.enabled) updated.effects.labels = false;
@@ -397,7 +406,8 @@ export function applySkillProfilesToContract<T extends SkillAwareContract>(contr
   decisions.push(decision("clips", "pending", clips.enabled, clips.enabled ? `Se solicitan clips de ${value(clips, "targetSeconds")} s; extracción automática aún no disponible.` : "Extracción de clips desactivada."));
 
   updated.quality_gates!.captions = updated.captions.enabled;
-  updated.quality_gates!.effects = Boolean(updated.effects.transitions || updated.effects.sound_effects || (updated.effects.labels && updated.style_snapshot.execution.titleCards !== false));
+  updated.quality_gates!.images = imagesEnabled;
+  updated.quality_gates!.effects = Boolean(updated.effects.transitions || updated.effects.sound_effects || imagesEnabled || (updated.effects.labels && updated.style_snapshot.execution.titleCards !== false));
   updated.skill_profiles = profiles;
   updated.skill_manifest = {
     schema: "segmenta.skill-manifest.v1",

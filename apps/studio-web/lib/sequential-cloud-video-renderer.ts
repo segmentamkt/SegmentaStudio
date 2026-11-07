@@ -8,11 +8,13 @@ import { MAX_RENDER_BYTES, uploadRenderedMp4 } from "./cloud-render-upload";
 import { capture } from "./cloud-video-renderer";
 import { buildSoundDesignGraph, planCutSoundCues } from "./sound-design";
 import { renderTextOverlay } from "./video-text-overlay";
+import { renderVisualResourceImage } from "./visual-resource-image";
+import { VISUAL_RESOURCE_LAYOUTS, type VisualResource } from "./visual-resources";
 import { mapCaptionCues, type CaptionCue } from "./caption-cues";
 import { MAX_RENDER_PREVIEW_BYTES, type RenderPreview } from "./render-preview";
 
 type Range = { start: number; end: number };
-type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string; trim_start_seconds?: number; trim_end_seconds?: number; playback_speed?: number; audio_volume?: number; brightness?: number; contrast?: number; saturation?: number; label?: string; caption_cues?: CaptionCue[] };
+type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string; trim_start_seconds?: number; trim_end_seconds?: number; playback_speed?: number; audio_volume?: number; brightness?: number; contrast?: number; saturation?: number; label?: string; caption_cues?: CaptionCue[]; visual_resources?: VisualResource[] };
 type EditContract = {
   objective: string;
   session: { title: string; script?: string };
@@ -29,8 +31,8 @@ type EditContract = {
   };
   captions: { enabled: boolean; max_words_per_card: number };
   dead_air: { remove: boolean; threshold_ms: number; noise_db?: number };
-  effects: { transitions: boolean; sound_effects: boolean; labels: boolean };
-  quality_gates?: { effects?: boolean; timed_captions?: boolean };
+  effects: { transitions: boolean; sound_effects: boolean; labels: boolean; images_or_broll?: boolean };
+  quality_gates?: { effects?: boolean; timed_captions?: boolean; images?: boolean };
 };
 type Analysis = { duration: number; ranges: Range[]; removed: number; hasAudio: boolean };
 type Progress = (progress: number, stage: string) => Promise<void>;
@@ -50,6 +52,23 @@ const fixed = (value: number) => safeSeconds(value).toFixed(3);
 const MAX_OUTPUT_SECONDS = 120;
 // At the maximum 2x speed, 240s of selected source produces 120s of output.
 const MAX_SELECTED_SOURCE_SECONDS = MAX_OUTPUT_SECONDS * 2;
+
+/** Map only surviving source time; a removed pause never gets a substitute image. */
+export function mapVisualResourceToOutput(resource: Pick<VisualResource, "startSeconds" | "endSeconds">, ranges: Range[], speed: number) {
+  let offset = 0;
+  let start: number | undefined;
+  let end: number | undefined;
+  for (const range of ranges) {
+    const from = Math.max(range.start, resource.startSeconds);
+    const to = Math.min(range.end, resource.endSeconds);
+    if (to > from) {
+      start ??= offset + from - range.start;
+      end = offset + to - range.start;
+    }
+    offset += range.end - range.start;
+  }
+  return start !== undefined && end !== undefined ? { startSeconds: start / speed, endSeconds: end / speed } : null;
+}
 
 export async function analyzeSequentialClip(command: string, url: string, durationHint: number, remove: boolean, thresholdMs: number, noiseDb = -35, sourceWindow?: Range, deadline?: number): Promise<Analysis> {
   const threshold = Math.max(.35, thresholdMs / 1000);
@@ -235,6 +254,7 @@ export async function renderSequentialClip(input: {
   const overlays: Buffer[] = [];
   let videoLabel = "vbase";
   let captionCount = 0;
+  let imageCount = 0;
   const fontFile = join(process.cwd(), "assets", "fonts", "Inter.ttf");
   const title = contract.session.title.trim();
   const label = clip.label?.trim();
@@ -260,6 +280,24 @@ export async function renderSequentialClip(input: {
     filters.push(`[${videoLabel}][${slot}:v]overlay=x=(W-w)/2:y=${position}:enable='between(t,${fixed(start)},${fixed(end)})':eof_action=repeat:shortest=0[${out}]`);
     videoLabel = out;
   };
+  // Images use the exact same source→edited mapping as captions. Resources
+  // wholly inside a removed pause disappear instead of shifting into other speech.
+  if (contract.effects.images_or_broll) {
+    if ((clip.visual_resources?.length ?? 0) > 2) throw new Error("Se admiten hasta dos imágenes de apoyo por toma.");
+    for (const resource of clip.visual_resources ?? []) {
+      const mapped = mapVisualResourceToOutput(resource, analysis.ranges, speed);
+      if (!mapped) continue;
+      if (overlays.length >= 96) throw new Error("Demasiadas superposiciones en una toma.");
+      const slot = 1 + Number(!analysis.hasAudio) + overlays.length;
+      const out = `vo${overlays.length}`;
+      const geometry = VISUAL_RESOURCE_LAYOUTS[resource.layout];
+      if (!geometry) throw new Error("La posición de la imagen no es válida.");
+      overlays.push(await renderVisualResourceImage(resource));
+      filters.push(`[${videoLabel}][${slot}:v]overlay=x=${geometry.x}:y=${geometry.y}:enable='gte(t,${fixed(mapped.startSeconds)})*lt(t,${fixed(mapped.endSeconds)})':eof_action=repeat:shortest=0[${out}]`);
+      videoLabel = out;
+      imageCount += 1;
+    }
+  }
   if (showTitle) {
     await addOverlay(title, .15, Math.min(duration, 2.6), "H*0.08", true);
   }
@@ -307,7 +345,7 @@ export async function renderSequentialClip(input: {
     "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", output,
   );
   await ffmpegFile(command, args, overlays, deadline);
-  return { duration, captionCount, cueCount, labelCount: Number(showTitle) + Number(showLayeredHeader) + Number(Boolean(label && contract.effects.labels && !layeredStyle)) };
+  return { duration, captionCount, cueCount, imageCount, labelCount: Number(showTitle) + Number(showLayeredHeader) + Number(Boolean(label && contract.effects.labels && !layeredStyle)) };
 }
 
 /**
@@ -332,6 +370,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
     }
     plannedDuration += (end - start) / speed;
   }
+  if (input.contract.effects.images_or_broll && input.contract.clips.reduce((total, clip) => total + (clip.visual_resources?.length ?? 0), 0) > 8) throw new Error("Se admiten hasta ocho imágenes de apoyo por montaje.");
   if (plannedDuration > MAX_OUTPUT_SECONDS) throw new Error("Esta versión cloud procesa hasta 2 minutos de video final por edición.");
   for (const [index, clip] of input.contract.clips.entries()) {
     const result = await analyzeSequentialClip(command, input.signedUrls[index], clip.duration_seconds, input.contract.dead_air.remove, input.contract.dead_air.threshold_ms, input.contract.dead_air.noise_db ?? -30,
@@ -350,6 +389,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
     let captions = 0;
     let captionedClips = 0;
     let effects = 0;
+    let images = 0;
     let previewTimeMs = 0;
     for (const [index, analysis] of analyses.entries()) {
       const path = join(directory, `clip-${index}.mp4`);
@@ -361,7 +401,8 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
       clips.push(path);
       captions += rendered.captionCount;
       if (rendered.captionCount > 0) captionedClips += 1;
-      effects += rendered.cueCount + rendered.labelCount + (index > 0 && transitionSeconds > 0 ? 1 : 0);
+      images += rendered.imageCount;
+      effects += rendered.cueCount + rendered.labelCount + rendered.imageCount + (index > 0 && transitionSeconds > 0 ? 1 : 0);
       await input.onProgress(36 + Math.round((index + 1) / analyses.length * 42), `Toma ${index + 1} de ${analyses.length} editada`);
       // Samples are optional and must not take the final render's remaining budget.
       // Bound cumulative overhead to 12s and keep 15s reserved for final assembly/upload.
@@ -376,7 +417,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
           const clip = input.contract.clips[index];
           await input.onPreview({
             clipIndex: index, totalClips: analyses.length, takeId: clip.id, title: clip.name.slice(0, 200),
-            ...sample, captionCount: rendered.captionCount, soundEffectCount: rendered.cueCount,
+            ...sample, captionCount: rendered.captionCount, soundEffectCount: rendered.cueCount, imageCount: rendered.imageCount,
             removedSilenceSeconds: Number(analysis.removed.toFixed(2)),
           });
         } catch {
@@ -401,7 +442,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
     await input.onProgress(94, "Verificando el archivo final");
     return {
       duration_seconds: Number(totalDuration.toFixed(2)), width: 1080, height: 1920,
-      caption_count: captions, effect_count: effects,
+      caption_count: captions, effect_count: effects, image_count: images,
       removed_silence_seconds: Number(analyses.reduce((sum, item) => sum + item.removed, 0).toFixed(2)),
       silent_source_clips: analyses.filter((item) => !item.hasAudio).length,
       style_applied: true, style_id: (input.contract.style_snapshot as { id?: string }).id || null,
@@ -409,7 +450,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
       zoom_percent: Math.max(0, Math.min(10, Number(input.contract.style_snapshot.execution?.zoomPercent || 0))),
       transition: transitionSeconds ? "fade" : "cut",
       transition_fallback: transitionSeconds > 0 && input.contract.style_snapshot.transition === "dissolve" ? "dip-to-black" : null,
-      release_gate: { passed: totalDuration > 0 && (!input.contract.captions.enabled || captionedClips === input.contract.clips.length) && (!input.contract.quality_gates?.timed_captions || input.contract.clips.every((clip) => Boolean(clip.caption_cues?.length))) && (!input.contract.quality_gates?.effects || effects > 0) },
+      release_gate: { passed: totalDuration > 0 && (!input.contract.captions.enabled || captionedClips === input.contract.clips.length) && (!input.contract.quality_gates?.timed_captions || input.contract.clips.every((clip) => Boolean(clip.caption_cues?.length))) && (!input.contract.quality_gates?.effects || effects > 0) && (!input.contract.quality_gates?.images || images > 0) },
     };
   } finally {
     await rm(directory, { recursive: true, force: true });

@@ -259,3 +259,133 @@ test("only accepts the supported silence sensitivity levels", () => {
   Object.assign(input.raw.dead_air, { noise_db: -21 });
   assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /sensibilidad de silencio/);
 });
+
+function builtinResource(id = "resource-0") {
+  return { id, keyword: "dinero", startSeconds: 1, endSeconds: 3, layout: "corner", image: { kind: "builtin", assetId: "money" } };
+}
+
+const pixelPng = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1y0AAAAASUVORK5CYII=";
+
+test("older plans without image resources remain renderable and do not claim images", () => {
+  const input = fixture();
+  const output = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.deepEqual(output.clips.map((clip) => clip.visual_resources), [[], []]);
+  assert.equal(output.effects.images_or_broll, false);
+  assert.equal(output.quality_gates.images, false);
+  assert.ok(!output.skill_manifest.configuredRenderSkills.includes("generador"));
+});
+
+test("keeps approved builtin images, strips untrusted paths and counts the configured resources", () => {
+  const input = fixture();
+  input.raw.effects.images_or_broll = true;
+  const resource = { ...builtinResource(), command: "untrusted", path: "/etc/passwd", image: { kind: "builtin", assetId: "money", path: "/etc/passwd", url: "https://example.com/tracker.png" } };
+  Object.assign(input.raw.clips[0], { visual_resources: [resource] });
+  const output = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.deepEqual(output.clips[0].visual_resources, [builtinResource()]);
+  assert.equal(output.effects.images_or_broll, true);
+  assert.equal(output.quality_gates.images, true);
+  assert.ok(output.skill_manifest.configuredRenderSkills.includes("generador"));
+  assert.match(output.skill_manifest.decisions.find((item) => item.skillId === "generador")!.summary, /1 imagen de apoyo programada/);
+});
+
+test("preserves bounded uploaded PNG data without trusting any supplied URL", () => {
+  const input = fixture();
+  input.raw.effects.images_or_broll = true;
+  const resource = { ...builtinResource(), layout: "wide", image: { kind: "upload", dataUrl: pixelPng, title: "Mi foto", url: "file:///etc/passwd" } };
+  Object.assign(input.raw.clips[0], { visual_resources: [resource] });
+  const output = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.deepEqual(output.clips[0].visual_resources[0].image, { kind: "upload", dataUrl: pixelPng, title: "Mi foto" });
+  assert.equal(output.clips[0].visual_resources[0].layout, "wide");
+});
+
+test("rejects remote, SVG and unknown images even when the image effect is disabled", () => {
+  for (const image of [
+    { kind: "builtin", assetId: "../../etc/passwd" },
+    { kind: "remote", url: "https://example.com/image.png" },
+    { kind: "upload", dataUrl: "data:image/svg+xml;base64,PHN2Zy8+", title: "Vector" },
+    { kind: "upload", dataUrl: "https://example.com/image.png", title: "Remota" },
+    { kind: "upload", dataUrl: "data:image/png;base64,SGVsbG8=", title: "Falsa" },
+  ]) {
+    const input = fixture();
+    Object.assign(input.raw.clips[0], { visual_resources: [{ ...builtinResource(), image }] });
+    assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /imagen|biblioteca/);
+  }
+});
+
+test("image source timestamps are bounded by the actual approved duration and manual trim", () => {
+  for (const [startSeconds, endSeconds] of [[0, 2], [8, 10], [3, 3], [3, Number.NaN], [3, 12]]) {
+    const input = fixture();
+    Object.assign(input.raw.clips[0], { trim_start_seconds: 2, trim_end_seconds: 8, visual_resources: [{ ...builtinResource(), startSeconds, endSeconds }] });
+    assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /dentro del recorte/);
+  }
+  const input = fixture(1, 900_000);
+  Object.assign(input.raw.clips[0], { trim_start_seconds: 500, trim_end_seconds: 510, visual_resources: [{ ...builtinResource(), startSeconds: 502, endSeconds: 505 }] });
+  const output = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.equal(output.clips[0].visual_resources[0].startSeconds, 502);
+  assert.equal(output.clips[0].visual_resources[0].endSeconds, 505);
+});
+
+test("resources remain saved but disabled skills or editor toggles do not claim an image render", () => {
+  for (const disabledIn of ["skill", "editor"]) {
+    const input = fixture();
+    Object.assign(input.raw.clips[0], { visual_resources: [builtinResource()] });
+    input.raw.effects.images_or_broll = disabledIn === "skill";
+    if (disabledIn === "skill") input.raw.skill_profiles.find((profile) => profile.id === "generador")!.enabled = false;
+    const output = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+    assert.equal(output.clips[0].visual_resources.length, 1);
+    assert.equal(output.effects.images_or_broll, false);
+    assert.equal(output.quality_gates.images, false);
+    assert.ok(!output.skill_manifest.configuredRenderSkills.includes("generador"));
+    assert.match(output.skill_manifest.decisions.find((item) => item.skillId === "generador")!.summary, /desactivados/);
+  }
+});
+
+test("a requested image effect with no selected resources is not a configured render skill", () => {
+  const input = fixture();
+  input.raw.effects.images_or_broll = true;
+  const output = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.equal(output.effects.images_or_broll, false);
+  assert.equal(output.quality_gates.images, false);
+  assert.match(output.skill_manifest.decisions.find((item) => item.skillId === "generador")!.summary, /No hay imágenes/);
+});
+
+test("rejects more than two images per clip or eight images across a montage", () => {
+  const perClip = fixture();
+  Object.assign(perClip.raw.clips[0], { visual_resources: [builtinResource("a"), builtinResource("b"), builtinResource("c")] });
+  assert.throws(() => normalizeRenderContract(perClip.raw, perClip.session, perClip.scenes, perClip.takes), /hasta 2 recursos/);
+  const montage = fixture(5);
+  montage.raw.clips.forEach((clip, index) => Object.assign(clip, { visual_resources: [builtinResource(`a-${index}`), builtinResource(`b-${index}`)] }));
+  assert.throws(() => normalizeRenderContract(montage.raw, montage.session, montage.scenes, montage.takes), /hasta 8 recursos/);
+});
+
+test("rejects aggregate uploaded image bytes and oversized individual images", () => {
+  const pngBytes = Buffer.alloc(200 * 1024);
+  pngBytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
+  const upload = { kind: "upload", title: "Foto", dataUrl: `data:image/png;base64,${pngBytes.toString("base64")}` };
+  const input = fixture(4);
+  input.raw.clips.forEach((clip, index) => Object.assign(clip, { visual_resources: [0, 1].map((n) => ({ ...builtinResource(`${index}-${n}`), image: upload })) }));
+  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /superan 1,5 MB/);
+  const oversized = fixture();
+  Object.assign(oversized.raw.clips[0], { visual_resources: [{ ...builtinResource(), image: { ...upload, dataUrl: `data:image/png;base64,${Buffer.concat([pngBytes, Buffer.alloc(1)]).toString("base64")}` } }] });
+  assert.throws(() => normalizeRenderContract(oversized.raw, oversized.session, oversized.scenes, oversized.takes), /hasta 200 KB/);
+});
+
+test("music remains unsupported independently of the image effect", () => {
+  const input = fixture();
+  input.raw.effects.music = true;
+  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /no admite música/);
+});
+
+
+test("preserves explicit visual review decisions without marking empty legacy resources reviewed", () => {
+  const input = fixture();
+  let output = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.deepEqual(output.clips.map((clip) => clip.visual_resources_reviewed), [false, false]);
+  Object.assign(input.raw.clips[0], { visual_resources: [], visual_resources_reviewed: true });
+  Object.assign(input.raw.clips[1], { visual_resources: [builtinResource()], visual_resources_reviewed: false });
+  output = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.equal(output.clips[0].visual_resources_reviewed, true);
+  assert.equal(output.clips[1].visual_resources_reviewed, false);
+  Object.assign(input.raw.clips[0], { visual_resources_reviewed: "yes" });
+  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /revisión de recursos visuales/);
+});

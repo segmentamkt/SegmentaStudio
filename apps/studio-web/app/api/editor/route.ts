@@ -7,6 +7,7 @@ import { planFromScript } from "../../../lib/editorial-director";
 import type { CaptionCue } from "../../../lib/caption-cues";
 import { MediaReviewError, requireCurrentMediaReview } from "../../../lib/media-review";
 import { readMediaReview } from "../../../lib/media-review-server";
+import { normalizeVisualResources, validateVisualResourceBudget, type VisualResource } from "../../../lib/visual-resources";
 
 type EditOptions = {
   captions?: boolean;
@@ -41,6 +42,8 @@ type TimelineItem = {
   transcript?: string;
   label?: string;
   captionCues?: CaptionCue[];
+  visualResources?: unknown;
+  resourcesReviewed?: boolean;
 };
 
 function bounded(value: unknown, fallback: number, min: number, max: number) {
@@ -71,7 +74,31 @@ export async function POST(request: Request) {
   const user = await getRequestUser();
   if (!user) return unauthorized();
   try {
-    const payload = await request.json() as Record<string, unknown>;
+    // Inline uploaded images are allowed only within this bounded JSON envelope.
+    const maxBodyBytes = 2.5 * 1024 * 1024;
+    if (Number(request.headers.get("content-length")) > maxBodyBytes) return Response.json({ error: "Las imágenes de esta edición superan el tamaño permitido." }, { status: 413 });
+    const reader = request.body?.getReader();
+    if (!reader) return Response.json({ error: "Faltan los datos de la edición." }, { status: 400 });
+    const chunks: Uint8Array[] = [];
+    let bodyBytes = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bodyBytes += value.byteLength;
+      if (bodyBytes > maxBodyBytes) {
+        await reader.cancel();
+        return Response.json({ error: "Las imágenes de esta edición superan el tamaño permitido." }, { status: 413 });
+      }
+      chunks.push(value);
+    }
+    let payload: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Formato no válido");
+      payload = parsed as Record<string, unknown>;
+    } catch {
+      return Response.json({ error: "Los datos de la edición no tienen un formato válido." }, { status: 400 });
+    }
     const sessionId = clean(payload.sessionId);
     const objective = clean(payload.objective, "Crear un video vertical claro, dinámico y profesional.");
     if (objective.length > 2_000) return Response.json({ error: "La indicación de edición admite hasta 2.000 caracteres." }, { status: 400 });
@@ -102,6 +129,7 @@ export async function POST(request: Request) {
     const ordered = timeline ? timeline.map((item) => ({ ...byTakeId.get(item.takeId)!, edit: item })) : source.map((item) => ({ ...item, edit: null as TimelineItem | null }));
     if (!ordered.length) return Response.json({ error: "Aprueba al menos una toma antes de planificar la edición." }, { status: 400 });
     if (ordered.length > 12) return Response.json({ error: "Este render cloud admite hasta 12 tomas aprobadas por edición." }, { status: 400 });
+    const visualResources: VisualResource[][] = [];
     for (const { take, edit } of ordered) {
       const duration = Number(take.duration_ms || 0) / 1000;
       const start = edit?.trimStartSeconds ?? 0;
@@ -120,6 +148,20 @@ export async function POST(request: Request) {
       if (edit?.captionCues !== undefined && (!Array.isArray(edit.captionCues) || edit.captionCues.length > 100 || edit.captionCues.some((cue) => !cue || typeof cue.text !== "string" || cue.text.length > 250 || typeof cue.startSeconds !== "number" || typeof cue.endSeconds !== "number" || !Number.isFinite(cue.startSeconds) || !Number.isFinite(cue.endSeconds) || cue.startSeconds < 0 || cue.endSeconds > duration || cue.endSeconds <= cue.startSeconds))) {
         return Response.json({ error: "Los tiempos de subtítulos de una toma no son válidos." }, { status: 400 });
       }
+      if (edit?.resourcesReviewed !== undefined && typeof edit.resourcesReviewed !== "boolean") {
+        return Response.json({ error: "La revisión de recursos visuales no es válida." }, { status: 400 });
+      }
+      // Validate hidden/disabled resources too, so saved plans cannot retain unsafe media.
+      try {
+        visualResources.push(normalizeVisualResources(edit?.visualResources, { durationSeconds: duration, trimStartSeconds: start, trimEndSeconds: end }));
+      } catch (error) {
+        return Response.json({ error: error instanceof Error ? error.message : "Los recursos visuales de una toma no son válidos." }, { status: 400 });
+      }
+    }
+    try {
+      validateVisualResourceBudget(visualResources.flat());
+    } catch (error) {
+      return Response.json({ error: error instanceof Error ? error.message : "Hay demasiados recursos visuales en esta edición." }, { status: 400 });
     }
     if (ordered.reduce((total, item) => total + ((item.edit?.trimEndSeconds ?? Number(item.take?.duration_ms || 0) / 1000) - (item.edit?.trimStartSeconds ?? 0)) / (item.edit?.playbackSpeed ?? 1), 0) > 120) return Response.json({ error: "Este render cloud admite hasta 2 minutos de video final por edición." }, { status: 400 });
     if (ordered.some((item) => String(item.edit?.transcript ?? item.scene.script ?? "").length > 1_000) || ordered.reduce((total, item) => total + String(item.edit?.transcript ?? item.scene.script ?? "").length, 0) > 5_000) return Response.json({ error: "Acorta el texto hablado: hasta 1.000 caracteres por escena y 5.000 en total." }, { status: 400 });
@@ -159,7 +201,7 @@ export async function POST(request: Request) {
       objective,
       session: { id: session.data.id, title: session.data.title, script: session.data.script },
       ordered_clip_ids: ordered.map((item) => item.take.id),
-      clips: ordered.map(({ scene, take, edit }) => ({
+      clips: ordered.map(({ scene, take, edit }, index) => ({
         id: take.id,
         scene_id: scene.id,
         name: scene.title,
@@ -175,6 +217,8 @@ export async function POST(request: Request) {
         saturation: edit?.saturation ?? 1,
         label: edit?.label ?? "",
         caption_cues: edit?.captionCues ?? [],
+        visual_resources: visualResources[index],
+        visual_resources_reviewed: edit?.resourcesReviewed === true,
       })),
       style: style.id,
       style_snapshot: styleSnapshot,
@@ -188,7 +232,7 @@ export async function POST(request: Request) {
         images_or_broll: normalizedOptions.broll,
         music: false,
       },
-      quality_gates: { portrait: true, audio: true, captions: normalizedOptions.captions, timed_captions: normalizedOptions.captions, effects: normalizedOptions.transitions || normalizedOptions.labels },
+      quality_gates: { portrait: true, audio: true, captions: normalizedOptions.captions, timed_captions: normalizedOptions.captions, images: normalizedOptions.broll && visualResources.some((resources) => resources.length > 0), effects: normalizedOptions.transitions || normalizedOptions.labels },
       editorial_plan: planFromScript(String(session.data.script), ordered.map(({ scene, take, edit }) => ({ id: take.id, title: String(scene.title || ""), transcript: String(edit?.transcript ?? scene.script ?? "") }))),
     };
     const contractWithSkills = applySkillProfilesToContract(contract, payload.skillProfiles);

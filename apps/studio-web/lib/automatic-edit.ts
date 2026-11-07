@@ -1,9 +1,11 @@
-export type AutomaticEditStage = "captions" | "plan" | "render" | "done";
+export type AutomaticEditStage = "captions" | "resources" | "plan" | "render" | "done";
 
 export type AutomaticEditSteps<TDraft, TJob, TResult> = {
   signal: AbortSignal;
   captureDraft: () => TDraft;
   transcribe: () => Promise<boolean>;
+  /** Adds contextual resources to the current draft after timed captions exist. */
+  addResources?: () => void | Promise<void>;
   prepare: (draft: TDraft) => Promise<TJob | null>;
   render: (job: TJob) => Promise<TResult | null>;
   onStage: (stage: AutomaticEditStage) => void;
@@ -29,8 +31,14 @@ export async function runAutomaticEdit<TDraft, TJob, TResult>(steps: AutomaticEd
   checkActive();
   if (!captionsReady) throw new Error("Faltan subtítulos por generar. Revisa las tomas con aviso y vuelve a intentarlo.");
 
-  // Transcription updates the draft asynchronously. Capture only after it is
-  // complete, rather than passing the state from the original click handler.
+  if (steps.addResources) {
+    enter("resources");
+    await steps.addResources();
+    checkActive();
+  }
+
+  // Captions and resources update the draft asynchronously. Capture only after
+  // both finish, rather than passing state from the original click handler.
   const draft = steps.captureDraft();
   enter("plan");
   const job = await steps.prepare(draft);

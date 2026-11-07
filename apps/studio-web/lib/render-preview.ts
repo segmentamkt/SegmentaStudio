@@ -8,6 +8,8 @@ export type RenderPreview = {
   durationSeconds: number;
   captionCount: number;
   soundEffectCount: number;
+  /** Omitted by previews created before contextual image support. */
+  imageCount?: number;
   removedSilenceSeconds: number;
 };
 
@@ -33,6 +35,7 @@ export function parseRenderPreview(value: unknown): RenderPreview | null {
   for (const key of ["captionCount", "soundEffectCount"] as const) {
     if (!Number.isInteger(preview[key]) || Number(preview[key]) < 0 || Number(preview[key]) > 100) return null;
   }
+  if (preview.imageCount !== undefined && (!Number.isInteger(preview.imageCount) || Number(preview.imageCount) < 0 || Number(preview.imageCount) > 2)) return null;
   if (typeof preview.removedSilenceSeconds !== "number" || !Number.isFinite(preview.removedSilenceSeconds)
     || preview.removedSilenceSeconds < 0 || preview.removedSilenceSeconds > 120) return null;
   return preview as RenderPreview;

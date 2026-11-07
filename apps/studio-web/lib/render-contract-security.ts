@@ -1,5 +1,6 @@
 import { getEditorStyle, type EditorStyle } from "./editor-presets";
 import { applySkillProfilesToContract } from "./studio-skills";
+import { normalizeVisualResources, validateVisualResourceBudget } from "./visual-resources";
 
 type Row = Record<string, unknown>;
 type Transition = EditorStyle["transition"];
@@ -158,8 +159,14 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
       saturation: bounded(requestedClip.saturation, 1, .5, 1.5, "La saturación de una toma"),
       label: text(requestedClip.label ?? "", "El rótulo de una escena", 120, true),
       caption_cues: captionCues,
+      visual_resources: normalizeVisualResources(requestedClip.visual_resources, {
+        durationSeconds: measuredMs / 1_000, trimStartSeconds: trimStart, trimEndSeconds: trimEnd,
+      }),
+      visual_resources_reviewed: flag(requestedClip.visual_resources_reviewed, false, "La revisión de recursos visuales"),
     };
   });
+
+  validateVisualResourceBudget(clips.flatMap((clip) => clip.visual_resources));
 
   const style = getEditorStyle(contract.style);
   const requestedStyle = optionalRow(contract.style_snapshot, "El estilo");
@@ -203,8 +210,9 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
   const transitions = flag(requestedEffects.transitions, true, "Las transiciones");
   const soundEffects = flag(requestedEffects.sound_effects, true, "Los efectos sonoros");
   const labels = flag(requestedEffects.labels, true, "Los títulos");
-  if (flag(requestedEffects.images_or_broll, false, "Las imágenes B-roll") || flag(requestedEffects.music, false, "La música")) {
-    throw new Error("Este motor todavía no admite imágenes B-roll ni música en el render.");
+  const imagesOrBroll = flag(requestedEffects.images_or_broll, false, "Los recursos visuales");
+  if (flag(requestedEffects.music, false, "La música")) {
+    throw new Error("Este motor todavía no admite música en el render.");
   }
   const baseContract = {
     schema: "kiko.edit-contract.v1" as const,
@@ -221,12 +229,13 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
     target_duration_seconds: null,
     captions: { enabled: captionsEnabled, language: "es" as const, max_words_per_card: maxWords, emphasis: true },
     dead_air: { remove: removeDeadAir, threshold_ms: silenceThresholdMs, noise_db: noiseDb },
-    effects: { transitions, sound_effects: soundEffects, labels, images_or_broll: false, music: false },
+    effects: { transitions, sound_effects: soundEffects, labels, images_or_broll: imagesOrBroll, music: false },
     quality_gates: {
       portrait: true,
       audio: true,
       captions: captionsEnabled,
       timed_captions: captionsEnabled && qualityGates.timed_captions === true,
+      images: imagesOrBroll && clips.some((clip) => clip.visual_resources.length > 0),
       effects: (transitions && transition !== "cut" && clips.length > 1) || (labels && (clips.some((clip) => clip.label) || (titleCards && !/^edici[oó]n de \d+ videos?$/i.test(String(dbSession.title))))),
     },
   };
