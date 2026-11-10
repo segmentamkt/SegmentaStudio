@@ -57,6 +57,39 @@ type RenderInput = {
 };
 
 const safeSeconds = (value: number) => Math.max(0, Number.isFinite(value) ? value : 0);
+
+/** Volumen de entrega: −14 LUFS integrados (nivel de reels) y picos por debajo de −1 dBFS. */
+export const LOUDNESS_TARGET_LUFS = -14;
+const LOUDNESS_PEAK_LIMIT = .891;
+const MAX_LOUDNESS_BOOST_DB = 18;
+const MAX_LOUDNESS_CUT_DB = 12;
+
+/** Integrated loudness from loudnorm's JSON report (null when the take is silent or unreadable). */
+export function parseLoudnormInput(stderr: string): number | null {
+  const match = stderr.match(/"input_i"\s*:\s*"(-?(?:\d+(?:\.\d+)?|inf))"/);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) && value > -70 ? value : null;
+}
+
+/** Static gain that brings a take to the delivery loudness; bounded so noise is never pushed up blindly. */
+export function loudnessGainDb(measuredLufs: number | null) {
+  if (measuredLufs === null || !Number.isFinite(measuredLufs)) return 0;
+  return Math.max(-MAX_LOUDNESS_CUT_DB, Math.min(MAX_LOUDNESS_BOOST_DB, LOUDNESS_TARGET_LUFS - measuredLufs));
+}
+
+/** Measure the final audio mix of a take (voice chain + sound accents) exactly as it will be encoded. */
+async function measureMixLoudness(command: string, inputArgs: string[], audioFilters: string[], audioLabel: string, deadline: number) {
+  const timeoutMs = Math.min(45_000, deadline - Date.now());
+  if (timeoutMs <= 0) throw new Error("El proyecto excedió el tiempo seguro de exportación.");
+  const result = await capture(command, [
+    "-hide_banner", "-nostdin", "-nostats", "-threads", "1", "-filter_complex_threads", "1", ...inputArgs,
+    "-filter_complex", [...audioFilters, `[${audioLabel}]loudnorm=I=${LOUDNESS_TARGET_LUFS}:TP=-1:LRA=11:print_format=json[measured]`].join(";"),
+    "-map", "[measured]", "-vn", "-f", "null", "-",
+  ], { timeoutMs });
+  if (result.timedOut) throw new Error("La medición de volumen tardó demasiado.");
+  return result.code === 0 ? parseLoudnormInput(result.stderr) : null;
+}
 const fixed = (value: number) => safeSeconds(value).toFixed(3);
 const MAX_OUTPUT_SECONDS = 120;
 // At the maximum 2x speed, 240s of selected source produces 120s of output.
@@ -289,7 +322,9 @@ export async function renderSequentialClip(input: {
   const denoise = analysis.hasAudio && execution.noiseReduction !== "off" && execution.noiseReduction
     ? `,afftdn=nr=${execution.noiseReduction === "medium" ? 10 : 6}:nf=-40`
     : "";
-  filters.push(`[${audioSource}:a]${audioTrim},aformat=sample_fmts=fltp:channel_layouts=stereo${denoise}${analysis.hasAudio ? ",acompressor=threshold=-18dB:ratio=2:attack=5:release=60" : ""},volume=${volume}${audioFade}[abase]`);
+  const voiceFilter = `[${audioSource}:a]${audioTrim},aformat=sample_fmts=fltp:channel_layouts=stereo${denoise}${analysis.hasAudio ? ",acompressor=threshold=-18dB:ratio=2:attack=5:release=60" : ""},volume=${volume}${audioFade}[abase]`;
+  filters.push(voiceFilter);
+  const audioFilters = [voiceFilter];
   const overlays: Buffer[] = [];
   let videoLabel = "vbase";
   let captionCount = 0;
@@ -400,11 +435,22 @@ export async function renderSequentialClip(input: {
       volume: Number(execution.soundEffectVolume ?? .35), outputLabel: "audiofx",
     });
     filters.push(...sound.filters);
+    audioFilters.push(...sound.filters);
     audioLabel = sound.outputLabel;
     cueCount = sound.renderedCueCount;
   }
-  const args = ["-y", "-hide_banner", "-nostdin", "-loglevel", "error", "-filter_complex_threads", "1", "-threads", "1",
-    "-ss", fixed(sourceStart), "-t", fixed(sourceEnd - sourceStart), "-i", url];
+  // Delivery loudness: measure the finished mix of this take, then one static gain to −14 LUFS
+  // and a peak limiter. Every take lands at the same level, whatever phone or app recorded it.
+  const inputArgs = ["-ss", fixed(sourceStart), "-t", fixed(sourceEnd - sourceStart), "-i", url];
+  let loudness: { measuredLufs: number | null; gainDb: number } | null = null;
+  if (analysis.hasAudio && volume > 0) {
+    const measuredLufs = await measureMixLoudness(command, inputArgs, audioFilters, audioLabel, deadline);
+    const gainDb = loudnessGainDb(measuredLufs);
+    filters.push(`[${audioLabel}]volume=${gainDb.toFixed(2)}dB,alimiter=limit=${LOUDNESS_PEAK_LIMIT}:level=false:latency=1[aout]`);
+    audioLabel = "aout";
+    loudness = { measuredLufs, gainDb: Number(gainDb.toFixed(2)) };
+  }
+  const args = ["-y", "-hide_banner", "-nostdin", "-loglevel", "error", "-filter_complex_threads", "1", "-threads", "1", ...inputArgs];
   if (!analysis.hasAudio) args.push("-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
   overlays.forEach((_, overlayIndex) => args.push("-f", "image2pipe", "-framerate", "30", "-c:v", "png", "-i", `pipe:${overlayIndex + 3}`));
   // The kinetic layer is the last input: its index was computed after every pipe overlay.
@@ -416,7 +462,7 @@ export async function renderSequentialClip(input: {
     "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", output,
   );
   await ffmpegFile(command, args, overlays, deadline);
-  return { duration, captionCount, estimatedCaptionWords, captionMode: kineticCaptions ? "palabra" as const : "tarjeta" as const, cueCount, imageCount, labelCount: Number(showTitle) + Number(showLayeredHeader) + Number(Boolean(label && contract.effects.labels && !layeredStyle)) };
+  return { duration, captionCount, estimatedCaptionWords, captionMode: kineticCaptions ? "palabra" as const : "tarjeta" as const, cueCount, imageCount, loudness, labelCount: Number(showTitle) + Number(showLayeredHeader) + Number(Boolean(label && contract.effects.labels && !layeredStyle)) };
 }
 
 /**
@@ -476,6 +522,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
     let effects = 0;
     let images = 0;
     let previewTimeMs = 0;
+    const loudness: Array<{ clipIndex: number; measured_lufs: number | null; gain_db: number }> = [];
     for (const [index, analysis] of analyses.entries()) {
       const path = join(directory, `clip-${index}.mp4`);
       await input.onProgress(36 + Math.round(index / analyses.length * 42), `Editando toma ${index + 1} de ${analyses.length}`);
@@ -488,6 +535,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
       estimatedCaptionWords += rendered.estimatedCaptionWords;
       if (rendered.captionCount > 0) captionedClips += 1;
       images += rendered.imageCount;
+      if (rendered.loudness) loudness.push({ clipIndex: index, measured_lufs: rendered.loudness.measuredLufs, gain_db: rendered.loudness.gainDb });
       effects += rendered.cueCount + rendered.labelCount + rendered.imageCount + (index > 0 && transitionSeconds > 0 ? 1 : 0);
       await input.onProgress(36 + Math.round((index + 1) / analyses.length * 42), `Toma ${index + 1} de ${analyses.length} editada`);
       // Samples are optional and must not take the final render's remaining budget.
@@ -536,6 +584,8 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
       cut_mode: naturalPauses ? "natural" : input.contract.dead_air.remove ? "compacto" : "sin-cortes",
       cut_report: cutReports,
       removed_silence_seconds: Number(analyses.reduce((sum, item) => sum + item.removed, 0).toFixed(2)),
+      // Delivery loudness per take: what was measured and the gain applied to reach the target.
+      audio_loudness: { target_lufs: LOUDNESS_TARGET_LUFS, clips: loudness },
       silent_source_clips: analyses.filter((item) => !item.hasAudio).length,
       style_applied: true, style_id: (input.contract.style_snapshot as { id?: string }).id || null,
       subtitle_position: input.contract.style_snapshot.subtitle.position || "bottom",

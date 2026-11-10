@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import ffmpegPath from "ffmpeg-static";
-import { analyzeSequentialClip, createRenderPreview, renderSequentialClip, trimSequentialAnalysis } from "../lib/sequential-cloud-video-renderer";
+import { LOUDNESS_TARGET_LUFS, analyzeSequentialClip, createRenderPreview, loudnessGainDb, parseLoudnormInput, renderSequentialClip, trimSequentialAnalysis } from "../lib/sequential-cloud-video-renderer";
 import { mapCaptionCues } from "../lib/caption-cues";
 import { MAX_RENDER_PREVIEW_BYTES, parseRenderPreview } from "../lib/render-preview";
 
@@ -167,6 +167,54 @@ test("sequential HEVC clips normalize to a playable joined portrait MP4 with tex
     const inspection = run(["-hide_banner", "-i", final, "-map", "0:v:0", "-map", "0:a:0", "-t", "1", "-f", "null", "-"]);
     assert.match(inspection, /Video:[^\n]*\b1080x1920\b/);
     assert.match(inspection, /Audio:/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("delivery loudness: gain is read from loudnorm and bounded", () => {
+  const report = `[Parsed_loudnorm_0 @ 0x1]\n{\n\t"input_i" : "-24.80",\n\t"input_tp" : "-6.10",\n\t"input_lra" : "3.80"\n}`;
+  assert.equal(parseLoudnormInput(report), -24.8);
+  assert.equal(parseLoudnormInput(`{ "input_i" : "-inf" }`), null, "a silent take is not boosted");
+  assert.equal(parseLoudnormInput("no report"), null);
+  assert.equal(loudnessGainDb(-24.8), 10.8);
+  assert.equal(loudnessGainDb(-60), 18, "very quiet takes get at most +18 dB");
+  assert.equal(loudnessGainDb(-1), -12, "very loud takes get at most −12 dB");
+  assert.equal(loudnessGainDb(null), 0);
+});
+
+test("quiet and loud takes both leave the render at −14 LUFS without clipping", async () => {
+  assert.ok(ffmpegPath);
+  const directory = await mkdtemp(join(tmpdir(), "segmenta-loudness-test-"));
+  const run = (args: string[]) => {
+    const result = spawnSync(ffmpegPath!, args, { encoding: "utf8", timeout: 60_000 });
+    assert.equal(result.status, 0, result.stderr?.slice(-1200));
+    return result.stderr;
+  };
+  try {
+    for (const [name, gain] of [["quiet", .4], ["loud", 7]] as const) {
+      const source = join(directory, `${name}.mp4`);
+      // A speech-like signal: a tone that rises and falls four times per second.
+      run(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x202020:s=360x640:r=30:d=4",
+        "-f", "lavfi", "-i", `sine=frequency=220:sample_rate=48000:duration=4,volume=${gain},tremolo=f=4:d=0.8`,
+        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-b:a", "192k", "-shortest", source]);
+      const output = join(directory, `${name}-out.mp4`);
+      const result = await renderSequentialClip({
+        command: ffmpegPath!, url: source, index: 0, output, videoKbps: 1500, transitionSeconds: 0, deadline: Date.now() + 60_000,
+        analysis: { duration: 4, ranges: [{ start: 0, end: 4 }], removed: 0, hasAudio: true },
+        contract: {
+          objective: "Volumen", session: { title: "" }, clips: [{ id: "1", name: name, object_key: name, duration_seconds: 4, transcript: "" }],
+          style_snapshot: { transition: "cut", subtitle: { text: "#FFFFFF", box: "#000000", size: 48, uppercase: false, position: "bottom" }, execution: { contrast: 1, saturation: 1, framing: "fill" } },
+          captions: { enabled: false, max_words_per_card: 4 }, dead_air: { remove: false, threshold_ms: 500 }, effects: { transitions: false, sound_effects: false, labels: false },
+        },
+      });
+      assert.ok(result.loudness && result.loudness.measuredLufs !== null, "the mix was measured");
+      const stats = run(["-hide_banner", "-nostats", "-i", output, "-map", "0:a:0", "-af", "ebur128=peak=true", "-f", "null", "-"]);
+      const integrated = Number(stats.match(/I:\s+(-?\d+(?:\.\d+)?) LUFS/g)!.pop()!.match(/-?\d+(?:\.\d+)?/)![0]);
+      const peak = Number(stats.match(/Peak:\s+(-?\d+(?:\.\d+)?) dBFS/g)!.pop()!.match(/-?\d+(?:\.\d+)?/)![0]);
+      assert.ok(Math.abs(integrated - LOUDNESS_TARGET_LUFS) <= 1.5, `${name}: ${integrated} LUFS (gain ${result.loudness!.gainDb} dB)`);
+      assert.ok(peak <= 0, `${name}: true peak ${peak} dBFS must not clip`);
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

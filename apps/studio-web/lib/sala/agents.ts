@@ -213,7 +213,7 @@ export function buildSalaScript(clips: SalaClipInput[], options: { styleName: st
   clips.forEach((clip, index) => {
     const start = plans[index].cut.ranges[0]?.start ?? clip.window.start;
     let last = add({ id: `sonido-voz-${index}`, agent: "sonido", clipIndex: index, after: [cutsDone[index]], action: { kind: "sound", at: start, effect: "voz" },
-      label: clip.hasAudio ? "Voz a 1,0× con compresión suave: sin acelerar ni cambiar el tono" : "Toma sin audio: se añade silencio limpio" });
+      label: clip.hasAudio ? "Voz a 1,0×, compresión suave y volumen de entrega a −14 LUFS" : "Toma sin audio: se añade silencio limpio" });
     if (options.soundEffects && index > 0) {
       last = add({ id: `sonido-acento-${index}`, agent: "sonido", clipIndex: index, action: { kind: "sound", at: start, effect: "acento" }, label: `Acento discreto al entrar en la toma ${index + 1}` });
     }
