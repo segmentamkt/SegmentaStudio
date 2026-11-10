@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import ffmpegPath from "ffmpeg-static";
 import { MAX_RENDER_BYTES, uploadRenderedMp4 } from "./cloud-render-upload";
@@ -12,6 +12,13 @@ import { renderVisualResourceImage } from "./visual-resource-image";
 import { VISUAL_RESOURCE_LAYOUTS, type VisualResource } from "./visual-resources";
 import { mapCaptionCues, type CaptionCue } from "./caption-cues";
 import { MAX_RENDER_PREVIEW_BYTES, type RenderPreview } from "./render-preview";
+import { buildKineticLayer, kineticInputArgs, kineticOverlayFilter, planKineticCaptions, type KineticLayer, type KineticZone } from "./skills/subtitulos-cineticos";
+
+/** The kinetic skill places words under the chin by default; «Abajo/Arriba/Centro» keep their zones. */
+function kineticZone(position: string | undefined, layeredStyle: boolean): KineticZone {
+  if (layeredStyle) return "bottom";
+  return position === "top" || position === "center" || position === "bottom" ? position : "chest";
+}
 
 type Range = { start: number; end: number };
 type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string; trim_start_seconds?: number; trim_end_seconds?: number; playback_speed?: number; audio_volume?: number; brightness?: number; contrast?: number; saturation?: number; label?: string; caption_cues?: CaptionCue[]; visual_resources?: VisualResource[] };
@@ -23,7 +30,7 @@ type EditContract = {
     id?: string;
     transition: "cut" | "fade" | "dissolve";
     transitionDuration?: number;
-    subtitle: { text: string; box: string; size: number; uppercase: boolean; position?: "top" | "center" | "bottom" };
+    subtitle: { text: string; box: string; size: number; uppercase: boolean; position?: "top" | "center" | "chest" | "bottom"; mode?: "tarjeta" | "palabra" };
     execution?: {
       zoomPercent?: number; contrast?: number; saturation?: number; soundEffectVolume?: number; soundPreset?: "auto" | "none" | "soft" | "kinetic" | "cinematic" | "pop"; noiseReduction?: "off" | "light" | "medium";
       framing?: "fill" | "fit"; titleCards?: boolean; titleColor?: string;
@@ -307,8 +314,34 @@ export async function renderSequentialClip(input: {
   if (label && contract.effects.labels && !layeredStyle) {
     await addOverlay(label, .15, Math.min(duration, 2.6), "H*0.07", true);
   }
-  if (contract.captions.enabled) {
-    const position = layeredStyle ? "H-h-H*0.22" : contract.style_snapshot.subtitle.position === "top" ? "H*0.11" : contract.style_snapshot.subtitle.position === "center" ? "(H-h)/2" : "H-h-H*0.10";
+  let kineticLayer: KineticLayer | null = null;
+  let estimatedCaptionWords = 0;
+  const kineticCaptions = contract.style_snapshot.subtitle.mode === "palabra";
+  if (contract.captions.enabled && kineticCaptions) {
+    // Skill «Subtítulos cinéticos»: una palabra a la vez con los tiempos reales de la voz.
+    const sourceCues = clip.caption_cues?.length ? clip.caption_cues : [{ startSeconds: 0, endSeconds: analysis.duration, text: clip.transcript }];
+    const outputCues = mapCaptionCues(sourceCues, analysis.ranges).map((cue) => ({
+      ...cue,
+      startSeconds: cue.startSeconds / speed, endSeconds: cue.endSeconds / speed,
+      words: cue.words?.map((word) => ({ ...word, startSeconds: word.startSeconds / speed, endSeconds: word.endSeconds / speed })),
+    }));
+    const words = planKineticCaptions(outputCues, { uppercase: contract.style_snapshot.subtitle.uppercase, durationSeconds: duration });
+    kineticLayer = await buildKineticLayer(words, {
+      directory: join(dirname(output), `kinetic-${index}`),
+      fontDir: join(process.cwd(), "assets", "fonts"),
+      durationSeconds: duration,
+      zone: kineticZone(contract.style_snapshot.subtitle.position, layeredStyle),
+      sizeScale: Math.max(.6, Math.min(1.4, Number(contract.style_snapshot.subtitle.size || 72) / 72)),
+    });
+    if (kineticLayer) {
+      const slot = 1 + Number(!analysis.hasAudio) + overlays.length;
+      filters.push(kineticOverlayFilter({ videoLabel, inputIndex: slot, layer: kineticLayer, outputLabel: "vkinetic" }));
+      videoLabel = "vkinetic";
+      captionCount += kineticLayer.words;
+      estimatedCaptionWords = words.filter((word) => word.estimated).length;
+    }
+  } else if (contract.captions.enabled) {
+    const position = layeredStyle ? "H-h-H*0.22" : contract.style_snapshot.subtitle.position === "top" ? "H*0.11" : contract.style_snapshot.subtitle.position === "center" ? "(H-h)/2" : contract.style_snapshot.subtitle.position === "chest" ? "H*0.64-h/2" : "H-h-H*0.10";
     const sourceCues = clip.caption_cues?.length ? clip.caption_cues : [{ startSeconds: 0, endSeconds: analysis.duration, text: clip.transcript }];
     for (const cue of mapCaptionCues(sourceCues, analysis.ranges)) {
       const items = cards(cue.text, contract.captions.max_words_per_card || 5, contract.style_snapshot.subtitle.uppercase);
@@ -338,6 +371,8 @@ export async function renderSequentialClip(input: {
     "-ss", fixed(sourceStart), "-t", fixed(sourceEnd - sourceStart), "-i", url];
   if (!analysis.hasAudio) args.push("-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
   overlays.forEach((_, overlayIndex) => args.push("-f", "image2pipe", "-framerate", "30", "-c:v", "png", "-i", `pipe:${overlayIndex + 3}`));
+  // The kinetic layer is the last input: its index was computed after every pipe overlay.
+  if (kineticLayer) args.push(...kineticInputArgs(kineticLayer));
   args.push(
     "-filter_complex", filters.join(";"), "-map", `[${videoLabel}]`, "-map", `[${audioLabel}]`,
     "-t", fixed(duration), "-c:v", "libx264", "-threads", "1", "-preset", "veryfast", "-crf", "22",
@@ -345,7 +380,7 @@ export async function renderSequentialClip(input: {
     "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", output,
   );
   await ffmpegFile(command, args, overlays, deadline);
-  return { duration, captionCount, cueCount, imageCount, labelCount: Number(showTitle) + Number(showLayeredHeader) + Number(Boolean(label && contract.effects.labels && !layeredStyle)) };
+  return { duration, captionCount, estimatedCaptionWords, captionMode: kineticCaptions ? "palabra" as const : "tarjeta" as const, cueCount, imageCount, labelCount: Number(showTitle) + Number(showLayeredHeader) + Number(Boolean(label && contract.effects.labels && !layeredStyle)) };
 }
 
 /**
@@ -387,6 +422,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
   try {
     const clips: string[] = [];
     let captions = 0;
+    let estimatedCaptionWords = 0;
     let captionedClips = 0;
     let effects = 0;
     let images = 0;
@@ -400,6 +436,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
       });
       clips.push(path);
       captions += rendered.captionCount;
+      estimatedCaptionWords += rendered.estimatedCaptionWords;
       if (rendered.captionCount > 0) captionedClips += 1;
       images += rendered.imageCount;
       effects += rendered.cueCount + rendered.labelCount + rendered.imageCount + (index > 0 && transitionSeconds > 0 ? 1 : 0);
@@ -443,6 +480,9 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
     return {
       duration_seconds: Number(totalDuration.toFixed(2)), width: 1080, height: 1920,
       caption_count: captions, effect_count: effects, image_count: images,
+      // Honest QA: kinetic words without recognized timing were spread by syllables inside their cue.
+      caption_mode: input.contract.style_snapshot.subtitle.mode === "palabra" ? "palabra" : "tarjeta",
+      estimated_caption_words: estimatedCaptionWords,
       removed_silence_seconds: Number(analyses.reduce((sum, item) => sum + item.removed, 0).toFixed(2)),
       silent_source_clips: analyses.filter((item) => !item.hasAudio).length,
       style_applied: true, style_id: (input.contract.style_snapshot as { id?: string }).id || null,

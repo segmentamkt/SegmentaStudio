@@ -136,9 +136,10 @@ export const SKILL_CATALOG: SkillDefinition[] = [
     defaultInstruction: "Subtítulos breves, legibles y ubicados lejos del rostro.",
     settings: [
       { key: "enabled", label: "Mostrar subtítulos", kind: "toggle", defaultValue: true },
+      { key: "mode", label: "Modo", kind: "select", defaultValue: "estilo", options: choice([["estilo", "Según el estilo"], ["palabra", "Cinético: una palabra a la vez"], ["tarjeta", "Tarjetas de varias palabras"]]) },
       { key: "maxWords", label: "Palabras por tarjeta", kind: "range", defaultValue: 4, min: 2, max: 8, step: 1 },
       { key: "size", label: "Tamaño", kind: "range", defaultValue: 64, min: 38, max: 100, step: 2 },
-      { key: "position", label: "Posición", kind: "select", defaultValue: "bottom", options: choice([["top", "Arriba"], ["center", "Centro"], ["bottom", "Abajo"]]) },
+      { key: "position", label: "Posición", kind: "select", defaultValue: "bottom", options: choice([["top", "Arriba"], ["center", "Centro"], ["chest", "Pecho (bajo el rostro)"], ["bottom", "Abajo"]]) },
       { key: "uppercase", label: "Mayúsculas", kind: "toggle", defaultValue: false },
     ],
   },
@@ -377,12 +378,13 @@ export function applySkillProfilesToContract<T extends SkillAwareContract>(contr
   if (!subtitulos.enabled) updated.captions.enabled = false;
   else if (changed(subtitulos, "enabled")) updated.captions.enabled = value(subtitulos, "enabled") === true;
   if (subtitulos.enabled) {
+    if (changed(subtitulos, "mode") && (value(subtitulos, "mode") === "palabra" || value(subtitulos, "mode") === "tarjeta")) updated.style_snapshot.subtitle.mode = value(subtitulos, "mode");
     if (changed(subtitulos, "maxWords")) updated.captions.max_words_per_card = value(subtitulos, "maxWords");
     if (changed(subtitulos, "size")) updated.style_snapshot.subtitle.size = value(subtitulos, "size");
     if (changed(subtitulos, "position")) updated.style_snapshot.subtitle.position = value(subtitulos, "position");
     if (changed(subtitulos, "uppercase")) updated.style_snapshot.subtitle.uppercase = value(subtitulos, "uppercase");
   }
-  decisions.push(decision("subtitulos", "partial", subtitulos.enabled, subtitulos.enabled ? "Subtítulos con tiempos de voz de la transcripción automática o del archivo SRT/VTT; revisa el texto antes de renderizar." : "Subtítulos desactivados.", [...(!subtitulos.enabled || changed(subtitulos, "enabled") ? ["captions.enabled"] : []), ...(subtitulos.enabled ? [["maxWords", "captions.max_words_per_card"], ["size", "style_snapshot.subtitle.size"], ["position", "style_snapshot.subtitle.position"], ["uppercase", "style_snapshot.subtitle.uppercase"]].filter(([key]) => changed(subtitulos, key)).map(([, path]) => path) : [])]));
+  decisions.push(decision("subtitulos", "partial", subtitulos.enabled, subtitulos.enabled ? "Subtítulos con tiempos de voz de la transcripción automática o del archivo SRT/VTT; revisa el texto antes de renderizar." : "Subtítulos desactivados.", [...(!subtitulos.enabled || changed(subtitulos, "enabled") ? ["captions.enabled"] : []), ...(subtitulos.enabled ? [["mode", "style_snapshot.subtitle.mode"], ["maxWords", "captions.max_words_per_card"], ["size", "style_snapshot.subtitle.size"], ["position", "style_snapshot.subtitle.position"], ["uppercase", "style_snapshot.subtitle.uppercase"]].filter(([key]) => changed(subtitulos, key)).map(([, path]) => path) : [])]));
 
   const retoques = byId.get("retoques")!;
   if (retoques.enabled && changed(retoques, "contrast")) updated.style_snapshot.execution.contrast = value(retoques, "contrast");

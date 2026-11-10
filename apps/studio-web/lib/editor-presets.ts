@@ -1,9 +1,13 @@
-export type EditorStyleId = "kiko-impacto" | "aula-premium" | "historia-cinematica" | "ia-demostrativa" | "autoridad-minimal" | "reflexion-intima" | "demo-visual-dividida" | "storytelling-marca-pop" | "ia-en-capas";
+export type EditorStyleId = "kiko-impacto" | "aula-premium" | "historia-cinematica" | "ia-demostrativa" | "autoridad-minimal" | "reflexion-intima" | "demo-visual-dividida" | "storytelling-marca-pop" | "ia-en-capas" | "segmenta-cinetico";
+
+/** «tarjeta»: bloques de varias palabras. «palabra»: skill de subtítulos cinéticos, una palabra a la vez. */
+export type SubtitleMode = "tarjeta" | "palabra";
+export type SubtitlePosition = "top" | "center" | "chest" | "bottom";
 
 export type EditorStyle = {
   id: EditorStyleId; name: string; reference: string; description: string; pace: string;
   palette: [string, string, string]; caption: string; transition: "cut" | "fade" | "dissolve"; transitionDuration: number;
-  subtitle: { text: string; box: string; size: number; uppercase: boolean; position: "top" | "center" | "bottom"; maxWords: number };
+  subtitle: { text: string; box: string; size: number; uppercase: boolean; position: SubtitlePosition; maxWords: number; mode?: SubtitleMode };
   execution: { silenceThresholdMs: number; zoomPercent: number; contrast: number; saturation: number; soundEffectVolume: number; soundPreset?: "auto" | "none" | "soft" | "kinetic" | "cinematic" | "pop"; noiseReduction?: "off" | "light" | "medium"; framing: "fill" | "fit"; titleCards: boolean; titleColor: string };
 };
 
@@ -70,6 +74,15 @@ export const EDITOR_STYLES: EditorStyle[] = [
     palette: ["#09090B", "#FFFFFF", "#FACC15"], caption: "UNA IDEA QUE CAMBIA TODO", transition: "cut", transitionDuration: 0,
     subtitle: { text: "#FFFFFF", box: "#09090B", size: 76, uppercase: true, position: "bottom", maxWords: 4 },
     execution: { silenceThresholdMs: 450, zoomPercent: 5, contrast: 1.1, saturation: 1.08, soundEffectVolume: .42, soundPreset: "kinetic", framing: "fill", titleCards: true, titleColor: "#09090B" },
+  },
+  {
+    // Reglas aprobadas para los videos de Segmenta (skill editor-segmenta): una palabra a la vez,
+    // blanco y naranja, sin cajas, sin intro ni rótulos, sin filtros de color y pausas naturales.
+    id: "segmenta-cinetico", name: "Segmenta cinético", reference: "Estilo aprobado de Segmenta",
+    description: "Una palabra a la vez, sincronizada con la voz: blanco y naranja, cifras y marcas resaltadas, sin cajas ni filtros.", pace: "Dinámico · talking head",
+    palette: ["#FF7A00", "#FFFFFF", "#0E0E10"], caption: "UNA PALABRA", transition: "cut", transitionDuration: 0,
+    subtitle: { text: "#FFFFFF", box: "#0E0E10", size: 72, uppercase: false, position: "chest", maxWords: 4, mode: "palabra" },
+    execution: { silenceThresholdMs: 700, zoomPercent: 0, contrast: 1, saturation: 1, soundEffectVolume: .3, soundPreset: "pop", framing: "fill", titleCards: false, titleColor: "#0E0E10" },
   },
 ];
 

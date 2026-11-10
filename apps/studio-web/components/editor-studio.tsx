@@ -10,7 +10,9 @@ import { EDITOR_STYLES, type EditorStyleId } from "../lib/editor-presets";
 import { loadSkillProfiles } from "../lib/studio-skills";
 import { preproductionSchema } from "../lib/preproduction-plan";
 import { planFromScript } from "../lib/editorial-director";
-import { parseCaptionCues, type CaptionCue } from "../lib/caption-cues";
+import { parseCaptionCues, retimeEditedCue, splitCueAt, type CaptionCue } from "../lib/caption-cues";
+// Only the pure planner: the drawing module uses Node APIs and stays on the server.
+import { planKineticCaptions } from "../lib/skills/subtitulos-cineticos/plan";
 import { transcribeTakeInBrowser } from "../lib/browser-transcription";
 import { getCaptionGenerationTargets, mergeCaptionGenerationResult } from "../lib/caption-generation";
 import { AutomaticCaptions, type CaptionTask } from "./automatic-captions";
@@ -376,7 +378,7 @@ export function EditorStudio(props: {
           transitions: contract.effects?.transitions !== false, soundEffects: contract.effects?.sound_effects !== false,
           labels: contract.effects?.labels !== false, broll: contract.clips?.some((clip: Row) => Array.isArray(clip.visual_resources)) ? contract.effects?.images_or_broll === true : true });
         setSettings({ subtitleSize: draftNumber(snapshot.subtitle?.size, initialStyle.subtitle.size, 38, 100),
-          subtitlePosition: ["top", "center", "bottom"].includes(snapshot.subtitle?.position) ? snapshot.subtitle.position : "bottom",
+          subtitlePosition: ["top", "center", "chest", "bottom"].includes(snapshot.subtitle?.position) ? snapshot.subtitle.position : "bottom",
           silenceThresholdMs: draftNumber(contract.dead_air?.threshold_ms, initialStyle.execution.silenceThresholdMs, 350, 1500),
           silenceNoiseDb: draftNumber(contract.dead_air?.noise_db, -30, -35, -25),
           noiseReduction: ["off", "light", "medium"].includes(snapshot.execution?.noiseReduction) ? snapshot.execution.noiseReduction : "off",
@@ -582,6 +584,10 @@ export function EditorStudio(props: {
   const cardProgress = previewCue ? (previewTime - previewCue.startSeconds) / Math.max(.01, previewCue.endSeconds - previewCue.startSeconds) : 0;
   const cardIndex = Math.min(Math.max(0, cardCount - 1), Math.floor(cardProgress * cardCount));
   const previewCaption = cueWords.slice(cardIndex * cardSize, (cardIndex + 1) * cardSize).join(" ");
+  // Skill «Subtítulos cinéticos»: the editor shows the same single word, timing and color as the MP4.
+  const kineticCaptions = selectedStyle.subtitle.mode === "palabra";
+  const kineticPreviewWords = useMemo(() => kineticCaptions && selectedClip ? planKineticCaptions(selectedClip.captionCues, { uppercase: selectedStyle.subtitle.uppercase }) : [], [kineticCaptions, selectedClip, selectedStyle.subtitle.uppercase]);
+  const kineticPreviewWord = kineticPreviewWords.find((word) => previewTime >= word.startSeconds && previewTime < word.endSeconds);
   const layeredStyle = style === "ia-en-capas";
   const layeredHeader = (selectedClip?.label || (!/^edici[oó]n de \d+ videos?$/i.test(String(selectedSession?.title || "")) ? String(selectedSession?.title || "") : "") || scriptDraft.split(/\n/).map((line) => line.replace(/[*#_]/g, "").trim()).find(Boolean) || "").slice(0, 56);
   const previewCaptionWords = previewCaption.trim().split(/\s+/).filter(Boolean);
@@ -728,7 +734,8 @@ export function EditorStudio(props: {
     if (!selectedClip || !overlayEditor) return;
     if (overlayEditor === "label") updateClip(selectedClip.segmentId, { label: overlayDraft.trim() });
     else if (overlayCueIndex >= 0) {
-      const captionCues = selectedClip.captionCues.map((cue, index) => index === overlayCueIndex ? { ...cue, text: overlayDraft.trim() } : cue);
+      // Keep per-word timing when the correction keeps the same number of words.
+      const captionCues = selectedClip.captionCues.map((cue, index) => index === overlayCueIndex ? retimeEditedCue(cue, overlayDraft.trim()) : cue);
       updateClip(selectedClip.segmentId, { captionCues, transcript: captionCues.map((cue) => cue.text).filter(Boolean).join(" ") });
     } else updateClip(selectedClip.segmentId, { transcript: overlayDraft.trim(), captionCues: [] });
     setOverlayEditor(null);
@@ -797,8 +804,8 @@ export function EditorStudio(props: {
     const words = selectedClip.transcript.trim().split(/\s+/).filter(Boolean);
     const fraction = (cut - selectedClip.trimStartSeconds) / (selectedClip.trimEndSeconds - selectedClip.trimStartSeconds);
     const wordIndex = Math.max(1, Math.min(words.length - 1, Math.round(words.length * fraction)));
-    const leftCues = selectedClip.captionCues.map((cue) => ({ ...cue, endSeconds: Math.min(cut, cue.endSeconds) })).filter((cue) => cue.endSeconds - cue.startSeconds >= .1);
-    const rightCues = selectedClip.captionCues.map((cue) => ({ ...cue, startSeconds: Math.max(cut, cue.startSeconds) })).filter((cue) => cue.endSeconds - cue.startSeconds >= .1);
+    const leftCues = selectedClip.captionCues.map((cue) => splitCueAt(cue, cut, "left")).filter((cue) => cue.text && cue.endSeconds - cue.startSeconds >= .1);
+    const rightCues = selectedClip.captionCues.map((cue) => splitCueAt(cue, cut, "right")).filter((cue) => cue.text && cue.endSeconds - cue.startSeconds >= .1);
     const left = { ...selectedClip, trimEndSeconds: cut, transcript: leftCues.length ? leftCues.map((cue) => cue.text).join(" ") : words.slice(0, wordIndex).join(" "), captionCues: leftCues, visualResources: fitVisualResources(selectedClip.visualResources, selectedClip.trimStartSeconds, cut) };
     const right = { ...selectedClip, segmentId: crypto.randomUUID(), trimStartSeconds: cut, transcript: rightCues.length ? rightCues.map((cue) => cue.text).join(" ") : words.slice(wordIndex).join(" "), label: "", captionCues: rightCues, visualResources: fitVisualResources(selectedClip.visualResources, cut, selectedClip.trimEndSeconds).map((item) => ({ ...item, id: crypto.randomUUID() })) };
     if (!changeTimeline((current) => current.flatMap((clip) => clip.segmentId === selectedClip.segmentId ? [left, right] : [clip]))) return;
@@ -1096,7 +1103,7 @@ export function EditorStudio(props: {
               onCancel={() => { automaticRunRef.current?.abort(); transcriptionRunRef.current?.abort(); }} onReview={reviewCaptionText} />
             <fieldset disabled={Boolean(busy || automaticRunning)} className="contents"><Toggle enabled={options.captions} label="Mostrar subtítulos" detail="Se activan al terminar la generación" onChange={() => changeOptions({ captions: !options.captions })} />
             <Range label="Tamaño" value={settings.subtitleSize} min={38} max={100} suffix="px" onChange={(value) => changeSettings({ subtitleSize: value })} />
-            <Select label="Posición" value={settings.subtitlePosition} onChange={(value) => changeSettings({ subtitlePosition: value as typeof settings.subtitlePosition })} options={[["top","Arriba"],["center","Centro"],["bottom","Abajo"]]} />
+            <Select label="Posición" value={settings.subtitlePosition} onChange={(value) => changeSettings({ subtitlePosition: value as typeof settings.subtitlePosition })} options={[["top","Arriba"],["center","Centro"],["chest","Pecho (bajo el rostro)"],["bottom","Abajo"]]} />
             <Toggle enabled={options.labels} label="Título inicial" detail="Muestra el nombre del proyecto" onChange={() => changeOptions({ labels: !options.labels })} /></fieldset>
           </div>
         </>}
@@ -1121,7 +1128,8 @@ export function EditorStudio(props: {
               </button>;
             })}
             {!showingRendered && selectedClip && options.labels && (layeredStyle || previewTime - selectedClip.trimStartSeconds < 2.6) && <button type="button" onClick={() => openOverlayEditor("label")} className="absolute inset-x-9 top-[7%] mx-auto max-w-[80%] rounded-lg border border-dashed border-violet-200/60 bg-black/85 px-3 py-2 text-center text-sm font-black text-white shadow-xl" aria-label="Editar rótulo sobre el video">{layeredStyle ? layeredHeader || "＋ Añadir encabezado" : selectedClip.label || "＋ Añadir rótulo"}</button>}
-            {!showingRendered && selectedClip && options.captions && <button type="button" onClick={() => openOverlayEditor("caption")} className={`absolute inset-x-5 mx-auto max-w-[90%] rounded-lg border border-dashed border-violet-200/50 px-3 py-2 text-center font-black shadow-xl ${layeredStyle ? "bottom-[22%]" : settings.subtitlePosition === "top" ? "top-[12%]" : settings.subtitlePosition === "center" ? "top-1/2 -translate-y-1/2" : "bottom-[10%]"}`} style={{ color: selectedStyle.subtitle.text, backgroundColor: layeredStyle ? "rgba(0,0,0,.34)" : selectedStyle.subtitle.box, fontSize: `${Math.max(15, settings.subtitleSize * .3)}px`, textTransform: selectedStyle.subtitle.uppercase ? "uppercase" : "none" }} aria-label="Editar subtítulo sobre el video">{layeredStyle && previewCaptionWords.length ? <>{previewCaptionWords.slice(0, -1).join(" ")}{previewCaptionWords.length > 1 && <br />}<span className="text-yellow-300">{previewCaptionWords[previewCaptionWords.length - 1]}</span></> : previewCaption || (selectedClip.captionCues.length ? "Editar subtítulos" : "＋ Escribir subtítulo")}</button>}
+            {!showingRendered && selectedClip && options.captions && kineticCaptions && <button type="button" onClick={() => openOverlayEditor("caption")} className={`absolute inset-x-5 mx-auto max-w-[90%] -translate-y-1/2 rounded-lg border border-dashed border-transparent px-3 py-1 text-center italic leading-none hover:border-violet-200/50 ${settings.subtitlePosition === "top" ? "top-[19%]" : settings.subtitlePosition === "center" ? "top-[47%]" : settings.subtitlePosition === "bottom" ? "top-[79%]" : "top-[64%]"}`} style={{ fontFamily: "Montserrat, var(--font-sans), sans-serif", fontWeight: kineticPreviewWord?.style === "enfasis" ? 900 : kineticPreviewWord?.style === "ligera" ? 300 : 800, fontSize: `${Math.round((kineticPreviewWord?.style === "enfasis" ? 138 : kineticPreviewWord?.style === "ligera" ? 92 : 112) * .27)}px`, color: kineticPreviewWord?.style === "enfasis" ? "#FF7A00" : "#FFFFFF", textShadow: kineticPreviewWord?.style === "enfasis" ? "0 0 16px rgba(255,122,0,.85), 0 3px 8px rgba(0,0,0,.6)" : "0 3px 8px rgba(0,0,0,.6)" }} aria-label="Editar subtítulo sobre el video">{kineticPreviewWord?.text || (selectedClip.captionCues.length ? "" : <span className="text-sm not-italic">＋ Escribir subtítulo</span>)}</button>}
+            {!showingRendered && selectedClip && options.captions && !kineticCaptions && <button type="button" onClick={() => openOverlayEditor("caption")} className={`absolute inset-x-5 mx-auto max-w-[90%] rounded-lg border border-dashed border-violet-200/50 px-3 py-2 text-center font-black shadow-xl ${layeredStyle ? "bottom-[22%]" : settings.subtitlePosition === "top" ? "top-[12%]" : settings.subtitlePosition === "center" ? "top-1/2 -translate-y-1/2" : "bottom-[10%]"}`} style={{ color: selectedStyle.subtitle.text, backgroundColor: layeredStyle ? "rgba(0,0,0,.34)" : selectedStyle.subtitle.box, fontSize: `${Math.max(15, settings.subtitleSize * .3)}px`, textTransform: selectedStyle.subtitle.uppercase ? "uppercase" : "none" }} aria-label="Editar subtítulo sobre el video">{layeredStyle && previewCaptionWords.length ? <>{previewCaptionWords.slice(0, -1).join(" ")}{previewCaptionWords.length > 1 && <br />}<span className="text-yellow-300">{previewCaptionWords[previewCaptionWords.length - 1]}</span></> : previewCaption || (selectedClip.captionCues.length ? "Editar subtítulos" : "＋ Escribir subtítulo")}</button>}
             {!showingRendered && selectedClip && overlayEditor && <form onSubmit={(event) => { event.preventDefault(); applyOverlayEditor(); }} className="absolute inset-x-3 top-1/2 z-10 -translate-y-1/2 rounded-xl border border-violet-300/50 bg-[#10121e]/95 p-3 shadow-2xl"><label className="block text-xs font-semibold text-white">{overlayEditor === "label" ? "Rótulo de esta toma" : overlayCueIndex >= 0 ? "Subtítulo en este momento" : "Texto hablado de esta toma"}<textarea autoFocus value={overlayDraft} onChange={(event) => setOverlayDraft(event.target.value)} maxLength={overlayEditor === "label" ? 120 : overlayCueIndex >= 0 ? 250 : 1000} rows={overlayEditor === "label" ? 2 : 4} className="mt-2 w-full resize-y rounded-lg border border-white/20 bg-black/40 p-2 text-xs font-normal text-white outline-none focus:border-violet-300" /></label><div className="mt-2 flex justify-end gap-2"><button type="button" onClick={() => setOverlayEditor(null)} className="rounded-lg border border-white/20 px-3 py-2 text-xs text-zinc-300">Cancelar</button><button type="submit" className="rounded-lg bg-violet-500 px-3 py-2 text-xs font-semibold text-white">Aplicar al video</button></div></form>}
             <span className={`pointer-events-none absolute left-3 top-3 rounded-full px-2.5 py-1 text-[8px] ${showingFinal ? "bg-emerald-400 text-black" : "bg-black/70 text-zinc-300"}`}>{showingLive ? `MUESTRA REAL · ESCENA ${livePreview!.clipIndex + 1}` : showingFinal ? resultIsPrevious ? "RESULTADO ANTERIOR" : "RESULTADO EDITADO" : "VISTA PREVIA · TEXTO EDITABLE"}</span>
           </div>

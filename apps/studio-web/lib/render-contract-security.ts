@@ -1,10 +1,10 @@
-import { getEditorStyle, type EditorStyle } from "./editor-presets";
+import { sanitizeCueWords } from "./caption-cues";
+import { getEditorStyle, type EditorStyle, type SubtitleMode, type SubtitlePosition } from "./editor-presets";
 import { applySkillProfilesToContract } from "./studio-skills";
 import { normalizeVisualResources, validateVisualResourceBudget } from "./visual-resources";
 
 type Row = Record<string, unknown>;
 type Transition = EditorStyle["transition"];
-type SubtitlePosition = EditorStyle["subtitle"]["position"];
 
 const MAX_CLIPS = 12;
 
@@ -141,7 +141,9 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
       const cueText = text(item.text, "El texto de un subtítulo", 250);
       cueCharacters += cueText.length;
       if (cueCharacters > 5_000) throw new Error("Los subtítulos temporizados son demasiado largos.");
-      return { startSeconds, endSeconds, text: cueText };
+      // Optional per-word timing for kinetic captions; invalid timings fall back to estimation.
+      const words = sanitizeCueWords(item.words, { startSeconds, endSeconds });
+      return { startSeconds, endSeconds, text: cueText, ...(words ? { words } : {}) };
     });
     return {
       id: takeId,
@@ -177,7 +179,8 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
   const requestedEffects = optionalRow(contract.effects, "Los efectos");
   const transition = oneOf<Transition>(requestedStyle.transition, style.transition, ["cut", "fade", "dissolve"], "La transición");
   const transitionDuration = bounded(requestedStyle.transitionDuration, style.transitionDuration, transition === "cut" ? 0 : 0.08, 0.8, "La duración de transición");
-  const subtitlePosition = oneOf<SubtitlePosition>(requestedSubtitle.position, style.subtitle.position, ["top", "center", "bottom"], "La posición de subtítulos");
+  const subtitlePosition = oneOf<SubtitlePosition>(requestedSubtitle.position, style.subtitle.position, ["top", "center", "chest", "bottom"], "La posición de subtítulos");
+  const subtitleMode = oneOf<SubtitleMode>(requestedSubtitle.mode, style.subtitle.mode ?? "tarjeta", ["tarjeta", "palabra"], "El modo de subtítulos");
   const subtitleSize = bounded(requestedSubtitle.size, style.subtitle.size, 38, 100, "El tamaño de subtítulos");
   const subtitleUppercase = flag(requestedSubtitle.uppercase, style.subtitle.uppercase, "Las mayúsculas de subtítulos");
   const maxWords = bounded(requestedCaptions.max_words_per_card, style.subtitle.maxWords, 2, 8, "Las palabras por subtítulo");
@@ -195,7 +198,7 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
   const styleSnapshot: EditorStyle = {
     ...style,
     transition, transitionDuration,
-    subtitle: { ...style.subtitle, size: subtitleSize, position: subtitlePosition, uppercase: subtitleUppercase },
+    subtitle: { ...style.subtitle, size: subtitleSize, position: subtitlePosition, uppercase: subtitleUppercase, mode: subtitleMode },
     execution: { ...style.execution, silenceThresholdMs, soundEffectVolume, soundPreset, noiseReduction, zoomPercent, contrast, saturation, framing, titleCards },
   };
   const captionsEnabled = flag(requestedCaptions.enabled, true, "Los subtítulos");

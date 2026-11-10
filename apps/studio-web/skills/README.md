@@ -13,7 +13,8 @@ Cada carpeta contiene la responsabilidad y el contrato de una especialidad. El c
 | Generador de imágenes | Pendiente | Solicitud en el plan; sin generación |
 | Superposiciones | Parcial | Título inicial |
 | Efectos de sonido | Parcial | Efectos procedimentales por estilo en cortes de tomas y silencios |
-| Subtítulos | Parcial | Tarjetas basadas en libreto |
+| Subtítulos | Parcial | Tarjetas con tiempos de voz; en modo «palabra» delega en Subtítulos cinéticos |
+| Subtítulos cinéticos | Render | Una palabra a la vez, sincronizada, blanco/naranja Montserrat ([contrato](subtitulos-cineticos/SKILL.md)) |
 | Retoques | Parcial | Contraste |
 | Narrativa | Plan | Estructura deseada; orden aprobado |
 | Transiciones | Render | Corte, fundido y disolución |

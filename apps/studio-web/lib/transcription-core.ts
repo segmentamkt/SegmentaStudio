@@ -1,4 +1,4 @@
-import type { CaptionCue } from "./caption-cues";
+import { MAX_WORDS_PER_CUE, type CaptionCue } from "./caption-cues";
 
 export type SpeechWord = { text: string; startInSeconds: number; endInSeconds: number };
 export type SpeechTranscription = { transcript: string; captionCues: CaptionCue[]; words?: SpeechWord[]; maxWords?: number };
@@ -142,7 +142,13 @@ export function timedCaptionCards(words: SpeechWord[], durationSeconds: number, 
     if (!group.length) return;
     const startSeconds = Math.max(0, Math.min(duration - .101, group[0].startInSeconds));
     const endSeconds = Math.min(duration, Math.max(startSeconds + .101, group[group.length - 1].endInSeconds + .08));
-    cards.push({ startSeconds, endSeconds, text: group.map((word) => word.text.trim()).join(" ") });
+    // Keep each recognized word's own timing for one-word kinetic captions.
+    const words = group.map((word) => ({
+      text: word.text.trim(),
+      startSeconds: Math.max(startSeconds, Math.min(endSeconds, word.startInSeconds)),
+      endSeconds: Math.max(startSeconds, Math.min(endSeconds, word.endInSeconds)),
+    }));
+    cards.push({ startSeconds, endSeconds, text: group.map((word) => word.text.trim()).join(" "), words });
     group = [];
   };
   for (const word of usable) {
@@ -159,9 +165,14 @@ export function timedCaptionCards(words: SpeechWord[], durationSeconds: number, 
     if (previous && cue.startSeconds - previous.startSeconds < .101) {
       previous.text += ` ${cue.text}`;
       previous.endSeconds = Math.max(previous.endSeconds, cue.endSeconds);
+      const merged = [...(previous.words ?? []), ...(cue.words ?? [])];
+      previous.words = merged.length <= MAX_WORDS_PER_CUE ? merged : undefined;
     } else {
-      if (previous) previous.endSeconds = Math.min(previous.endSeconds, cue.startSeconds);
-      aligned.push({ ...cue });
+      if (previous) {
+        previous.endSeconds = Math.min(previous.endSeconds, cue.startSeconds);
+        previous.words = previous.words?.map((word) => ({ ...word, endSeconds: Math.min(word.endSeconds, previous.endSeconds), startSeconds: Math.min(word.startSeconds, previous.endSeconds) }));
+      }
+      aligned.push({ ...cue, words: cue.words?.map((word) => ({ ...word })) });
     }
   }
   return aligned;

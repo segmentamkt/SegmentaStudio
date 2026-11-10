@@ -4,7 +4,7 @@ import { getEditorStyle } from "../../../lib/editor-presets";
 import { clean, toEditJob } from "../../../lib/studio-data";
 import { applySkillProfilesToContract } from "../../../lib/studio-skills";
 import { planFromScript } from "../../../lib/editorial-director";
-import type { CaptionCue } from "../../../lib/caption-cues";
+import { MAX_WORDS_PER_CUE, sanitizeCueWords, type CaptionCue } from "../../../lib/caption-cues";
 import { MediaReviewError, requireCurrentMediaReview } from "../../../lib/media-review";
 import { readMediaReview } from "../../../lib/media-review-server";
 import { normalizeVisualResources, validateVisualResourceBudget, type VisualResource } from "../../../lib/visual-resources";
@@ -145,7 +145,9 @@ export async function POST(request: Request) {
       if (edit && (typeof edit.transcript !== "string" || typeof edit.label !== "string" || edit.label.length > 120 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(edit.transcript + edit.label))) {
         return Response.json({ error: "El texto o rótulo de una toma no es válido." }, { status: 400 });
       }
-      if (edit?.captionCues !== undefined && (!Array.isArray(edit.captionCues) || edit.captionCues.length > 100 || edit.captionCues.some((cue) => !cue || typeof cue.text !== "string" || cue.text.length > 250 || typeof cue.startSeconds !== "number" || typeof cue.endSeconds !== "number" || !Number.isFinite(cue.startSeconds) || !Number.isFinite(cue.endSeconds) || cue.startSeconds < 0 || cue.endSeconds > duration || cue.endSeconds <= cue.startSeconds))) {
+      if (edit?.captionCues !== undefined && (!Array.isArray(edit.captionCues) || edit.captionCues.length > 100 || edit.captionCues.some((cue) => !cue || typeof cue.text !== "string" || cue.text.length > 250 || typeof cue.startSeconds !== "number" || typeof cue.endSeconds !== "number" || !Number.isFinite(cue.startSeconds) || !Number.isFinite(cue.endSeconds) || cue.startSeconds < 0 || cue.endSeconds > duration || cue.endSeconds <= cue.startSeconds
+        // Per-word timings (kinetic captions) are optional; reject only oversized payloads.
+        || (cue.words !== undefined && (!Array.isArray(cue.words) || cue.words.length > MAX_WORDS_PER_CUE))))) {
         return Response.json({ error: "Los tiempos de subtítulos de una toma no son válidos." }, { status: 400 });
       }
       if (edit?.resourcesReviewed !== undefined && typeof edit.resourcesReviewed !== "boolean") {
@@ -216,7 +218,11 @@ export async function POST(request: Request) {
         contrast: edit?.contrast ?? 1,
         saturation: edit?.saturation ?? 1,
         label: edit?.label ?? "",
-        caption_cues: edit?.captionCues ?? [],
+        // Invalid word timings are dropped (the cue falls back to estimated timing), never stored.
+        caption_cues: (edit?.captionCues ?? []).map((cue) => {
+          const words = sanitizeCueWords(cue.words, cue);
+          return { startSeconds: cue.startSeconds, endSeconds: cue.endSeconds, text: cue.text, ...(words ? { words } : {}) };
+        }),
         visual_resources: visualResources[index],
         visual_resources_reviewed: edit?.resourcesReviewed === true,
       })),

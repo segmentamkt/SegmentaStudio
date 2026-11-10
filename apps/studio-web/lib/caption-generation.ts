@@ -1,4 +1,4 @@
-import type { CaptionCue } from "./caption-cues";
+import { clampCueWords, type CaptionCue } from "./caption-cues";
 import { normalizeSpeechRanges, timedCaptionCards, type SpeechRange, type SpeechWord } from "./transcription-core";
 
 export type CaptionGenerationClip = {
@@ -75,11 +75,12 @@ export function mergeCaptionGenerationResult<T extends CaptionGenerationClip>(
       : result.captionCues;
     const captionCues = sourceCues
       .filter((cue) => Number.isFinite(cue.startSeconds) && Number.isFinite(cue.endSeconds) && cue.text.trim())
-      .map((cue) => ({
-        startSeconds: Math.max(start, cue.startSeconds),
-        endSeconds: Math.min(end, cue.endSeconds),
-        text: cue.text.trim(),
-      }))
+      .map((cue) => {
+        const startSeconds = Math.max(start, cue.startSeconds);
+        const endSeconds = Math.min(end, cue.endSeconds);
+        const words = clampCueWords(cue.words, startSeconds, endSeconds);
+        return { startSeconds, endSeconds, text: cue.text.trim(), ...(words ? { words } : {}) };
+      })
       .filter((cue) => cue.endSeconds - cue.startSeconds >= .1)
       .sort((left, right) => left.startSeconds - right.startSeconds);
     const transcript = captionCues.map((cue) => cue.text).join(" ");

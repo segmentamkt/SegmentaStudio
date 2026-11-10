@@ -5,4 +5,9 @@ description: Configura subtítulos para videos hablados en Segmenta Studio. Úsa
 
 # Subtítulos
 
-Entrada: activación, palabras por tarjeta, tamaño, posición y mayúsculas. Salida: `captions` y `style_snapshot.subtitle`. El renderer reparte tarjetas dentro de cada toma según la duración disponible. No hay alineación temporal palabra por palabra; revisar texto y sincronía sigue siendo necesario.
+Entrada: activación, modo, palabras por tarjeta, tamaño, posición y mayúsculas. Salida: `captions` y `style_snapshot.subtitle`.
+
+- Modo **tarjeta**: el renderer reparte tarjetas de varias palabras dentro de cada subtítulo temporizado.
+- Modo **palabra**: delega en la skill independiente [Subtítulos cinéticos](../subtitulos-cineticos/SKILL.md), que usa los tiempos reales de cada palabra.
+
+Revisar el texto reconocido (nombres propios y marcas) sigue siendo necesario.

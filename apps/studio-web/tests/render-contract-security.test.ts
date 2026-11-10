@@ -389,3 +389,27 @@ test("preserves explicit visual review decisions without marking empty legacy re
   Object.assign(input.raw.clips[0], { visual_resources_reviewed: "yes" });
   assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /revisión de recursos visuales/);
 });
+
+test("the Segmenta kinetic style keeps one-word captions, chest position and valid word timings", () => {
+  const input = fixture(1, 10_000, "segmenta-cinetico");
+  Object.assign(input.raw.clips[0], { caption_cues: [
+    { startSeconds: 1, endSeconds: 2, text: "Hola equipo", words: [{ text: "Hola", startSeconds: 1, endSeconds: 1.4 }, { text: "equipo", startSeconds: 1.5, endSeconds: 1.9 }] },
+    { startSeconds: 3, endSeconds: 4, text: "fuera", words: [{ text: "fuera", startSeconds: 8, endSeconds: 9 }] },
+  ] });
+  const output = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.equal(output.style_snapshot.subtitle.mode, "palabra");
+  assert.equal(output.style_snapshot.subtitle.position, "chest");
+  assert.deepEqual(output.clips[0].caption_cues[0].words?.map((word) => word.text), ["Hola", "equipo"]);
+  assert.equal(output.clips[0].caption_cues[1].words, undefined, "timings outside the cue are dropped, not trusted");
+});
+
+test("the subtitle skill can switch any style to kinetic mode and rejects unknown modes", () => {
+  const input = fixture();
+  const subtitles = input.raw.skill_profiles.find((profile) => profile.id === "subtitulos")!;
+  subtitles.settings = { ...subtitles.settings, mode: "palabra" };
+  subtitles.overrides = ["mode"];
+  assert.equal(normalizeRenderContract(input.raw, input.session, input.scenes, input.takes).style_snapshot.subtitle.mode, "palabra");
+  const unknown = fixture();
+  Object.assign(unknown.raw.style_snapshot.subtitle, { mode: "karaoke" });
+  assert.throws(() => normalizeRenderContract(unknown.raw, unknown.session, unknown.scenes, unknown.takes), /modo de subtítulos/);
+});
