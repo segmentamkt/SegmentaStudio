@@ -1,13 +1,13 @@
 /**
  * Prueba aislada de la skill «Subtítulos cinéticos» sobre un video local.
  *
- *   npx tsx scripts/skills/subtitulos-cineticos-preview.ts <video> <carpeta-salida> [--palabras palabras.json] [--sin-silencios]
+ *   npx tsx scripts/skills/subtitulos-cineticos-preview.ts <video> <carpeta-salida> [--palabras palabras.json] [--libreto "texto"] [--sin-silencios] [--pausas compacto]
  *
  * 1. Reconoce la voz con el mismo modelo y opciones que Studio usa en el navegador
  *    (whisper-base con tiempos por palabra), o lee palabras ya guardadas.
  * 2. Arma los subtítulos igual que la app (timedCaptionCards) y los pasa por el
  *    MISMO motor de render de producción (renderSequentialClip) con el estilo
- *    «Segmenta cinético».
+ *    «Segmenta cinético», incluida la skill «Cortes y pausas» (modo natural).
  * 3. Guarda el MP4, el plan de palabras y una hoja de contacto para revisar.
  *
  * No sube nada ni usa claves: todo ocurre en este equipo.
@@ -17,7 +17,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import ffmpegPath from "ffmpeg-static";
 import { getEditorStyle } from "../../lib/editor-presets";
-import { analyzeSequentialClip, renderSequentialClip } from "../../lib/sequential-cloud-video-renderer";
+import { analyzeClipForCutSkill, analyzeSequentialClip, applyCutSkill, renderSequentialClip } from "../../lib/sequential-cloud-video-renderer";
 import { mapCaptionCues } from "../../lib/caption-cues";
 import { timedCaptionCards, type SpeechWord } from "../../lib/transcription-core";
 import { planKineticCaptions, summarizeKineticPlan } from "../../lib/skills/subtitulos-cineticos";
@@ -60,6 +60,8 @@ async function main() {
   await mkdir(out, { recursive: true });
   const wordsFile = rest.includes("--palabras") ? rest[rest.indexOf("--palabras") + 1] : undefined;
   const removeSilence = !rest.includes("--sin-silencios");
+  const script = rest.includes("--libreto") ? rest[rest.indexOf("--libreto") + 1] : undefined;
+  const pauseMode = rest.includes("--pausas") ? rest[rest.indexOf("--pausas") + 1] : "natural";
   const duration = durationOf(video);
   const started = Date.now();
   const words = wordsFile ? JSON.parse(await readFile(wordsFile, "utf8")) as SpeechWord[] : await recognize(video);
@@ -70,14 +72,26 @@ async function main() {
   const contract = {
     objective: "Prueba de subtítulos cinéticos",
     session: { title: "" },
-    clips: [{ id: "local", name: "Toma local", object_key: "local", duration_seconds: duration, transcript: cues.map((cue) => cue.text).join(" "), caption_cues: cues }],
+    clips: [{ id: "local", name: "Toma local", object_key: "local", duration_seconds: duration, transcript: cues.map((cue) => cue.text).join(" "), caption_cues: cues, script }],
     style_snapshot: { ...style, subtitle: { ...style.subtitle }, execution: { ...style.execution } },
     captions: { enabled: true, max_words_per_card: 4 },
-    dead_air: { remove: removeSilence, threshold_ms: style.execution.silenceThresholdMs, noise_db: -30 },
+    dead_air: { remove: removeSilence, threshold_ms: style.execution.silenceThresholdMs, noise_db: -30, mode: pauseMode },
     effects: { transitions: false, sound_effects: false, labels: false, images_or_broll: false },
   };
   const deadline = Date.now() + 600_000;
-  const analysis = await analyzeSequentialClip(ffmpegPath, video, duration, removeSilence, style.execution.silenceThresholdMs, -30, { start: 0, end: duration }, deadline);
+  const natural = removeSilence && pauseMode === "natural";
+  const measured = natural
+    ? await analyzeClipForCutSkill(ffmpegPath, video, contract.clips[0], deadline)
+    : await analyzeSequentialClip(ffmpegPath, video, duration, removeSilence, style.execution.silenceThresholdMs, -30, { start: 0, end: duration }, deadline);
+  let analysis = measured;
+  if (natural) {
+    const cut = applyCutSkill(measured, contract.clips[0]);
+    analysis = cut.analysis;
+    const { ranges, ...report } = cut.plan;
+    await writeFile(join(out, "cortes.json"), JSON.stringify({ ...report, tramos: ranges }, null, 2));
+    console.log(`Cortes (${report.boundary}): ${ranges.length} tramos · ${report.shortenedPauses} pausas acortadas · ${report.removedSeconds.toFixed(2)} s retirados`);
+    report.warnings.forEach((warning) => console.log(`  Aviso: ${warning}`));
+  }
   const plan = planKineticCaptions(mapCaptionCues(cues, analysis.ranges), { durationSeconds: analysis.ranges.reduce((sum, range) => sum + range.end - range.start, 0) });
   await writeFile(join(out, "plan.json"), JSON.stringify({ resumen: summarizeKineticPlan(plan), palabras: plan }, null, 2));
   const output = join(out, "subtitulos-cineticos.mp4");

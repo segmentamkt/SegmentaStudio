@@ -1,5 +1,5 @@
 import { sanitizeCueWords } from "./caption-cues";
-import { getEditorStyle, type EditorStyle, type SubtitleMode, type SubtitlePosition } from "./editor-presets";
+import { getEditorStyle, type EditorStyle, type PauseMode, type SubtitleMode, type SubtitlePosition } from "./editor-presets";
 import { applySkillProfilesToContract } from "./studio-skills";
 import { normalizeVisualResources, validateVisualResourceBudget } from "./visual-resources";
 
@@ -152,6 +152,9 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
       object_key: objectKey,
       duration_seconds: measuredMs / 1_000,
       transcript,
+      // Approved scene script from the database (never from the browser): the cut skill uses
+      // it to find where the script starts and ends inside the take.
+      script: typeof scene.script === "string" ? scene.script.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 2_000) : "",
       trim_start_seconds: trimStart,
       trim_end_seconds: trimEnd,
       playback_speed: playbackSpeed,
@@ -186,6 +189,7 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
   const maxWords = bounded(requestedCaptions.max_words_per_card, style.subtitle.maxWords, 2, 8, "Las palabras por subtítulo");
   const silenceThresholdMs = bounded(requestedExecution.silenceThresholdMs ?? requestedDeadAir.threshold_ms, style.execution.silenceThresholdMs, 350, 1_500, "El umbral de silencio");
   const noiseDb = bounded(requestedDeadAir.noise_db, -30, -35, -25, "La sensibilidad de silencio");
+  const pauseMode = oneOf<PauseMode>(requestedDeadAir.mode, style.execution.pauseMode ?? "compacto", ["natural", "compacto"], "El modo de pausas");
   if (![-35, -30, -25].includes(noiseDb)) throw new Error("La sensibilidad de silencio no es válida.");
   const soundEffectVolume = bounded(requestedExecution.soundEffectVolume, style.execution.soundEffectVolume, 0, 1, "El volumen de efectos");
   const soundPreset = oneOf(requestedExecution.soundPreset, "auto", ["auto", "none", "soft", "kinetic", "cinematic", "pop"] as const, "El tipo de efecto sonoro");
@@ -231,7 +235,7 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
     style_snapshot: styleSnapshot,
     target_duration_seconds: null,
     captions: { enabled: captionsEnabled, language: "es" as const, max_words_per_card: maxWords, emphasis: true },
-    dead_air: { remove: removeDeadAir, threshold_ms: silenceThresholdMs, noise_db: noiseDb },
+    dead_air: { remove: removeDeadAir, threshold_ms: silenceThresholdMs, noise_db: noiseDb, mode: pauseMode },
     effects: { transitions, sound_effects: soundEffects, labels, images_or_broll: imagesOrBroll, music: false },
     quality_gates: {
       portrait: true,

@@ -12,6 +12,7 @@ import { renderVisualResourceImage } from "./visual-resource-image";
 import { VISUAL_RESOURCE_LAYOUTS, type VisualResource } from "./visual-resources";
 import { mapCaptionCues, type CaptionCue } from "./caption-cues";
 import { MAX_RENDER_PREVIEW_BYTES, type RenderPreview } from "./render-preview";
+import { measureVoiceActivity, planCuts, snapWordsToSilences, type CutPlan } from "./skills/cortes-pausas";
 import { buildKineticLayer, kineticInputArgs, kineticOverlayFilter, planKineticCaptions, type KineticLayer, type KineticZone } from "./skills/subtitulos-cineticos";
 
 /** The kinetic skill places words under the chin by default; «Abajo/Arriba/Centro» keep their zones. */
@@ -21,7 +22,7 @@ function kineticZone(position: string | undefined, layeredStyle: boolean): Kinet
 }
 
 type Range = { start: number; end: number };
-type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string; trim_start_seconds?: number; trim_end_seconds?: number; playback_speed?: number; audio_volume?: number; brightness?: number; contrast?: number; saturation?: number; label?: string; caption_cues?: CaptionCue[]; visual_resources?: VisualResource[] };
+type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string; trim_start_seconds?: number; trim_end_seconds?: number; playback_speed?: number; audio_volume?: number; brightness?: number; contrast?: number; saturation?: number; label?: string; caption_cues?: CaptionCue[]; visual_resources?: VisualResource[]; script?: string };
 type EditContract = {
   objective: string;
   session: { title: string; script?: string };
@@ -37,11 +38,12 @@ type EditContract = {
     };
   };
   captions: { enabled: boolean; max_words_per_card: number };
-  dead_air: { remove: boolean; threshold_ms: number; noise_db?: number };
+  dead_air: { remove: boolean; threshold_ms: number; noise_db?: number; mode?: "natural" | "compacto" };
   effects: { transitions: boolean; sound_effects: boolean; labels: boolean; images_or_broll?: boolean };
   quality_gates?: { effects?: boolean; timed_captions?: boolean; images?: boolean };
 };
-type Analysis = { duration: number; ranges: Range[]; removed: number; hasAudio: boolean };
+/** `silences` are the measured silent intervals in source seconds (used by the cut skill). */
+type Analysis = { duration: number; ranges: Range[]; removed: number; hasAudio: boolean; silences?: Range[] };
 type Progress = (progress: number, stage: string) => Promise<void>;
 type RenderInput = {
   contract: EditContract;
@@ -140,7 +142,37 @@ export async function analyzeSequentialClip(command: string, url: string, durati
   if (!ranges.length) ranges.push({ start: 0, end: windowDuration });
   // FFmpeg resets timestamps after input seeking. Restore source coordinates
   // once here so manual trims and timed captions share the same timeline.
-  return { duration, ranges: ranges.map((range) => ({ start: range.start + window.start, end: range.end + window.start })), removed, hasAudio };
+  const silences = events.map((event) => ({ start: Math.min(windowDuration, safeSeconds(event.start)) + window.start, end: Math.min(windowDuration, safeSeconds(event.end)) + window.start }))
+    .filter((silence) => silence.end > silence.start);
+  return { duration, ranges: ranges.map((range) => ({ start: range.start + window.start, end: range.end + window.start })), removed, hasAudio, silences };
+}
+
+/**
+ * Natural pauses: duration and stream check from the regular analyzer, silences
+ * from the cut skill's adaptive voice detection (a fixed −30 dB threshold mistakes
+ * soft syllables for silence in quiet or compressed recordings).
+ */
+export async function analyzeClipForCutSkill(command: string, url: string, clip: Clip, deadline: number): Promise<Analysis> {
+  const window = { start: clip.trim_start_seconds ?? 0, end: clip.trim_end_seconds ?? clip.duration_seconds };
+  const base = await analyzeSequentialClip(command, url, clip.duration_seconds, false, 700, -30, window, deadline);
+  if (!base.hasAudio) return base;
+  const voice = await measureVoiceActivity(command, url, { start: window.start, end: Math.min(window.end, base.duration) }, deadline);
+  return { ...base, silences: voice?.silences ?? [] };
+}
+
+/**
+ * Skill «Cortes y pausas»: replaces the compact silence trim with the approved
+ * rules (no countdown or tails, pauses ≤ 0.7 s intact, long ones to 0.45 s).
+ * Uses the recognized words and the approved scene script when available.
+ */
+export function applyCutSkill(analysis: Analysis, clip: Clip): { analysis: Analysis; plan: CutPlan } {
+  const window = { start: Math.max(0, Number(clip.trim_start_seconds ?? 0)), end: Math.min(analysis.duration, Number(clip.trim_end_seconds ?? analysis.duration)) };
+  const plan = planCuts({
+    window, silences: analysis.silences ?? [], hasAudio: analysis.hasAudio,
+    words: (clip.caption_cues ?? []).flatMap((cue) => cue.words ?? []),
+    script: clip.script,
+  });
+  return { analysis: { ...analysis, ranges: plan.ranges, removed: plan.removedSeconds }, plan };
 }
 
 /** Keep source timestamps intact so FFmpeg can select the exact manual range. */
@@ -319,7 +351,11 @@ export async function renderSequentialClip(input: {
   const kineticCaptions = contract.style_snapshot.subtitle.mode === "palabra";
   if (contract.captions.enabled && kineticCaptions) {
     // Skill «Subtítulos cinéticos»: una palabra a la vez con los tiempos reales de la voz.
-    const sourceCues = clip.caption_cues?.length ? clip.caption_cues : [{ startSeconds: 0, endSeconds: analysis.duration, text: clip.transcript }];
+    // The audio wins: a word cannot be on screen during a measured silence.
+    const silences = analysis.silences ?? [];
+    const sourceCues = clip.caption_cues?.length
+      ? clip.caption_cues.map((cue) => cue.words?.length ? { ...cue, words: snapWordsToSilences(cue.words, silences) } : cue)
+      : [{ startSeconds: 0, endSeconds: analysis.duration, text: clip.transcript }];
     const outputCues = mapCaptionCues(sourceCues, analysis.ranges).map((cue) => ({
       ...cue,
       startSeconds: cue.startSeconds / speed, endSeconds: cue.endSeconds / speed,
@@ -407,10 +443,23 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
   }
   if (input.contract.effects.images_or_broll && input.contract.clips.reduce((total, clip) => total + (clip.visual_resources?.length ?? 0), 0) > 8) throw new Error("Se admiten hasta ocho imágenes de apoyo por montaje.");
   if (plannedDuration > MAX_OUTPUT_SECONDS) throw new Error("Esta versión cloud procesa hasta 2 minutos de video final por edición.");
+  const naturalPauses = input.contract.dead_air.remove && input.contract.dead_air.mode === "natural";
+  const cutReports: Array<Omit<CutPlan, "ranges"> & { clipIndex: number }> = [];
   for (const [index, clip] of input.contract.clips.entries()) {
-    const result = await analyzeSequentialClip(command, input.signedUrls[index], clip.duration_seconds, input.contract.dead_air.remove, input.contract.dead_air.threshold_ms, input.contract.dead_air.noise_db ?? -30,
-      { start: clip.trim_start_seconds ?? 0, end: clip.trim_end_seconds ?? clip.duration_seconds }, deadline);
-    analyses.push(trimSequentialAnalysis(result, clip));
+    // Natural mode: adaptive voice detection; the cut skill then decides what to keep.
+    const result = naturalPauses
+      ? await analyzeClipForCutSkill(command, input.signedUrls[index], clip, deadline)
+      : await analyzeSequentialClip(command, input.signedUrls[index], clip.duration_seconds, input.contract.dead_air.remove, input.contract.dead_air.threshold_ms, input.contract.dead_air.noise_db ?? -30,
+        { start: clip.trim_start_seconds ?? 0, end: clip.trim_end_seconds ?? clip.duration_seconds }, deadline);
+    if (naturalPauses) {
+      const { analysis, plan } = applyCutSkill(result, clip);
+      analyses.push(trimSequentialAnalysis(analysis, clip));
+      const { ranges: _ranges, ...report } = plan;
+      void _ranges;
+      cutReports.push({ clipIndex: index, ...report });
+    } else {
+      analyses.push(trimSequentialAnalysis(result, clip));
+    }
     await input.onProgress(14 + Math.round((index + 1) / input.contract.clips.length * 20), `Analizando toma ${index + 1} de ${input.contract.clips.length}`);
   }
   const totalDuration = analyses.reduce((sum, item, index) => sum + item.ranges.reduce((value, range) => value + range.end - range.start, 0) / Math.max(.5, Math.min(2, Number(input.contract.clips[index].playback_speed ?? 1))), 0);
@@ -483,6 +532,9 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
       // Honest QA: kinetic words without recognized timing were spread by syllables inside their cue.
       caption_mode: input.contract.style_snapshot.subtitle.mode === "palabra" ? "palabra" : "tarjeta",
       estimated_caption_words: estimatedCaptionWords,
+      // What the cut skill removed per take (countdown, tails, shortened pauses) for honest review.
+      cut_mode: naturalPauses ? "natural" : input.contract.dead_air.remove ? "compacto" : "sin-cortes",
+      cut_report: cutReports,
       removed_silence_seconds: Number(analyses.reduce((sum, item) => sum + item.removed, 0).toFixed(2)),
       silent_source_clips: analyses.filter((item) => !item.hasAudio).length,
       style_applied: true, style_id: (input.contract.style_snapshot as { id?: string }).id || null,

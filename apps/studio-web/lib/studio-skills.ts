@@ -79,7 +79,8 @@ export const SKILL_CATALOG: SkillDefinition[] = [
     defaultInstruction: "Quita tiempos muertos sin cortar sílabas ni pausas que tengan intención.",
     settings: [
       { key: "removeSilence", label: "Quitar silencios", kind: "toggle", defaultValue: true },
-      { key: "thresholdMs", label: "Silencio mínimo", kind: "range", defaultValue: 650, min: 350, max: 1500, step: 50, suffix: " ms" },
+      { key: "mode", label: "Pausas", kind: "select", defaultValue: "estilo", options: choice([["estilo", "Según el estilo"], ["natural", "Naturales: quita cuenta regresiva y colas, pausas largas a 0,45 s"], ["compacto", "Compactas: pausas largas a 0,2 s"]]) },
+      { key: "thresholdMs", label: "Silencio mínimo (modo compacto)", kind: "range", defaultValue: 650, min: 350, max: 1500, step: 50, suffix: " ms" },
     ],
   },
   {
@@ -338,7 +339,12 @@ export function applySkillProfilesToContract<T extends SkillAwareContract>(contr
   if (!recortes.enabled) updated.dead_air.remove = false;
   else if (changed(recortes, "removeSilence")) updated.dead_air.remove = value(recortes, "removeSilence") === true;
   if (recortes.enabled && changed(recortes, "thresholdMs")) updated.dead_air.threshold_ms = value(recortes, "thresholdMs");
-  decisions.push(decision("recortes", "partial", recortes.enabled, recortes.enabled ? `Silencios según estilo${changed(recortes, "thresholdMs") ? `, umbral ${value(recortes, "thresholdMs")} ms` : ""}; errores semánticos pendientes.` : "No se recortarán silencios.", [...(!recortes.enabled || changed(recortes, "removeSilence") ? ["dead_air.remove"] : []), ...(recortes.enabled && changed(recortes, "thresholdMs") ? ["dead_air.threshold_ms"] : [])]));
+  const pauseMode = value(recortes, "mode");
+  if (recortes.enabled && changed(recortes, "mode") && (pauseMode === "natural" || pauseMode === "compacto")) updated.dead_air.mode = pauseMode;
+  const naturalPauses = updated.dead_air.mode === "natural";
+  decisions.push(decision("recortes", naturalPauses ? "render" : "partial", recortes.enabled, recortes.enabled ? naturalPauses
+    ? "Skill Cortes y pausas: quita lo dicho antes y después del guion (cuenta regresiva, colas), conserva pausas de hasta 0,7 s y acorta las largas a 0,45 s sin cortar palabras."
+    : `Silencios según estilo${changed(recortes, "thresholdMs") ? `, umbral ${value(recortes, "thresholdMs")} ms` : ""}; errores semánticos pendientes.` : "No se recortarán silencios.", [...(!recortes.enabled || changed(recortes, "removeSilence") ? ["dead_air.remove"] : []), ...(recortes.enabled && changed(recortes, "mode") ? ["dead_air.mode"] : []), ...(recortes.enabled && changed(recortes, "thresholdMs") ? ["dead_air.threshold_ms"] : [])]));
 
   const edicion = byId.get("edicion")!;
   if (edicion.enabled && changed(edicion, "zoomPercent")) updated.style_snapshot.execution.zoomPercent = value(edicion, "zoomPercent");

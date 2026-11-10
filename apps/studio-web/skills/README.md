@@ -7,7 +7,8 @@ Cada carpeta contiene la responsabilidad y el contrato de una especialidad. El c
 | Director | Plan | Prioridad e instrucciones en el manifiesto |
 | Sonido | Parcial | Normalización de voz en el render base |
 | Efectos visuales | Parcial | Rótulo inicial |
-| Recortes | Parcial | Detección de silencios |
+| Recortes | Parcial | Modo compacto: silencios a 0,2 s; en modo «natural» delega en Cortes y pausas |
+| Cortes y pausas | Render | Sin cuenta regresiva ni colas, pausas ≤ 0,7 s intactas, largas a 0,45 s, voz adaptativa ([contrato](cortes-pausas/SKILL.md)) |
 | Edición | Render | Zoom y encuadre |
 | Color | Render | Saturación |
 | Generador de imágenes | Pendiente | Solicitud en el plan; sin generación |

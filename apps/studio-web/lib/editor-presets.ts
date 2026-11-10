@@ -3,12 +3,14 @@ export type EditorStyleId = "kiko-impacto" | "aula-premium" | "historia-cinemati
 /** «tarjeta»: bloques de varias palabras. «palabra»: skill de subtítulos cinéticos, una palabra a la vez. */
 export type SubtitleMode = "tarjeta" | "palabra";
 export type SubtitlePosition = "top" | "center" | "chest" | "bottom";
+/** «natural»: skill Cortes y pausas (pausas ≤ 0,7 s intactas, largas a 0,45 s, sin cuenta regresiva). «compacto»: pausas largas a 0,2 s. */
+export type PauseMode = "natural" | "compacto";
 
 export type EditorStyle = {
   id: EditorStyleId; name: string; reference: string; description: string; pace: string;
   palette: [string, string, string]; caption: string; transition: "cut" | "fade" | "dissolve"; transitionDuration: number;
   subtitle: { text: string; box: string; size: number; uppercase: boolean; position: SubtitlePosition; maxWords: number; mode?: SubtitleMode };
-  execution: { silenceThresholdMs: number; zoomPercent: number; contrast: number; saturation: number; soundEffectVolume: number; soundPreset?: "auto" | "none" | "soft" | "kinetic" | "cinematic" | "pop"; noiseReduction?: "off" | "light" | "medium"; framing: "fill" | "fit"; titleCards: boolean; titleColor: string };
+  execution: { silenceThresholdMs: number; zoomPercent: number; contrast: number; saturation: number; soundEffectVolume: number; soundPreset?: "auto" | "none" | "soft" | "kinetic" | "cinematic" | "pop"; noiseReduction?: "off" | "light" | "medium"; framing: "fill" | "fit"; titleCards: boolean; titleColor: string; pauseMode?: PauseMode };
 };
 
 export const EDITOR_STYLES: EditorStyle[] = [
@@ -82,7 +84,7 @@ export const EDITOR_STYLES: EditorStyle[] = [
     description: "Una palabra a la vez, sincronizada con la voz: blanco y naranja, cifras y marcas resaltadas, sin cajas ni filtros.", pace: "Dinámico · talking head",
     palette: ["#FF7A00", "#FFFFFF", "#0E0E10"], caption: "UNA PALABRA", transition: "cut", transitionDuration: 0,
     subtitle: { text: "#FFFFFF", box: "#0E0E10", size: 72, uppercase: false, position: "chest", maxWords: 4, mode: "palabra" },
-    execution: { silenceThresholdMs: 700, zoomPercent: 0, contrast: 1, saturation: 1, soundEffectVolume: .3, soundPreset: "pop", framing: "fill", titleCards: false, titleColor: "#0E0E10" },
+    execution: { silenceThresholdMs: 700, zoomPercent: 0, contrast: 1, saturation: 1, soundEffectVolume: .3, soundPreset: "pop", framing: "fill", titleCards: false, titleColor: "#0E0E10", pauseMode: "natural" },
   },
 ];
 

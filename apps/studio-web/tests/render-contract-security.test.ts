@@ -413,3 +413,20 @@ test("the subtitle skill can switch any style to kinetic mode and rejects unknow
   Object.assign(unknown.raw.style_snapshot.subtitle, { mode: "karaoke" });
   assert.throws(() => normalizeRenderContract(unknown.raw, unknown.session, unknown.scenes, unknown.takes), /modo de subtítulos/);
 });
+
+test("the Segmenta style uses natural pauses and the scene script comes from the database, not the browser", () => {
+  const input = fixture(1, 10_000, "segmenta-cinetico");
+  Object.assign(input.raw.clips[0], { script: "Texto inyectado por el navegador" });
+  const output = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.equal(output.dead_air.mode, "natural");
+  assert.equal(output.clips[0].script, "Texto real de la escena 1");
+  const other = fixture();
+  assert.equal(normalizeRenderContract(other.raw, other.session, other.scenes, other.takes).dead_air.mode, "compacto", "other styles keep their compact cuts");
+  const recortes = other.raw.skill_profiles.find((profile) => profile.id === "recortes")!;
+  recortes.settings = { ...recortes.settings, mode: "natural" };
+  recortes.overrides = ["mode"];
+  assert.equal(normalizeRenderContract(other.raw, other.session, other.scenes, other.takes).dead_air.mode, "natural");
+  const invalid = fixture();
+  Object.assign(invalid.raw.dead_air, { mode: "agresivo" });
+  assert.throws(() => normalizeRenderContract(invalid.raw, invalid.session, invalid.scenes, invalid.takes), /modo de pausas/);
+});
