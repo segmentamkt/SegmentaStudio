@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Captions, Check, ChevronLeft, Download, Film, ImageIcon, Layers3,
   LoaderCircle, Music2, Pause, Play, Plus, Settings2, Sparkles,
@@ -24,6 +24,8 @@ import { repairUnknownTimelineDuration } from "../lib/editor-media-duration";
 import { runAutomaticEdit, type AutomaticEditStage } from "../lib/automatic-edit";
 import { parseRenderPreview, type RenderPreview } from "../lib/render-preview";
 import { EditingProgress } from "./editing-progress";
+import { SalaEdicion, type SalaClip } from "./sala/sala-edicion";
+import { decodeSpeechWav, SPEECH_SAMPLE_RATE } from "../lib/transcription-core";
 import { VisualResourcesPanel } from "./visual-resources-panel";
 import { VISUAL_RESOURCE_CATALOG, VISUAL_RESOURCE_LAYOUTS, normalizeVisualResources, recommendVisualResources, resourceImageSrc, validateVisualResourceBudget, type VisualResource, type VisualResourceImage } from "../lib/visual-resources";
 import { fitVisualResources } from "../lib/visual-resource-editing";
@@ -240,6 +242,8 @@ export function EditorStudio(props: {
   const [automaticStage, setAutomaticStage] = useState<AutomaticEditStage | "error" | "cancelled" | "idle">("idle");
   const automaticRunRef = useRef<AbortController | null>(null);
   const [automaticRequest, setAutomaticRequest] = useState<{ sessionId: string; reviewId: string } | null>(null);
+  // Sala de edición: snapshot of the montage when it opens, so an export in progress never restarts the agents.
+  const [salaClips, setSalaClips] = useState<Array<SalaClip & { takeId: string }> | null>(null);
   const [livePreviews, setLivePreviews] = useState<RenderPreview[]>([]);
   const [livePreviewIndex, setLivePreviewIndex] = useState(0);
   const [transcriptionStage, setTranscriptionStage] = useState("");
@@ -588,6 +592,16 @@ export function EditorStudio(props: {
   const kineticCaptions = selectedStyle.subtitle.mode === "palabra";
   const kineticPreviewWords = useMemo(() => kineticCaptions && selectedClip ? planKineticCaptions(selectedClip.captionCues, { uppercase: selectedStyle.subtitle.uppercase }) : [], [kineticCaptions, selectedClip, selectedStyle.subtitle.uppercase]);
   const kineticPreviewWord = kineticPreviewWords.find((word) => previewTime >= word.startSeconds && previewTime < word.endSeconds);
+  // Audio for the editing room: the same 16 kHz window the recognizer uses; a take without audio stays silent.
+  const loadSalaAudio = useCallback(async (clip: SalaClip, signal: AbortSignal) => {
+    const takeId = (clip as SalaClip & { takeId?: string }).takeId;
+    if (!takeId) return null;
+    const start = Math.max(0, clip.window.start);
+    const params = new URLSearchParams({ startSeconds: String(start), endSeconds: String(Math.min(clip.window.end, start + 120)) });
+    const response = await fetch(`/api/media/${encodeURIComponent(takeId)}/audio?${params}`, { cache: "no-store", signal });
+    if (!response.ok) return null;
+    return { samples: decodeSpeechWav(await response.arrayBuffer()), sampleRate: SPEECH_SAMPLE_RATE };
+  }, []);
   const layeredStyle = style === "ia-en-capas";
   const layeredHeader = (selectedClip?.label || (!/^edici[oó]n de \d+ videos?$/i.test(String(selectedSession?.title || "")) ? String(selectedSession?.title || "") : "") || scriptDraft.split(/\n/).map((line) => line.replace(/[*#_]/g, "").trim()).find(Boolean) || "").slice(0, 56);
   const previewCaptionWords = previewCaption.trim().split(/\s+/).filter(Boolean);
@@ -1065,6 +1079,23 @@ export function EditorStudio(props: {
       </div>
     </details>}
 
+    {selectedSession && activeTimeline.length > 0 && <div className="hidden items-center justify-between gap-3 border-b border-[#FF7A00]/20 bg-gradient-to-r from-[#FF7A00]/[.08] to-violet-500/[.06] px-6 py-3 lg:flex">
+      <div className="min-w-0"><p className="text-sm font-semibold text-white">Sala de edición en vivo</p>
+        <p className="text-xs text-zinc-400">{style === "segmenta-cinetico" ? "Mira a los agentes cortar, subtitular y revisar tu video sobre la línea de tiempo, con el mismo plan que aplica el render." : "Disponible con el estilo Segmenta cinético: sus agentes usan las skills de cortes y subtítulos."}</p></div>
+      {style === "segmenta-cinetico"
+        ? <button type="button" disabled={Boolean(busy) && !automaticRunning} onClick={() => setSalaClips(activeTimeline.map((clip) => ({
+            id: clip.segmentId, takeId: clip.takeId, title: clip.title, videoUrl: `/api/media/${clip.takeId}`,
+            window: { start: clip.trimStartSeconds, end: clip.trimEndSeconds }, cues: clip.captionCues,
+            script: String(approvedScenes.find((scene) => scene.id === clip.sceneId)?.script || ""),
+          })))} className="shrink-0 rounded-xl bg-[#FF7A00] px-4 py-2 text-xs font-semibold text-black disabled:opacity-40">Abrir la sala de edición</button>
+        : <button type="button" onClick={() => chooseStyle("segmenta-cinetico")} disabled={Boolean(busy || automaticRunning)} className="shrink-0 rounded-xl border border-[#FF7A00]/50 px-4 py-2 text-xs font-semibold text-[#FFB066] disabled:opacity-40">Usar Segmenta cinético</button>}
+    </div>}
+    {salaClips && <SalaEdicion projectName={String(selectedSession?.title || "Proyecto")} styleName={selectedStyle.name} uppercase={selectedStyle.subtitle.uppercase} soundEffects={options.soundEffects}
+      clips={salaClips} loadAudio={loadSalaAudio}
+      onExport={automaticRunning || automaticStage === "done" ? undefined : () => void editAutomatically()}
+      exportLabel={automaticRunning ? "Exportando…" : automaticStage === "done" ? "MP4 listo" : "Exportar MP4"}
+      exportStatus={automaticRunning ? `${automaticStage === "captions" ? "Generando subtítulos que faltan" : automaticStage === "render" ? `Renderizando: ${job?.stage || "preparando"} · ${Math.round(Number(job?.progress || 0))} %` : "Preparando la exportación"}` : automaticStage === "done" ? "MP4 listo. Cierra la sala para verlo en «Resultado editado»." : automaticStage === "error" && error ? error : undefined}
+      onClose={() => setSalaClips(null)} />}
     <EditingProgress resourcesEnabled={options.broll} resourcesStage={resourceMessage} stage={automaticStage} running={automaticRunning} captionStage={transcriptionStage}
       tasks={transcriptionTasks} renderStage={job?.stage || ""} renderProgress={Number(job?.progress || 0)}
       previews={livePreviews} selectedPreviewIndex={showingLive ? livePreview?.clipIndex : undefined}
