@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { CaptionCue } from "../lib/caption-cues";
-import { AGENT_ORDER, buildSalaScript, planSalaClip, type SalaClipInput } from "../lib/sala/agents";
+import { AGENT_ORDER, buildSalaScript, fillCrop, lookFromPixels, planSalaClip, type SalaClipInput } from "../lib/sala/agents";
 import { planCuts } from "../lib/skills/cortes-pausas/plan";
 
 function clip(id: string, words: Array<[string, number, number]>, silences: Array<[number, number]>, duration: number, script?: string): SalaClipInput {
@@ -50,4 +50,31 @@ test("quality control reports honestly: missing timed captions are a warning, no
   const missing = script.lanes.subtitulos.find((step) => step.action.kind === "check");
   assert.ok(missing && missing.action.kind === "check" && !missing.action.ok);
   assert.ok(script.lanes.qa.every((step) => step.action.kind === "check"));
+});
+
+test("framing and color agents report what the render really does with each take", () => {
+  // 1920×1080 cubre 1080×1920 escalando ×1,78: solo queda visible el 31,6 % del ancho, centrado.
+  const wide = fillCrop({ width: 1920, height: 1080 });
+  assert.ok(Math.abs(wide.width - .3164) < .001 && wide.height === 1, JSON.stringify(wide));
+  assert.deepEqual(fillCrop({ width: 1080, height: 1920 }), { width: 1, height: 1 });
+  assert.deepEqual(fillCrop({ width: 1920, height: 1080 }, "fit"), { width: 1, height: 1 });
+  const zoomed = fillCrop({ width: 720, height: 1280 }, "fill", 5);
+  assert.ok(Math.abs(zoomed.width - 1 / 1.05) < .001);
+
+  const dark = lookFromPixels([2, 2, 3, 255, 30, 28, 25, 255]);
+  assert.ok(dark.luma < .16 && dark.clipped === 0, `a dark background is not "burnt": ${JSON.stringify(dark)}`);
+  assert.equal(lookFromPixels([255, 255, 255, 255, 120, 120, 120, 255]).clipped, .5);
+  const script = buildSalaScript([{ ...take, frame: { width: 1920, height: 1080 }, look: dark }, { ...second, frame: { width: 720, height: 1280 }, look: null }], { styleName: "Segmenta cinético" });
+  assert.deepEqual(script.lanes.encuadre.map((step) => step.label), [
+    "Toma horizontal 1920×1080: llena el 9:16 con recorte centrado (se ve el 32 % del ancho)",
+    "Toma vertical 720×1280: llena el 9:16 sin recortar",
+  ]);
+  assert.match(script.lanes.color[0].label, /^Color neutro, sin filtros · luz media \d+ % · saturación \d+ %$/);
+  assert.equal(script.lanes.color[1].label, "Color neutro, sin filtros", "no measurement is invented when frames cannot be read");
+  assert.deepEqual(script.lanes.color[0].after, ["encuadre-0"], "color looks at the framed image");
+  assert.ok(script.lanes.qa.some((step) => step.action.kind === "check" && !step.action.ok && step.label.startsWith("Imagen oscura")), "a dark take is flagged, never filtered");
+  const openSecond = script.lanes.director.find((step) => step.id === "director-clip-1")!;
+  assert.ok(openSecond.after?.includes("encuadre-0") && openSecond.after?.includes("color-0"));
+  const styled = buildSalaScript([take], { styleName: "Otro", look: { framing: "fill", contrast: 1.08, saturation: 1.12 } });
+  assert.equal(styled.lanes.color[0].label, "Contraste 1,08 y saturación 1,12 del estilo");
 });

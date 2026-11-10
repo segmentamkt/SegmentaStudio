@@ -1092,6 +1092,7 @@ export function EditorStudio(props: {
     </div>}
     {salaClips && <SalaEdicion projectName={String(selectedSession?.title || "Proyecto")} styleName={selectedStyle.name} uppercase={selectedStyle.subtitle.uppercase} soundEffects={options.soundEffects}
       clips={salaClips} loadAudio={loadSalaAudio}
+      look={{ framing: selectedStyle.execution.framing, zoomPercent: selectedStyle.execution.zoomPercent, contrast: selectedStyle.execution.contrast || 1.04, saturation: selectedStyle.execution.saturation || 1.06 }}
       onExport={automaticRunning || automaticStage === "done" ? undefined : () => void editAutomatically()}
       exportLabel={automaticRunning ? "Exportando…" : automaticStage === "done" ? "MP4 listo" : "Exportar MP4"}
       exportStatus={automaticRunning ? `${automaticStage === "captions" ? "Generando subtítulos que faltan" : automaticStage === "render" ? `Renderizando: ${job?.stage || "preparando"} · ${Math.round(Number(job?.progress || 0))} %` : "Preparando la exportación"}` : automaticStage === "done" ? "MP4 listo. Cierra la sala para verlo en «Resultado editado»." : automaticStage === "error" && error ? error : undefined}
