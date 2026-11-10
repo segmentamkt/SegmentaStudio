@@ -14,6 +14,9 @@ import { ScriptImporter } from "../components/script-importer";
 import { captureRecordingTarget, nextPendingRecordingScene, type RecordingTarget } from "../lib/recording-session";
 import { recordingMimeType } from "../lib/media-mime";
 import { EditorStudio } from "../components/editor-studio";
+import { UploadOrderReview } from "../components/upload-order-review";
+import { planUploadOrder, type UploadOrderPlan } from "../lib/upload-order";
+import { readCaptureDate } from "../lib/video-capture-date";
 import { PreproductionPlanner } from "../components/preproduction-planner";
 import { AccountAccess } from "../components/account-access";
 import { PenguinGuide } from "../components/penguin-guide";
@@ -171,6 +174,8 @@ export default function Home() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [batchUpload, setBatchUpload] = useState<{ current: number; total: number; file: string } | null>(null);
+  const [pendingOrder, setPendingOrder] = useState<{ mode: "new" | "current"; files: File[]; plan: UploadOrderPlan; targets?: string[]; scriptNote: boolean } | null>(null);
+  const [readingOrder, setReadingOrder] = useState(false);
 
   const navigationLocked = quickStarting || recording || countdown > 0 || uploading || Boolean(recordedBlob);
   const mayNavigate = () => {
@@ -535,7 +540,31 @@ export default function Home() {
     return await uploadBlobToScene(recordedBlob, captured.target.sessionId, captured.target.sceneId, captured.durationMs, status, setUploadProgress);
   };
 
-  const beginNewUpload = async (files: FileList | null) => {
+  /** Several videos: read each capture date, propose an order and let the person confirm it before uploading. */
+  const reviewUploadOrder = async (files: FileList | null, mode: "new" | "current") => {
+    if (!mayNavigate()) return;
+    const selected = Array.from(files || []);
+    if (!selected.length) return;
+    if (selected.some((file) => !isVideoFile(file))) return setError("Selecciona solo videos MP4, MOV o WebM.");
+    if (selected.length > 12) return setError("Puedes subir hasta 12 videos por proyecto.");
+    if (mode === "current" && !activeSession) return setError("Selecciona un proyecto antes de añadir videos.");
+    if (selected.length === 1) { void (mode === "new" ? beginNewUpload(selected) : importIntoCurrentSession(selected)); return; }
+    setReadingOrder(true); setError("");
+    try {
+      const dates = await Promise.all(selected.map((file) => readCaptureDate(file)));
+      const plan = planUploadOrder(selected.map((file, index) => ({ index, name: file.name, capturedAt: dates[index]?.date ?? null })));
+      let targets: string[] | undefined;
+      let scriptNote = false;
+      if (mode === "current" && activeSession) {
+        const openScenes = sessionScenes.filter((scene) => !data?.takes.some((take) => take.sceneId === scene.id));
+        targets = selected.map((_, position) => openScenes[position] ? `${openScenes[position].title}` : "Escena nueva");
+        scriptNote = Boolean(String(activeSession.script || "").trim());
+      }
+      setPendingOrder({ mode, files: selected, plan, targets, scriptNote });
+    } finally { setReadingOrder(false); }
+  };
+
+  const beginNewUpload = async (files: FileList | File[] | null) => {
     if (!mayNavigate()) return;
     const selected = Array.from(files || []);
     if (!selected.length) return;
@@ -570,7 +599,7 @@ export default function Home() {
     } finally { setBatchUpload(null); setUploading(false); setUploadProgress(0); }
   };
 
-  const importIntoCurrentSession = async (files: FileList | null) => {
+  const importIntoCurrentSession = async (files: FileList | File[] | null) => {
     if (!mayNavigate()) return;
     const selected = Array.from(files || []);
     if (!selected.length) return;
@@ -737,8 +766,12 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-[#070910] pb-24 text-white">
       {portfolioId && <ScriptImporter key={portfolioId} open={showScriptImporter} portfolioId={portfolioId} portfolioName={String(currentPortfolio?.name || "")} onClose={() => setShowScriptImporter(false)} onCreated={() => refresh({ throwOnError: true })} onOpen={(id) => { setShowScriptImporter(false); openRecordingFolder(id); }} />}
-      <input ref={newUploadInputRef} type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.mov,.m4v,.webm" multiple className="hidden" aria-label="Seleccionar videos para un proyecto nuevo" onChange={(event) => { void beginNewUpload(event.currentTarget.files); event.currentTarget.value = ""; }} />
-      <input ref={fileInputRef} type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.mov,.m4v,.webm" multiple className="hidden" aria-label="Seleccionar videos para esta producción" onChange={(event) => { void importIntoCurrentSession(event.currentTarget.files); event.currentTarget.value = ""; }} />
+      <input ref={newUploadInputRef} type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.mov,.m4v,.webm" multiple className="hidden" aria-label="Seleccionar videos para un proyecto nuevo" onChange={(event) => { void reviewUploadOrder(event.currentTarget.files, "new"); event.currentTarget.value = ""; }} />
+      <input ref={fileInputRef} type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.mov,.m4v,.webm" multiple className="hidden" aria-label="Seleccionar videos para esta producción" onChange={(event) => { void reviewUploadOrder(event.currentTarget.files, "current"); event.currentTarget.value = ""; }} />
+      {readingOrder && <div className="fixed inset-x-0 bottom-6 z-[90] mx-auto w-fit rounded-full border border-white/10 bg-[#0b0d13] px-4 py-2 text-xs text-zinc-300 shadow-2xl" role="status">Leyendo la fecha de grabación de cada video…</div>}
+      {pendingOrder && <UploadOrderReview files={pendingOrder.files} plan={pendingOrder.plan} targets={pendingOrder.targets} scriptNote={pendingOrder.scriptNote}
+        onCancel={() => setPendingOrder(null)}
+        onConfirm={(ordered) => { const mode = pendingOrder.mode; setPendingOrder(null); void (mode === "new" ? beginNewUpload(ordered) : importIntoCurrentSession(ordered)); }} />}
       <header className="sticky top-0 z-40 border-b border-white/8 bg-[#070910]/88 backdrop-blur-xl">
         <div className="mx-auto flex max-w-[1500px] flex-wrap items-center gap-2 px-4 py-3 sm:flex-nowrap sm:gap-3 sm:px-7">
           <div className="flex w-full min-w-0 items-center gap-3 sm:w-auto">

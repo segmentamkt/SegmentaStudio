@@ -4,12 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Captions, Check, ChevronLeft, Download, Film, ImageIcon, Layers3,
   LoaderCircle, Music2, Pause, Play, Plus, Settings2, Sparkles,
-  Type, UploadCloud, Volume2, WandSparkles, Zap, SlidersHorizontal,
+  Type, UploadCloud, Volume2, WandSparkles, Zap, SlidersHorizontal, ListOrdered, X,
 } from "lucide-react";
 import { EDITOR_STYLES, type EditorStyleId } from "../lib/editor-presets";
 import { loadSkillProfiles } from "../lib/studio-skills";
 import { preproductionSchema } from "../lib/preproduction-plan";
 import { planFromScript } from "../lib/editorial-director";
+import { defaultReviewOrder, keepsDefaultOrder, scriptOrderChange } from "../lib/upload-order";
 import { parseCaptionCues, retimeEditedCue, splitCueAt, type CaptionCue } from "../lib/caption-cues";
 // Only the pure planner: the drawing module uses Node APIs and stays on the server.
 import { planKineticCaptions } from "../lib/skills/subtitulos-cineticos/plan";
@@ -205,6 +206,11 @@ export function EditorStudio(props: {
   ]);
   const reviewLoaded = reviewState.key === reviewSourceKey;
   const reviewConfirmed = reviewLoaded && reviewState.valid && Boolean(reviewState.review?.orderedTakeIds.length);
+  // The order confirmed in the take review is an editorial decision: the script only reorders
+  // automatically when that order is still the one that came from the upload.
+  const reviewOrderUntouched = Boolean(reviewState.review) && keepsDefaultOrder(reviewState.review?.orderedTakeIds ?? [], defaultReviewOrder(
+    props.scenes.filter((scene) => scene.sessionId === sessionId).map((scene) => ({ id: String(scene.id), position: Number(scene.position) })),
+    props.takes.filter((take) => take.sessionId === sessionId).map((take) => ({ id: String(take.id), sceneId: String(take.sceneId), createdAt: take.createdAt ? String(take.createdAt) : undefined }))));
   const review = reviewConfirmed ? reviewState.review : null;
   const galleryTakeNeedsReview = galleryEntryPending && reviewLoaded && !review?.orderedTakeIds.includes(props.initialTakeId!);
   useEffect(() => {
@@ -219,6 +225,7 @@ export function EditorStudio(props: {
   const [tool, setTool] = useState<ToolTab>("media");
   const [catalogSearch, setCatalogSearch] = useState("");
   const [resourceMessage, setResourceMessage] = useState("");
+  const [orderNotice, setOrderNotice] = useState<{ applied: boolean; text: string } | null>(null);
   const [draftStorageWarning, setDraftStorageWarning] = useState(false);
   const [objective, setObjective] = useState("Reel vertical profesional: gancho fuerte, ritmo claro y cierre con autoridad.");
   const [options, setOptions] = useState({ captions: false, deadAir: true, transitions: true, soundEffects: true, labels: true, broll: true });
@@ -643,6 +650,25 @@ export function EditorStudio(props: {
     setPreviewMode("original");
     document.getElementById("editor-caption-text")?.scrollIntoView({ behavior: "smooth", block: "center" });
   };
+  /** With a script and every take transcribed, put the takes where what they say belongs (undoable). */
+  const orderByScript = () => {
+    if (!scriptDraft.trim()) return;
+    const current = timelineRef.current;
+    const scriptPlan = planFromScript(scriptDraft, current.filter((clip) => clip.included).map((clip) => ({ id: clip.segmentId, title: clip.title, transcript: clip.transcript })));
+    if (!scriptPlan.reliableOrder) return;
+    const change = scriptOrderChange(current, scriptPlan.suggestedClipIds);
+    if (!change) { setOrderNotice({ applied: false, text: "Las tomas ya están en el orden del libreto." }); return; }
+    if (!reviewOrderUntouched) {
+      setOrderNotice({ applied: false, text: `El libreto indica otro orden para ${change.moved.length} ${change.moved.length === 1 ? "toma" : "tomas"}. Se mantiene el orden que elegiste en la revisión; usa «Aplicar orden del libreto» si prefieres el del libreto.` });
+      return;
+    }
+    undoRef.current = [...undoRef.current.slice(-29), current]; redoRef.current = [];
+    timelineRef.current = change.next; setTimeline(change.next); setHistoryVersion((value) => value + 1);
+    setJob(null); setDraftPending(true);
+    saveEditorDraft(timelineStorageKey, JSON.stringify(change.next)); saveEditorDraft(draftPendingKey, "1");
+    setOrderNotice({ applied: true, text: `Ordené las tomas según lo que dicen en el libreto: ${change.moved.map((item) => `«${item.title}» del lugar ${item.from} al ${item.to}`).join(" · ")}.` });
+  };
+
   const transcribeMissingTakes = async (scope: "missing" | "selected" = "missing", signal?: AbortSignal): Promise<boolean> => {
     if (busy || transcriptionRunRef.current || !reviewConfirmed || signal?.aborted) return false;
     const controller = new AbortController();
@@ -723,6 +749,7 @@ export function EditorStudio(props: {
         ? `Generación detenida. Se conserva${generated === 1 ? "" : "n"} ${generated} segmento${generated === 1 ? "" : "s"} generado${generated === 1 ? "" : "s"}; puedes continuar con los pendientes.`
         : failed ? `Se generó${generated === 1 ? "" : " un total de"} ${generated} segmento${generated === 1 ? "" : "s"}. Revisa las tomas con aviso y vuelve a intentar las pendientes.`
         : `Subtítulos listos en ${generated} ${generated === 1 ? "segmento" : "segmentos"}. Continuando con la edición…`);
+      if (isCurrent() && !failed && scope === "missing" && generated > 0) orderByScript();
       return isCurrent() && !failed;
     } catch (reason) {
       if (isCurrent()) {
@@ -1097,6 +1124,11 @@ export function EditorStudio(props: {
       exportLabel={automaticRunning ? "Exportando…" : automaticStage === "done" ? "MP4 listo" : "Exportar MP4"}
       exportStatus={automaticRunning ? `${automaticStage === "captions" ? "Generando subtítulos que faltan" : automaticStage === "render" ? `Renderizando: ${job?.stage || "preparando"} · ${Math.round(Number(job?.progress || 0))} %` : "Preparando la exportación"}` : automaticStage === "done" ? "MP4 listo. Cierra la sala para verlo en «Resultado editado»." : automaticStage === "error" && error ? error : undefined}
       onClose={() => setSalaClips(null)} />}
+    {orderNotice && <div role="status" className={`flex flex-wrap items-center gap-3 border-b px-4 py-3 text-xs leading-5 ${orderNotice.applied ? "border-violet-400/20 bg-violet-400/[.07] text-violet-100" : "border-white/8 bg-white/[.03] text-zinc-300"}`}>
+      <ListOrdered size={15} className="shrink-0" /><span className="min-w-0 flex-1">{orderNotice.text}</span>
+      {orderNotice.applied && <button type="button" onClick={() => { undoTimeline(); setOrderNotice(null); }} disabled={Boolean(busy || automaticRunning)} className="rounded-lg border border-violet-300/30 px-2.5 py-1 text-[11px] disabled:opacity-40">Deshacer</button>}
+      <button type="button" onClick={() => setOrderNotice(null)} aria-label="Cerrar aviso de orden" className="rounded-lg p-1 text-zinc-400 hover:bg-white/10"><X size={14} /></button>
+    </div>}
     <EditingProgress resourcesEnabled={options.broll} resourcesStage={resourceMessage} stage={automaticStage} running={automaticRunning} captionStage={transcriptionStage}
       tasks={transcriptionTasks} renderStage={job?.stage || ""} renderProgress={Number(job?.progress || 0)}
       previews={livePreviews} selectedPreviewIndex={showingLive ? livePreview?.clipIndex : undefined}
