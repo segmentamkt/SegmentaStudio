@@ -3,17 +3,18 @@
 import { useEffect, useRef, useState } from 'react';
 import { ImagePlus, Sparkles, Trash2, Eye, Upload, LoaderCircle, WandSparkles, Square, KeyRound } from 'lucide-react';
 import { VISUAL_RESOURCE_CATALOG, resourceImageSrc, type VisualResource, type VisualResourceImage } from '../lib/visual-resources';
-import { AI_PROVIDERS, AI_STYLES, providerOfTitle, type AiImageProvider, type AiImageStyle } from '../lib/ai-visual-resources';
+import { AI_PROVIDERS, AI_STYLES, SOURCE_LABELS, providerOfTitle, type AiImageProvider, type AiImageStyle, type ImageSource } from '../lib/ai-visual-resources';
 
-type AiChoice = AiImageProvider | 'both';
+type AiChoice = 'pexels' | AiImageProvider | 'both';
+const CHOICE_LABELS: Record<AiChoice, string> = { pexels: 'Fotos Pexels · gratis', gemini: 'Gemini', openai: 'ChatGPT', both: 'Gemini + ChatGPT' };
 export type AiPanelState = {
-  available: Record<AiImageProvider, boolean> | null;
+  available: Record<ImageSource, boolean> | null;
   prefs: { provider: AiChoice; style: AiImageStyle; automatic: boolean };
   running: boolean; progress: string; plannedCount: number;
   alternatives: Record<string, VisualResourceImage[]>;
   onPrefs: (prefs: { provider: AiChoice; style: AiImageStyle; automatic: boolean }) => void;
   onGenerate: () => void; onStop: () => void;
-  onRegenerate: (segmentId: string, id: string, provider: AiImageProvider) => void;
+  onRegenerate: (segmentId: string, id: string, source: 'stock' | AiImageProvider) => void;
   onChooseAlternative: (segmentId: string, id: string, image: VisualResourceImage) => void;
 };
 const PROVIDER_IDS = Object.keys(AI_PROVIDERS) as AiImageProvider[];
@@ -53,9 +54,13 @@ export function VisualResourcesPanel({ clips, selectedClip, enabled, disabled, m
   const resources = clips.filter((clip) => clip.included).flatMap((clip) => clip.visualResources.map((item) => ({ clip, item })));
   const locked = disabled || uploading || Boolean(ai?.running);
   const ready = (provider: AiImageProvider) => ai?.available?.[provider] === true;
-  const anyReady = PROVIDER_IDS.some(ready);
-  const chosen: AiImageProvider[] = !ai ? [] : ai.prefs.provider === 'both' ? PROVIDER_IDS : [ai.prefs.provider];
+  // Stock photos always work: Pexels with its free key, otherwise Openverse (public domain, no key).
+  const stockReady = Boolean(ai?.available);
+  const usable = (choice: AiChoice) => choice === 'pexels' ? stockReady : choice === 'both' ? PROVIDER_IDS.every(ready) : ready(choice);
+  const aiChoice = ai && ai.prefs.provider !== 'pexels';
+  const chosen: AiImageProvider[] = !ai || ai.prefs.provider === 'pexels' ? [] : ai.prefs.provider === 'both' ? PROVIDER_IDS : [ai.prefs.provider];
   const perImage = chosen.filter(ready).reduce((sum, provider) => sum + AI_PROVIDERS[provider].approxUsdPerImage, 0);
+  const label = (image: VisualResourceImage) => { const source = imageProvider(image); return source ? SOURCE_LABELS[source] : null; };
   const openUpload = (segmentId: string, replacementId?: string) => {
     if (locked) return;
     uploadTargetRef.current = { segmentId, replacementId };
@@ -88,29 +93,27 @@ export function VisualResourcesPanel({ clips, selectedClip, enabled, disabled, m
   };
   const patch = (clip: ResourceClip, resource: VisualResource, values: Partial<VisualResource>) => onChange(clip.segmentId, clip.visualResources.map((item) => item.id === resource.id ? { ...item, ...values } : item));
   return <section aria-label="Recursos visuales" className="max-h-[680px] space-y-4 overflow-y-auto overscroll-contain pr-1">
-    <div><p className="flex items-center gap-2 text-sm font-semibold"><ImagePlus size={18} className="text-cyan-300" />Imágenes que acompañan tu voz</p><p className="mt-2 text-xs leading-5 text-zinc-400">Aparecen justo cuando dices la idea y se incluyen en el MP4. Créalas con Gemini o ChatGPT, o usa la biblioteca y tus fotos.</p></div>
-    {ai && <div className="space-y-3 rounded-2xl border border-[#FF7A00]/25 bg-[#FF7A00]/[.05] p-3" aria-label="Crear imágenes con IA">
-      <p className="flex items-center gap-2 text-xs font-semibold text-white"><WandSparkles size={15} className="text-[#FFB066]" />Crear con IA</p>
-      <p className="text-[10px] leading-4 text-zinc-400">Una imagen por cada momento clave (las palabras que van en naranja), con la frase que dices y el tema del video. Mismo encargo para Gemini y ChatGPT.</p>
-      {ai.available && !anyReady && <p className="flex gap-2 rounded-lg bg-black/30 p-2 text-[10px] leading-4 text-amber-100"><KeyRound size={13} className="mt-0.5 shrink-0" />Para activarlo, añade <code>GEMINI_API_KEY</code> y/o <code>OPENAI_API_KEY</code> en Vercel → segmenta-studio → Settings → Environment Variables, y vuelve a desplegar.</p>}
-      <div role="radiogroup" aria-label="Quién crea las imágenes" className="grid grid-cols-3 gap-1 rounded-xl border border-white/10 p-1 text-[11px]">
-        {([...PROVIDER_IDS, 'both'] as AiChoice[]).map((choice) => {
-          const usable = choice === 'both' ? PROVIDER_IDS.every(ready) : ready(choice);
-          return <button key={choice} type="button" role="radio" aria-checked={ai.prefs.provider === choice} disabled={locked || (ai.available !== null && !usable)} onClick={() => ai.onPrefs({ ...ai.prefs, provider: choice })}
-            className={`min-h-9 rounded-lg px-2 ${ai.prefs.provider === choice ? 'bg-white font-semibold text-black' : 'text-zinc-300'} disabled:opacity-35`} title={ai.available !== null && !usable ? 'Falta la clave en Vercel' : undefined}>
-            {choice === 'both' ? 'Las dos' : AI_PROVIDERS[choice].label}</button>;
-        })}
+    <div><p className="flex items-center gap-2 text-sm font-semibold"><ImagePlus size={18} className="text-cyan-300" />Imágenes que acompañan tu voz</p><p className="mt-2 text-xs leading-5 text-zinc-400">Aparecen justo cuando dices la idea y se incluyen en el MP4. Studio las busca solo (fotos de Pexels, gratis) o las crea con Gemini o ChatGPT si pones sus claves.</p></div>
+    {ai && <div className="space-y-3 rounded-2xl border border-[#FF7A00]/25 bg-[#FF7A00]/[.05] p-3" aria-label="Imágenes automáticas">
+      <p className="flex items-center gap-2 text-xs font-semibold text-white"><WandSparkles size={15} className="text-[#FFB066]" />Imágenes automáticas</p>
+      <p className="text-[10px] leading-4 text-zinc-400">Una imagen por cada momento clave de lo que dices (por ejemplo «la lechona», «tu equipo»), justo cuando lo dices.</p>
+      <div role="radiogroup" aria-label="De dónde salen las imágenes" className="grid grid-cols-2 gap-1 rounded-xl border border-white/10 p-1 text-[11px]">
+        {(['pexels', ...PROVIDER_IDS, 'both'] as AiChoice[]).map((choice) => <button key={choice} type="button" role="radio" aria-checked={ai.prefs.provider === choice} disabled={locked || (ai.available !== null && !usable(choice))} onClick={() => ai.onPrefs({ ...ai.prefs, provider: choice })}
+          className={`min-h-9 rounded-lg px-2 ${ai.prefs.provider === choice ? 'bg-white font-semibold text-black' : 'text-zinc-300'} disabled:opacity-35`} title={ai.available !== null && !usable(choice) ? 'Necesita su clave en Vercel' : undefined}>{CHOICE_LABELS[choice]}</button>)}
       </div>
-      <div role="radiogroup" aria-label="Estilo de las imágenes" className="grid grid-cols-2 gap-1 rounded-xl border border-white/10 p-1 text-[11px]">
+      {ai.prefs.provider === 'pexels' && ai.available && !ai.available.pexels && <p className="flex gap-2 rounded-lg bg-black/30 p-2 text-[10px] leading-4 text-amber-100"><KeyRound size={13} className="mt-0.5 shrink-0" /><span>Falta la clave gratis de Pexels (<code>PEXELS_API_KEY</code> en Vercel). Mientras tanto se usan fotos de dominio público de Openverse, que encuentran menos temas.</span></p>}
+      {aiChoice && <div role="radiogroup" aria-label="Estilo de las imágenes" className="grid grid-cols-2 gap-1 rounded-xl border border-white/10 p-1 text-[11px]">
         {(Object.keys(AI_STYLES) as AiImageStyle[]).map((style) => <button key={style} type="button" role="radio" aria-checked={ai.prefs.style === style} disabled={locked} onClick={() => ai.onPrefs({ ...ai.prefs, style })}
           className={`min-h-9 rounded-lg px-2 ${ai.prefs.style === style ? 'bg-white font-semibold text-black' : 'text-zinc-300'}`}>{AI_STYLES[style].label}</button>)}
-      </div>
-      <label className="flex items-center justify-between gap-2 text-[11px] text-zinc-300"><span>Usar IA en la edición automática</span><input type="checkbox" checked={ai.prefs.automatic} disabled={locked || !anyReady} onChange={(event) => ai.onPrefs({ ...ai.prefs, automatic: event.target.checked })} className="h-4 w-4 accent-[#FF7A00]" /></label>
+      </div>}
+      <label className="flex items-center justify-between gap-2 text-[11px] text-zinc-300"><span>Ponerlas solas en la edición automática</span><input type="checkbox" checked={ai.prefs.automatic} disabled={locked || !usable(ai.prefs.provider)} onChange={(event) => ai.onPrefs({ ...ai.prefs, automatic: event.target.checked })} className="h-4 w-4 accent-[#FF7A00]" /></label>
       {ai.running
         ? <button type="button" onClick={ai.onStop} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-white/15 text-xs text-zinc-200"><Square size={13} />Detener</button>
-        : <button type="button" onClick={ai.onGenerate} disabled={locked || !chosen.some(ready) || ai.plannedCount === 0} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#FF7A00] p-3 text-xs font-semibold text-black disabled:opacity-40"><WandSparkles size={15} />{ai.plannedCount ? `Crear ${ai.plannedCount} ${ai.plannedCount === 1 ? 'imagen' : 'imágenes'} con IA` : 'Sin momentos nuevos para imágenes'}</button>}
-      {ai.running && <p role="status" className="flex items-center gap-2 text-[11px] text-[#FFB066]"><LoaderCircle size={13} className="animate-spin" />{ai.progress || 'Creando imágenes…'}</p>}
-      {!ai.running && ai.plannedCount > 0 && perImage > 0 && <p className="text-[10px] text-zinc-500">Costo aproximado en tu cuenta: {(ai.plannedCount * perImage).toFixed(2).replace('.', ',')} USD ({ai.plannedCount} × {perImage.toFixed(3).replace('.', ',')}).</p>}
+        : <button type="button" onClick={ai.onGenerate} disabled={locked || !usable(ai.prefs.provider) || ai.plannedCount === 0} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#FF7A00] p-3 text-xs font-semibold text-black disabled:opacity-40"><WandSparkles size={15} />{ai.plannedCount ? `Poner ${ai.plannedCount} ${ai.plannedCount === 1 ? 'imagen' : 'imágenes'} ahora` : 'Sin momentos nuevos para imágenes'}</button>}
+      {ai.running && <p role="status" className="flex items-center gap-2 text-[11px] text-[#FFB066]"><LoaderCircle size={13} className="animate-spin" />{ai.progress || 'Buscando imágenes…'}</p>}
+      {!ai.running && ai.plannedCount > 0 && (aiChoice
+        ? perImage > 0 && <p className="text-[10px] text-zinc-500">Costo aproximado en tu cuenta: {(ai.plannedCount * perImage).toFixed(2).replace('.', ',')} USD ({ai.plannedCount} × {perImage.toFixed(3).replace('.', ',')}).</p>
+        : <p className="text-[10px] text-zinc-500">Gratis · fotos con licencia de uso comercial de <a href="https://www.pexels.com" target="_blank" rel="noreferrer" className="text-zinc-300 underline">Pexels</a>{ai.available?.pexels ? '' : ' y Openverse'}.</p>)}
     </div>}
     <button type="button" aria-pressed={enabled} disabled={locked} onClick={onToggle} className={`flex min-h-11 w-full items-center justify-between gap-2 rounded-xl border p-3 text-left text-xs ${enabled ? 'border-cyan-300/30 bg-cyan-300/10 text-cyan-100' : 'border-white/10 text-zinc-400'}`}><span>Recursos en la edición automática</span><strong>{enabled ? 'Activados' : 'Desactivados'}</strong></button>
     <button type="button" onClick={onRecommend} disabled={locked} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-violet-500 p-3 text-xs font-semibold disabled:opacity-40"><Sparkles size={15} />Detectar apoyos por palabras</button>
@@ -126,13 +129,15 @@ export function VisualResourcesPanel({ clips, selectedClip, enabled, disabled, m
       <select aria-label={`Encuadre de imagen ${item.keyword}`} value={item.layout} disabled={locked} onChange={(event) => patch(clip, item, { layout: event.target.value as VisualResource['layout'] })} className="mt-2 min-h-10 w-full rounded-lg border border-white/10 bg-[#151822] p-2 text-xs"><option value="corner">Pequeña · esquina superior</option><option value="wide">Grande · apoyo central</option></select>
       {ai && <div className="mt-2 space-y-2">
         <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
-          {imageProvider(item.image) && <span className="rounded-full bg-[#FF7A00]/15 px-2 py-0.5 text-[#FFB066]">{AI_PROVIDERS[imageProvider(item.image)!].label}</span>}
-          {PROVIDER_IDS.map((provider) => <button key={provider} type="button" disabled={locked || !ready(provider)} onClick={() => ai.onRegenerate(clip.segmentId, item.id, provider)}
-            className="flex min-h-8 items-center gap-1 rounded-lg border border-[#FF7A00]/30 px-2 text-[#FFB066] disabled:opacity-35"><WandSparkles size={11} />Otra con {AI_PROVIDERS[provider].label}</button>)}
+          {label(item.image) && <span className="rounded-full bg-[#FF7A00]/15 px-2 py-0.5 text-[#FFB066]" title={item.image.kind === 'upload' ? item.image.title : undefined}>{label(item.image)}</span>}
+          <button type="button" disabled={locked || !stockReady} onClick={() => ai.onRegenerate(clip.segmentId, item.id, 'stock')}
+            className="flex min-h-8 items-center gap-1 rounded-lg border border-[#FF7A00]/30 px-2 text-[#FFB066] disabled:opacity-35"><ImagePlus size={11} />Otra foto</button>
+          {PROVIDER_IDS.filter(ready).map((provider) => <button key={provider} type="button" disabled={locked} onClick={() => ai.onRegenerate(clip.segmentId, item.id, provider)}
+            className="flex min-h-8 items-center gap-1 rounded-lg border border-[#FF7A00]/30 px-2 text-[#FFB066] disabled:opacity-35"><WandSparkles size={11} />Con {AI_PROVIDERS[provider].label}</button>)}
         </div>
-        {(ai.alternatives[item.id]?.length ?? 0) > 0 && <div><p className="text-[10px] text-zinc-500">Otras versiones · toca para usarla</p><div className="mt-1 flex gap-1.5">{ai.alternatives[item.id].map((image, index) => <button key={index} type="button" disabled={locked} onClick={() => ai.onChooseAlternative(clip.segmentId, item.id, image)} className="relative overflow-hidden rounded-lg border border-white/10 disabled:opacity-40" aria-label={`Usar la versión ${index + 1}${imageProvider(image) ? ` de ${AI_PROVIDERS[imageProvider(image)!].label}` : ''}`}>
+        {(ai.alternatives[item.id]?.length ?? 0) > 0 && <div><p className="text-[10px] text-zinc-500">Otras versiones · toca para usarla</p><div className="mt-1 flex gap-1.5">{ai.alternatives[item.id].map((image, index) => <button key={index} type="button" disabled={locked} onClick={() => ai.onChooseAlternative(clip.segmentId, item.id, image)} className="relative overflow-hidden rounded-lg border border-white/10 disabled:opacity-40" aria-label={`Usar la versión ${index + 1}${label(image) ? ` de ${label(image)}` : ''}`}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={resourceImageSrc(image)} alt="" className="h-12 w-12 object-cover" />{imageProvider(image) && <span className="absolute inset-x-0 bottom-0 bg-black/70 text-[8px] text-white">{AI_PROVIDERS[imageProvider(image)!].label}</span>}</button>)}</div></div>}
+          <img src={resourceImageSrc(image)} alt="" className="h-12 w-12 object-cover" />{label(image) && <span className="absolute inset-x-0 bottom-0 bg-black/70 text-[8px] text-white">{label(image)}</span>}</button>)}</div></div>}
       </div>}
       <div className="mt-2 flex gap-2"><button type="button" disabled={locked} onClick={() => openUpload(clip.segmentId, item.id)} className="flex min-h-9 flex-1 items-center justify-center gap-1 rounded-lg border border-white/10 text-[10px]"><Upload size={12} />Cambiar foto</button><button type="button" aria-label={`Quitar imagen ${item.keyword}`} disabled={locked} onClick={() => onChange(clip.segmentId, clip.visualResources.filter((entry) => entry.id !== item.id))} className="grid min-h-9 w-9 place-items-center rounded-lg border border-white/10 text-zinc-400"><Trash2 size={13} /></button></div>
     </article>)}</div>}

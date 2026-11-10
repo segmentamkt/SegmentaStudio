@@ -13,6 +13,9 @@ import { planKineticCaptions } from "./skills/subtitulos-cineticos/plan";
 import { MAX_VISUAL_RESOURCES_PER_CLIP, MAX_VISUAL_RESOURCES_TOTAL, type VisualResource, type VisualResourceClip } from "./visual-resources";
 
 export type AiImageProvider = "gemini" | "openai";
+/** Toda fuente de imagen: fotos de banco gratis (Pexels, Openverse) o IA (Gemini, ChatGPT). */
+export type ImageSource = AiImageProvider | "pexels" | "openverse";
+export const SOURCE_LABELS: Record<ImageSource, string> = { pexels: "Pexels", openverse: "Openverse", gemini: "Gemini", openai: "ChatGPT" };
 export type AiImageStyle = "3d" | "foto";
 export const AI_PROVIDERS: Record<AiImageProvider, { label: string; envKey: string; approxUsdPerImage: number }> = {
   gemini: { label: "Gemini", envKey: "GEMINI_API_KEY", approxUsdPerImage: .034 },
@@ -168,10 +171,8 @@ export function buildImagePrompt(brief: ImageBrief) {
   ].filter(Boolean).join("\n");
 }
 
-/** Proveedor de una imagen generada, leído de su título («Gemini · idea», «ChatGPT · idea»). */
-export function providerOfTitle(title: string | undefined): AiImageProvider | null {
+/** Fuente de una imagen, leída de su título («Pexels · idea · Foto de…», «Gemini · idea»). */
+export function providerOfTitle(title: string | undefined): ImageSource | null {
   if (!title) return null;
-  if (title.startsWith(`${AI_PROVIDERS.gemini.label} · `)) return "gemini";
-  if (title.startsWith(`${AI_PROVIDERS.openai.label} · `)) return "openai";
-  return null;
+  return (Object.keys(SOURCE_LABELS) as ImageSource[]).find((source) => title.startsWith(`${SOURCE_LABELS[source]} · `)) ?? null;
 }

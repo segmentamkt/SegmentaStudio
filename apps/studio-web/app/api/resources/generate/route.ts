@@ -5,11 +5,14 @@ import type { VisualResource } from "../../../../lib/visual-resources";
 
 export const maxDuration = 60;
 
-/** Qué proveedores tienen clave configurada (sin revelar nada de la clave). */
+/** Qué fuentes de imagen están disponibles (sin revelar nada de las claves). Openverse no necesita clave. */
 export async function GET() {
   const user = await getRequestUser();
   if (!user) return unauthorized();
-  return Response.json({ providers: Object.fromEntries(Object.entries(AI_PROVIDERS).map(([id, provider]) => [id, Boolean(process.env[provider.envKey]?.trim())])) });
+  return Response.json({ providers: {
+    ...Object.fromEntries(Object.entries(AI_PROVIDERS).map(([id, provider]) => [id, Boolean(process.env[provider.envKey]?.trim())])),
+    pexels: Boolean(process.env.PEXELS_API_KEY?.trim()), openverse: true,
+  } });
 }
 
 /** Una imagen de apoyo para un momento del video, creada con Gemini o ChatGPT y lista para el render. */

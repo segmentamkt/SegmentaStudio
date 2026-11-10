@@ -1,11 +1,18 @@
 ---
 name: segmenta-generador-imagenes
-description: Crea imágenes de apoyo con Gemini o ChatGPT para los momentos clave de lo que se dice en Segmenta Studio. Úsala al planificar recursos visuales que acompañan la voz.
+description: Pone imágenes de apoyo en los momentos clave de lo que se dice en Segmenta Studio: fotos gratis de Pexels (por defecto, automático) o imágenes creadas con Gemini o ChatGPT. Úsala al planificar recursos visuales que acompañan la voz.
 ---
 
-# Imágenes creadas con IA
+# Imágenes de apoyo automáticas
 
-**Proveedores** (`lib/ai-image-providers.ts`, solo servidor, claves en Vercel):
+**Por defecto, gratis: fotos de banco** (`lib/stock-image-providers.ts`, ruta `/api/resources/stock`):
+- Pexels: búsqueda en español (`locale=es-ES`), horizontal o cuadrada según el encuadre. Clave gratis en `PEXELS_API_KEY` (sin tarjeta; ~200 búsquedas por hora). Licencia: uso comercial sin atribución obligatoria; el panel enlaza a Pexels como pide su API y el título guarda «Foto de…».
+- Respaldo sin clave: Openverse, solo CC0/dominio público y solo de sus colecciones de banco (StockSnap, WP Photos, Nappy, Rawpixel); funciona mejor con palabras en inglés. Sin cuenta: 20 búsquedas por minuto, 200 al día.
+- Pinterest y similares no: las imágenes son de terceros sin licencia y su extracción está prohibida.
+- Cada búsqueda trae hasta 3 fotos: la primera se usa y las otras quedan para «Otra foto» sin gastar búsquedas.
+- Activado por defecto en la edición automática; si no hay fotos, se usa la biblioteca.
+
+**Opcional, de pago: IA** (`lib/ai-image-providers.ts`, claves en Vercel):
 - Gemini: `gemini-nano-banana-2.1` por la API de Interactions (respaldo `generateContent`). Variable `GEMINI_API_KEY`.
 - ChatGPT: `gpt-image-2.6-flare` por la Images API (`/v1/images/generations`). Variable `OPENAI_API_KEY`. OpenAI exige verificar la organización para sus modelos de imagen.
 - Los modelos se cambian sin desplegar con `GEMINI_IMAGE_MODEL` y `OPENAI_IMAGE_MODEL`.

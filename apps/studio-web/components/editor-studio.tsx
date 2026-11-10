@@ -11,10 +11,11 @@ import { loadSkillProfiles } from "../lib/studio-skills";
 import { preproductionSchema } from "../lib/preproduction-plan";
 import { planFromScript } from "../lib/editorial-director";
 import { defaultReviewOrder, keepsDefaultOrder, scriptOrderChange } from "../lib/upload-order";
-import { AI_PROVIDERS, phraseAt, planAiVisualMoments, type AiImageProvider, type AiImageStyle } from "../lib/ai-visual-resources";
+import { AI_PROVIDERS, phraseAt, planAiVisualMoments, type AiImageProvider, type AiImageStyle, type ImageSource } from "../lib/ai-visual-resources";
 
-type AiResourcePrefs = { provider: AiImageProvider | "both"; style: AiImageStyle; automatic: boolean };
-const DEFAULT_AI_PREFS: AiResourcePrefs = { provider: "gemini", style: "3d", automatic: false };
+type AiResourcePrefs = { provider: "pexels" | AiImageProvider | "both"; style: AiImageStyle; automatic: boolean };
+/** Free stock photos placed automatically by default; Gemini/ChatGPT only when their keys exist. */
+const DEFAULT_AI_PREFS: AiResourcePrefs = { provider: "pexels", style: "3d", automatic: true };
 import { parseCaptionCues, retimeEditedCue, splitCueAt, type CaptionCue } from "../lib/caption-cues";
 // Only the pure planner: the drawing module uses Node APIs and stays on the server.
 import { planKineticCaptions } from "../lib/skills/subtitulos-cineticos/plan";
@@ -235,13 +236,15 @@ export function EditorStudio(props: {
     try {
       const saved = typeof window === "undefined" ? null : JSON.parse(window.localStorage.getItem(aiPrefsKey) || "null") as Partial<AiResourcePrefs> | null;
       return {
-        provider: saved?.provider === "openai" || saved?.provider === "both" ? saved.provider : "gemini",
+        provider: saved?.provider === "gemini" || saved?.provider === "openai" || saved?.provider === "both" ? saved.provider : "pexels",
         style: saved?.style === "foto" ? "foto" : "3d",
-        automatic: saved?.automatic === true,
+        automatic: saved?.automatic !== false,
       };
     } catch { return DEFAULT_AI_PREFS; }
   });
-  const [aiAvailable, setAiAvailable] = useState<Record<AiImageProvider, boolean> | null>(null);
+  const [aiAvailable, setAiAvailable] = useState<Record<ImageSource, boolean> | null>(null);
+  const stockSkipRef = useRef<Record<string, number>>({});
+  const stockShownRef = useRef<Record<string, Set<string>>>({});
   const [aiRunning, setAiRunning] = useState(false);
   const [aiProgress, setAiProgress] = useState("");
   const [aiAlternatives, setAiAlternatives] = useState<Record<string, VisualResourceImage[]>>({});
@@ -250,7 +253,7 @@ export function EditorStudio(props: {
   useEffect(() => {
     const controller = new AbortController();
     fetch("/api/resources/generate", { cache: "no-store", signal: controller.signal })
-      .then((response) => response.ok ? response.json() as Promise<{ providers: Record<AiImageProvider, boolean> }> : null)
+      .then((response) => response.ok ? response.json() as Promise<{ providers: Record<ImageSource, boolean> }> : null)
       .then((data) => { if (data) setAiAvailable(data.providers); })
       .catch(() => undefined);
     return () => controller.abort();
@@ -919,8 +922,18 @@ export function EditorStudio(props: {
     setAiPrefsState(next);
     try { window.localStorage.setItem(aiPrefsKey, JSON.stringify(next)); } catch { /* Preferences are a convenience. */ }
   };
-  const aiProviders = (choice = aiPrefs.provider): AiImageProvider[] => (choice === "both" ? ["gemini", "openai"] as AiImageProvider[] : [choice])
+  const aiProviders = (choice = aiPrefs.provider): AiImageProvider[] => choice === "pexels" ? [] : (choice === "both" ? ["gemini", "openai"] as AiImageProvider[] : [choice])
     .filter((provider) => aiAvailable?.[provider] !== false);
+  /** Up to three stock photos for a moment (Pexels, or Openverse without a key): the first is used, the rest are alternatives. */
+  const requestStockImages = async (brief: { keyword: string; layout: VisualResource["layout"] }, skip = 0, signal?: AbortSignal) => {
+    const response = await fetch("/api/resources/stock", {
+      method: "POST", headers: { "Content-Type": "application/json" }, signal,
+      body: JSON.stringify({ keyword: brief.keyword.slice(0, 60), layout: brief.layout, context: aiContext, skip }),
+    });
+    const data = await response.json().catch(() => ({})) as { images?: VisualResourceImage[]; error?: string };
+    if (!response.ok || !data.images?.length) throw new Error(data.error || "No encontré fotos para ese momento.");
+    return data.images;
+  };
   const aiContext = (scriptDraft.trim() || String(selectedSession?.title || "")).replace(/\s+/g, " ").slice(0, 300);
   const requestAiImage = async (provider: AiImageProvider, brief: { keyword: string; phrase: string; layout: VisualResource["layout"] }, signal?: AbortSignal) => {
     const response = await fetch("/api/resources/generate", {
@@ -929,7 +942,7 @@ export function EditorStudio(props: {
     });
     const data = await response.json().catch(() => ({})) as { image?: VisualResourceImage; error?: string; missingKey?: string };
     if (!response.ok || !data.image) {
-      if (data.missingKey) setAiAvailable((current) => ({ gemini: current?.gemini ?? false, openai: current?.openai ?? false, [provider]: false }));
+      if (data.missingKey) setAiAvailable((current) => ({ pexels: current?.pexels ?? false, openverse: true, gemini: current?.gemini ?? false, openai: current?.openai ?? false, [provider]: false }));
       throw new Error(data.error || `${AI_PROVIDERS[provider].label} no pudo crear la imagen.`);
     }
     return data.image;
@@ -952,8 +965,9 @@ export function EditorStudio(props: {
   /** One image per key moment (the words the caption skill highlights), created by the chosen provider(s). */
   const generateAiResources = async (signal?: AbortSignal): Promise<number> => {
     if (aiRunRef.current) return 0;
+    const stock = aiPrefs.provider === "pexels";
     const providers = aiProviders();
-    if (!providers.length) { setResourceMessage("Falta configurar la clave de Gemini o de ChatGPT en Vercel para crear imágenes."); return 0; }
+    if (!stock && !providers.length) { setResourceMessage("Falta configurar la clave de Gemini o de ChatGPT en Vercel para crear imágenes."); return 0; }
     const moments = planAiVisualMoments(timelineRef.current);
     if (!moments.length) { setResourceMessage("No encontré momentos nuevos con palabras clave. Genera primero los subtítulos con tiempos de voz o libera espacio entre imágenes."); return 0; }
     const controller = new AbortController();
@@ -967,9 +981,10 @@ export function EditorStudio(props: {
     const worker = async () => {
       while (queue.length && !controller.signal.aborted) {
         const moment = queue.shift()!;
-        setAiProgress(`Creando ${created + failed + 1} de ${moments.length} con ${providers.map((provider) => AI_PROVIDERS[provider].label).join(" y ")}: «${moment.keyword}»`);
-        const results = await Promise.allSettled(providers.map((provider) => requestAiImage(provider, moment, controller.signal)));
-        const images = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+        setAiProgress(stock ? `Buscando foto ${created + failed + 1} de ${moments.length}: «${moment.keyword}»` : `Creando ${created + failed + 1} de ${moments.length} con ${providers.map((provider) => AI_PROVIDERS[provider].label).join(" y ")}: «${moment.keyword}»`);
+        const results = stock ? [await requestStockImages(moment, 0, controller.signal).then((value) => ({ status: "fulfilled" as const, value }), (reason: unknown) => ({ status: "rejected" as const, reason }))]
+          : await Promise.allSettled(providers.map((provider) => requestAiImage(provider, moment, controller.signal).then((image) => [image])));
+        const images = results.flatMap((result) => result.status === "fulfilled" ? result.value : []);
         results.forEach((result) => { if (result.status === "rejected" && !controller.signal.aborted) problems.add(result.reason instanceof Error ? result.reason.message : String(result.reason)); });
         if (!images.length || controller.signal.aborted) { failed++; continue; }
         const id = `ai:${moment.segmentId.replace(/[^a-zA-Z0-9_.:-]/g, "-").slice(0, 60)}:${Math.round(moment.startSeconds * 1000)}`;
@@ -981,6 +996,7 @@ export function EditorStudio(props: {
           }), firstCommit);
           firstCommit = false; created++;
           if (images.length > 1) setAiAlternatives((current) => ({ ...current, [id]: images.slice(1) }));
+          if (stock) stockSkipRef.current[id] = 3;
         } catch (reason) { failed++; problems.add(reason instanceof Error ? reason.message : "La imagen no cabe en el montaje."); }
       }
     };
@@ -990,27 +1006,44 @@ export function EditorStudio(props: {
       aiRunRef.current = null; setAiRunning(false); setAiProgress("");
       if (created) setOptions((current) => ({ ...current, broll: true }));
       setResourceMessage(controller.signal.aborted ? `Se detuvo la creación. Se conservan ${created} imágenes.`
-        : `${created} ${created === 1 ? "imagen creada" : "imágenes creadas"} con IA en los momentos clave${failed ? ` · ${failed} sin imagen` : ""}.${problems.size ? ` ${[...problems].slice(0, 2).join(" ")}` : ""}`);
+        : `${created} ${created === 1 ? "imagen puesta" : "imágenes puestas"} en los momentos clave${failed ? ` · ${failed} sin imagen` : ""}.${problems.size ? ` ${[...problems].slice(0, 2).join(" ")}` : ""}`);
     }
     return created;
   };
 
-  const regenerateAiResource = async (segmentId: string, id: string, provider: AiImageProvider) => {
+  const regenerateAiResource = async (segmentId: string, id: string, provider: "stock" | AiImageProvider) => {
     const clip = timelineRef.current.find((item) => item.segmentId === segmentId);
     const resource = clip?.visualResources.find((item) => item.id === id);
     if (!clip || !resource || aiRunRef.current || busy || automaticRunning) return;
+    // «Otra foto»: first the photos already found for this moment (no new search), then the next page.
+    const keyOf = (image: VisualResourceImage) => image.kind === "upload" ? `${image.title}:${image.dataUrl.length}` : image.assetId;
+    const shown = (stockShownRef.current[id] ??= new Set<string>());
+    shown.add(keyOf(resource.image));
+    const unused = provider === "stock" ? (aiAlternatives[id] ?? []).find((image) => image.kind === "upload" && /^(Pexels|Openverse) · /.test(image.title) && !shown.has(keyOf(image))) : undefined;
+    if (unused) { shown.add(keyOf(unused)); chooseAiAlternative(segmentId, id, unused); return; }
     const controller = new AbortController();
     aiRunRef.current = controller;
-    setAiRunning(true); setResourceMessage(""); setAiProgress(`Creando otra versión de «${resource.keyword}» con ${AI_PROVIDERS[provider].label}…`);
+    setAiRunning(true); setResourceMessage(""); setAiProgress(provider === "stock" ? `Buscando otra foto de «${resource.keyword}»…` : `Creando otra versión de «${resource.keyword}» con ${AI_PROVIDERS[provider].label}…`);
     try {
-      const image = await requestAiImage(provider, { keyword: resource.keyword, phrase: phraseAt(clip.captionCues, resource.startSeconds + .05) || resource.keyword, layout: resource.layout }, controller.signal);
+      let image: VisualResourceImage;
+      let extra: VisualResourceImage[] = [];
+      if (provider === "stock") {
+        const skip = stockSkipRef.current[id] ?? 0;
+        const found = await requestStockImages({ keyword: resource.keyword, layout: resource.layout }, skip, controller.signal);
+        stockSkipRef.current[id] = skip + 3;
+        [image, ...extra] = found;
+        shown.add(keyOf(image));
+      } else {
+        image = await requestAiImage(provider, { keyword: resource.keyword, phrase: phraseAt(clip.captionCues, resource.startSeconds + .05) || resource.keyword, layout: resource.layout }, controller.signal);
+      }
       let previous: VisualResourceImage | null = null;
       commitResourceClip(segmentId, (current) => ({
         visualResources: current.visualResources.map((item) => { if (item.id !== id) return item; previous = item.image; return { ...item, image }; }),
         resourcesReviewed: true,
       }), true);
-      if (previous) { const kept: VisualResourceImage = previous; setAiAlternatives((current) => ({ ...current, [id]: [kept, ...(current[id] ?? [])].slice(0, 4) })); }
-      setResourceMessage(`Nueva versión de «${resource.keyword}» con ${AI_PROVIDERS[provider].label}. La anterior queda abajo para volver a ella.`);
+      const kept: VisualResourceImage[] = previous ? [previous] : [];
+      setAiAlternatives((current) => ({ ...current, [id]: [...extra, ...kept, ...(current[id] ?? [])].slice(0, 6) }));
+      setResourceMessage(`${provider === "stock" ? "Otra foto" : `Nueva versión con ${AI_PROVIDERS[provider].label}`} para «${resource.keyword}». La anterior queda abajo para volver a ella.`);
     } catch (reason) {
       setResourceMessage(reason instanceof Error ? reason.message : "No se pudo crear la otra versión.");
     } finally { aiRunRef.current = null; setAiRunning(false); setAiProgress(""); }
@@ -1024,7 +1057,7 @@ export function EditorStudio(props: {
         visualResources: current.visualResources.map((item) => { if (item.id !== id) return item; previous = item.image; return { ...item, image }; }),
         resourcesReviewed: true,
       }), true);
-      setAiAlternatives((current) => ({ ...current, [id]: [...(previous ? [previous] : []), ...(current[id] ?? []).filter((item) => item !== image)].slice(0, 4) }));
+      setAiAlternatives((current) => ({ ...current, [id]: [...(current[id] ?? []).filter((item) => item !== image), ...(previous ? [previous] : [])].slice(0, 6) }));
     } catch (reason) { setResourceMessage(reason instanceof Error ? reason.message : "No se pudo cambiar la imagen."); }
   };
 
@@ -1160,7 +1193,7 @@ export function EditorStudio(props: {
         transcribe: () => transcribeMissingTakes("missing", controller.signal),
         // With «IA en la edición automática», Gemini/ChatGPT create the images; the library is the fallback.
         addResources: automaticOptions.broll ? async () => {
-          if (aiPrefs.automatic && aiProviders().length && await generateAiResources(controller.signal) > 0) return;
+          if (aiPrefs.automatic && (aiPrefs.provider === "pexels" || aiProviders().length) && await generateAiResources(controller.signal) > 0) return;
           applyVisualRecommendations(true);
         } : undefined,
         captureDraft: () => timelineRef.current,
