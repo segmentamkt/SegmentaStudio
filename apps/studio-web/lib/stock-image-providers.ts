@@ -1,14 +1,18 @@
 /**
  * Fotos de banco gratis con licencia comercial, solo en el servidor.
  *
- * - Pexels (principal): búsqueda en español (`locale=es-ES`), clave gratis en PEXELS_API_KEY.
- *   Licencia Pexels: uso comercial sin atribución obligatoria; la API pide enlazar a Pexels en la app.
+ * - Pexels: búsqueda en español (`locale=es-ES`), clave gratis en PEXELS_API_KEY. Desde 2026-11 Pexels
+ *   no entrega claves nuevas: sirve para quien ya tenga una.
+ * - Pixabay: búsqueda en español (`lang=es`), clave gratis en PIXABAY_API_KEY. Licencia de contenido de
+ *   Pixabay: uso comercial sin atribución obligatoria; la API pide descargar las fotos (no enlazarlas) y
+ *   guardar los resultados 24 horas.
+ *   Ambas: la API pide mostrar de dónde vienen las fotos (el panel enlaza a la fuente).
  * - Openverse (respaldo, sin clave): solo CC0 y dominio público (`license=cc0,pdm`), uso libre.
  * Las imágenes solo se descargan de los servidores de esas fuentes y por HTTPS.
  */
 import type { VisualResource } from "./visual-resources";
 
-export type StockSource = "pexels" | "openverse";
+export type StockSource = "pexels" | "pixabay" | "openverse";
 export type StockCandidate = { source: StockSource; imageUrl: string; author: string; pageUrl: string };
 
 type FetchLike = (url: string, init?: { headers?: Record<string, string>; signal?: AbortSignal }) => Promise<{
@@ -25,6 +29,10 @@ export class StockSearchError extends Error {
 const MAX_DOWNLOAD_BYTES = 15 * 1024 * 1024;
 /** Hosts that serve the images Pexels and Openverse point to (never arbitrary URLs). */
 const PEXELS_HOSTS = new Set(["images.pexels.com"]);
+const PIXABAY_HOSTS = new Set(["cdn.pixabay.com", "pixabay.com"]);
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Pixabay asks to cache every search for 24 hours (per server instance; best effort on serverless). */
+const pixabayCache = new Map<string, { at: number; candidates: StockCandidate[] }>();
 const OPENVERSE_STOCK_SOURCES = "stocksnap,wordpress,nappy,rawpixel";
 
 export async function searchPexels(input: { query: string; layout: VisualResource["layout"]; key: string; fetchImpl?: FetchLike; signal?: AbortSignal; perPage?: number }): Promise<StockCandidate[]> {
@@ -41,6 +49,29 @@ export async function searchPexels(input: { query: string; layout: VisualResourc
     const imageUrl = text(input.layout === "wide" ? src.large2x || src.large : src.large || src.medium);
     return imageUrl ? [{ source: "pexels" as const, imageUrl, author: text(photo.photographer).slice(0, 60), pageUrl: text(photo.url) }] : [];
   });
+}
+
+export async function searchPixabay(input: { query: string; layout: VisualResource["layout"]; key: string; fetchImpl?: FetchLike; signal?: AbortSignal; perPage?: number; now?: number }): Promise<StockCandidate[]> {
+  const fetchImpl = input.fetchImpl ?? (fetch as unknown as FetchLike);
+  const perPage = Math.max(3, Math.min(200, input.perPage ?? 6));
+  const now = input.now ?? Date.now();
+  const cacheKey = `${input.query.toLowerCase()}|${input.layout}|${perPage}`;
+  const cached = pixabayCache.get(cacheKey);
+  if (cached && now - cached.at < DAY_MS) return cached.candidates;
+  const params = new URLSearchParams({ key: input.key, q: input.query.slice(0, 100), lang: "es", image_type: "photo", orientation: input.layout === "wide" ? "horizontal" : "all", safesearch: "true", per_page: String(perPage) });
+  const response = await fetchImpl(`https://pixabay.com/api/?${params}`, { signal: input.signal });
+  if (response.status === 400 || response.status === 401 || response.status === 403) throw new StockSearchError("La clave de Pixabay no es válida. Revísala en Vercel (PIXABAY_API_KEY).", 502);
+  if (response.status === 429) throw new StockSearchError("Pixabay alcanzó su límite por minuto. Vuelve a intentarlo en un momento.", 429);
+  if (!response.ok) throw new StockSearchError(`Pixabay no respondió bien (${response.status}).`, 502);
+  const hits = (record(await response.json()).hits as unknown[] | undefined) ?? [];
+  const candidates = hits.flatMap((raw) => {
+    const hit = record(raw);
+    const imageUrl = text(hit.largeImageURL || hit.webformatURL);
+    return imageUrl ? [{ source: "pixabay" as const, imageUrl, author: text(hit.user).slice(0, 60), pageUrl: text(hit.pageURL) }] : [];
+  });
+  pixabayCache.set(cacheKey, { at: now, candidates });
+  if (pixabayCache.size > 500) pixabayCache.delete(pixabayCache.keys().next().value!);
+  return candidates;
 }
 
 export async function searchOpenverse(input: { query: string; layout: VisualResource["layout"]; fetchImpl?: FetchLike; signal?: AbortSignal; pageSize?: number }): Promise<StockCandidate[]> {
@@ -68,7 +99,9 @@ export function allowedImageUrl(candidate: StockCandidate) {
   if (url.protocol !== "https:" || url.username || url.password || url.port) return false;
   const host = url.hostname.toLowerCase();
   if (host === "localhost" || host.endsWith(".local") || host.endsWith(".internal") || /^[\d.]+$/.test(host) || host.includes(":")) return false;
-  return candidate.source !== "pexels" || PEXELS_HOSTS.has(host);
+  if (candidate.source === "pexels") return PEXELS_HOSTS.has(host);
+  if (candidate.source === "pixabay") return PIXABAY_HOSTS.has(host);
+  return true;
 }
 
 export async function downloadCandidate(candidate: StockCandidate, input: { fetchImpl?: FetchLike; signal?: AbortSignal } = {}): Promise<Buffer> {

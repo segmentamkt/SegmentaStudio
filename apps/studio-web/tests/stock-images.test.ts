@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { allowedImageUrl, downloadCandidate, searchOpenverse, searchPexels, stockQueries, type StockCandidate } from "../lib/stock-image-providers";
+import { allowedImageUrl, downloadCandidate, searchOpenverse, searchPexels, searchPixabay, stockQueries, type StockCandidate } from "../lib/stock-image-providers";
 import { providerOfTitle } from "../lib/ai-visual-resources";
 
 function fakeFetch(responses: Array<{ status: number; body?: unknown; bytes?: Buffer; length?: number }>) {
@@ -36,6 +36,30 @@ test("Pexels: Spanish search with the free key, landscape photos for the big lay
   await assert.rejects(searchPexels({ query: "x", layout: "wide", key: "k", fetchImpl: fakeFetch([{ status: 429 }]).fetchImpl }), /límite por hora/);
 });
 
+test("Pixabay: Spanish photo search with the free key, cached 24 hours as its API asks", async () => {
+  const { calls, fetchImpl } = fakeFetch([{ status: 200, body: { hits: [
+    { largeImageURL: "https://pixabay.com/get/abc_1280.jpg", webformatURL: "https://pixabay.com/get/abc_640.jpg", user: "Lena", pageURL: "https://pixabay.com/photos/lechona-1/" },
+    { webformatURL: "https://cdn.pixabay.com/photo/x_640.jpg", user: "Sin grande", pageURL: "" },
+    { user: "Sin foto" },
+  ] } }]);
+  const found = await searchPixabay({ query: "lechona tolimense", layout: "wide", key: "pixabay-key", fetchImpl, now: 1_000 });
+  const url = new URL(calls[0].url);
+  assert.equal(url.origin + url.pathname, "https://pixabay.com/api/");
+  assert.equal(url.searchParams.get("key"), "pixabay-key");
+  assert.equal(url.searchParams.get("lang"), "es");
+  assert.equal(url.searchParams.get("image_type"), "photo");
+  assert.equal(url.searchParams.get("orientation"), "horizontal");
+  assert.equal(url.searchParams.get("safesearch"), "true");
+  assert.deepEqual(found.map((item) => [item.imageUrl, item.author]), [["https://pixabay.com/get/abc_1280.jpg", "Lena"], ["https://cdn.pixabay.com/photo/x_640.jpg", "Sin grande"]]);
+  const again = await searchPixabay({ query: "Lechona tolimense", layout: "wide", key: "pixabay-key", fetchImpl: fakeFetch([]).fetchImpl, now: 1_000 + 60 * 60 * 1000 });
+  assert.deepEqual(again, found, "the same search within 24 hours is served from the cache");
+  await assert.rejects(searchPixabay({ query: "otra", layout: "corner", key: "bad", fetchImpl: fakeFetch([{ status: 400 }]).fetchImpl }), /clave de Pixabay no es válida/);
+  await assert.rejects(searchPixabay({ query: "otra mas", layout: "corner", key: "k", fetchImpl: fakeFetch([{ status: 429 }]).fetchImpl }), /límite por minuto/);
+  const pixabay = (imageUrl: string): StockCandidate => ({ source: "pixabay", imageUrl, author: "", pageUrl: "" });
+  assert.ok(allowedImageUrl(pixabay("https://cdn.pixabay.com/photo/2026/a.jpg")) && allowedImageUrl(pixabay("https://pixabay.com/get/a.jpg")));
+  assert.ok(!allowedImageUrl(pixabay("https://other.example/a.jpg")), "Pixabay photos only from Pixabay's servers");
+});
+
 test("Openverse: no key, only public-domain photos usable commercially", async () => {
   const { calls, fetchImpl } = fakeFetch([{ status: 200, body: { results: [
     { url: "https://cdn.stocksnap.io/a.jpg", license: "cc0", creator: "Stock", foreign_landing_url: "https://stocksnap.io/a" },
@@ -68,4 +92,5 @@ test("search words and source labels", () => {
   assert.deepEqual(stockQueries("lechona"), ["lechona"]);
   assert.equal(providerOfTitle("Pexels · lechona · Foto de Ana Ruiz"), "pexels");
   assert.equal(providerOfTitle("Openverse · equipo"), "openverse");
+  assert.equal(providerOfTitle("Pixabay · lechona · Foto de Lena"), "pixabay");
 });

@@ -942,7 +942,7 @@ export function EditorStudio(props: {
     });
     const data = await response.json().catch(() => ({})) as { image?: VisualResourceImage; error?: string; missingKey?: string };
     if (!response.ok || !data.image) {
-      if (data.missingKey) setAiAvailable((current) => ({ pexels: current?.pexels ?? false, openverse: true, gemini: current?.gemini ?? false, openai: current?.openai ?? false, [provider]: false }));
+      if (data.missingKey) setAiAvailable((current) => ({ pexels: current?.pexels ?? false, pixabay: current?.pixabay ?? false, openverse: true, gemini: current?.gemini ?? false, openai: current?.openai ?? false, [provider]: false }));
       throw new Error(data.error || `${AI_PROVIDERS[provider].label} no pudo crear la imagen.`);
     }
     return data.image;
@@ -1019,7 +1019,7 @@ export function EditorStudio(props: {
     const keyOf = (image: VisualResourceImage) => image.kind === "upload" ? `${image.title}:${image.dataUrl.length}` : image.assetId;
     const shown = (stockShownRef.current[id] ??= new Set<string>());
     shown.add(keyOf(resource.image));
-    const unused = provider === "stock" ? (aiAlternatives[id] ?? []).find((image) => image.kind === "upload" && /^(Pexels|Openverse) · /.test(image.title) && !shown.has(keyOf(image))) : undefined;
+    const unused = provider === "stock" ? (aiAlternatives[id] ?? []).find((image) => image.kind === "upload" && /^(Pexels|Pixabay|Openverse) · /.test(image.title) && !shown.has(keyOf(image))) : undefined;
     if (unused) { shown.add(keyOf(unused)); chooseAiAlternative(segmentId, id, unused); return; }
     const controller = new AbortController();
     aiRunRef.current = controller;

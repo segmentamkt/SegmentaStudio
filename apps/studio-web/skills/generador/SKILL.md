@@ -6,7 +6,9 @@ description: Pone imágenes de apoyo en los momentos clave de lo que se dice en 
 # Imágenes de apoyo automáticas
 
 **Por defecto, gratis: fotos de banco** (`lib/stock-image-providers.ts`, ruta `/api/resources/stock`):
-- Pexels: búsqueda en español (`locale=es-ES`), horizontal o cuadrada según el encuadre. Clave gratis en `PEXELS_API_KEY` (sin tarjeta; ~200 búsquedas por hora). Licencia: uso comercial sin atribución obligatoria; el panel enlaza a Pexels como pide su API y el título guarda «Foto de…».
+- Pixabay: búsqueda en español (`lang=es`), solo fotos, `safesearch`. Clave gratis en `PIXABAY_API_KEY` (aparece en pixabay.com/api/docs al iniciar sesión; 100 búsquedas por minuto). Licencia de contenido de Pixabay: uso comercial sin atribución obligatoria. Su API pide descargar las fotos (no enlazarlas) y guardar cada búsqueda 24 horas (caché en memoria del servidor).
+- Pexels: búsqueda en español (`locale=es-ES`). Clave en `PEXELS_API_KEY`; desde 2026-11 Pexels no entrega claves nuevas, así que solo sirve una clave existente. Si están las dos, se busca primero en Pexels.
+- El panel enlaza a cada fuente como piden sus APIs y el título de la imagen guarda «Foto de…».
 - Respaldo sin clave: Openverse, solo CC0/dominio público y solo de sus colecciones de banco (StockSnap, WP Photos, Nappy, Rawpixel); funciona mejor con palabras en inglés. Sin cuenta: 20 búsquedas por minuto, 200 al día.
 - Pinterest y similares no: las imágenes son de terceros sin licencia y su extracción está prohibida.
 - Cada búsqueda trae hasta 3 fotos: la primera se usa y las otras quedan para «Otra foto» sin gastar búsquedas.

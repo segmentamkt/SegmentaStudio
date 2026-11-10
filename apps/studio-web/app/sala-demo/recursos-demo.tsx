@@ -23,7 +23,7 @@ export function RecursosDemo() {
       <div className="rounded-2xl border border-white/10 bg-[#0b0d13] p-4">
         <VisualResourcesPanel clips={[clip]} selectedClip={clip} enabled disabled={false} message="" onToggle={() => note("toggle")} onRecommend={() => note("biblioteca")}
           onAdd={() => note("añadir")} onReplace={() => note("reemplazar")} onChange={() => note("cambiar")} onSeek={() => note("ver")}
-          ai={{ available: { ...keys, pexels: keys.gemini, openverse: true }, prefs, running: false, progress: "", plannedCount: 3, alternatives: { [resource.id]: [library("work"), library("money")] },
+          ai={{ available: { ...keys, pexels: false, pixabay: keys.gemini, openverse: true }, prefs, running: false, progress: "", plannedCount: 3, alternatives: { [resource.id]: [library("work"), library("money")] },
             onPrefs: (next) => { setPrefs(next); note(`preferencias: ${JSON.stringify(next)}`); }, onGenerate: () => note("crear con IA"), onStop: () => note("detener"),
             onRegenerate: (_segment, _id, provider) => note(`otra versión con ${provider}`), onChooseAlternative: () => note("usar versión") }} />
       </div>

@@ -11,7 +11,7 @@ export async function GET() {
   if (!user) return unauthorized();
   return Response.json({ providers: {
     ...Object.fromEntries(Object.entries(AI_PROVIDERS).map(([id, provider]) => [id, Boolean(process.env[provider.envKey]?.trim())])),
-    pexels: Boolean(process.env.PEXELS_API_KEY?.trim()), openverse: true,
+    pexels: Boolean(process.env.PEXELS_API_KEY?.trim()), pixabay: Boolean(process.env.PIXABAY_API_KEY?.trim()), openverse: true,
   } });
 }
 

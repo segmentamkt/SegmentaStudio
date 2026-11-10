@@ -14,8 +14,8 @@ import { MAX_VISUAL_RESOURCES_PER_CLIP, MAX_VISUAL_RESOURCES_TOTAL, type VisualR
 
 export type AiImageProvider = "gemini" | "openai";
 /** Toda fuente de imagen: fotos de banco gratis (Pexels, Openverse) o IA (Gemini, ChatGPT). */
-export type ImageSource = AiImageProvider | "pexels" | "openverse";
-export const SOURCE_LABELS: Record<ImageSource, string> = { pexels: "Pexels", openverse: "Openverse", gemini: "Gemini", openai: "ChatGPT" };
+export type ImageSource = AiImageProvider | "pexels" | "pixabay" | "openverse";
+export const SOURCE_LABELS: Record<ImageSource, string> = { pexels: "Pexels", pixabay: "Pixabay", openverse: "Openverse", gemini: "Gemini", openai: "ChatGPT" };
 export type AiImageStyle = "3d" | "foto";
 export const AI_PROVIDERS: Record<AiImageProvider, { label: string; envKey: string; approxUsdPerImage: number }> = {
   gemini: { label: "Gemini", envKey: "GEMINI_API_KEY", approxUsdPerImage: .034 },
