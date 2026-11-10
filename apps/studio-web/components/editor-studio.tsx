@@ -11,6 +11,10 @@ import { loadSkillProfiles } from "../lib/studio-skills";
 import { preproductionSchema } from "../lib/preproduction-plan";
 import { planFromScript } from "../lib/editorial-director";
 import { defaultReviewOrder, keepsDefaultOrder, scriptOrderChange } from "../lib/upload-order";
+import { AI_PROVIDERS, phraseAt, planAiVisualMoments, type AiImageProvider, type AiImageStyle } from "../lib/ai-visual-resources";
+
+type AiResourcePrefs = { provider: AiImageProvider | "both"; style: AiImageStyle; automatic: boolean };
+const DEFAULT_AI_PREFS: AiResourcePrefs = { provider: "gemini", style: "3d", automatic: false };
 import { parseCaptionCues, retimeEditedCue, splitCueAt, type CaptionCue } from "../lib/caption-cues";
 // Only the pure planner: the drawing module uses Node APIs and stays on the server.
 import { planKineticCaptions } from "../lib/skills/subtitulos-cineticos/plan";
@@ -226,6 +230,31 @@ export function EditorStudio(props: {
   const [catalogSearch, setCatalogSearch] = useState("");
   const [resourceMessage, setResourceMessage] = useState("");
   const [orderNotice, setOrderNotice] = useState<{ applied: boolean; text: string } | null>(null);
+  const aiPrefsKey = `segmenta.ai-resources.v1:${props.portfolioId}`;
+  const [aiPrefs, setAiPrefsState] = useState<AiResourcePrefs>(() => {
+    try {
+      const saved = typeof window === "undefined" ? null : JSON.parse(window.localStorage.getItem(aiPrefsKey) || "null") as Partial<AiResourcePrefs> | null;
+      return {
+        provider: saved?.provider === "openai" || saved?.provider === "both" ? saved.provider : "gemini",
+        style: saved?.style === "foto" ? "foto" : "3d",
+        automatic: saved?.automatic === true,
+      };
+    } catch { return DEFAULT_AI_PREFS; }
+  });
+  const [aiAvailable, setAiAvailable] = useState<Record<AiImageProvider, boolean> | null>(null);
+  const [aiRunning, setAiRunning] = useState(false);
+  const [aiProgress, setAiProgress] = useState("");
+  const [aiAlternatives, setAiAlternatives] = useState<Record<string, VisualResourceImage[]>>({});
+  const aiRunRef = useRef<AbortController | null>(null);
+  // Which image providers have a key in Vercel (the answer never contains the key itself).
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/resources/generate", { cache: "no-store", signal: controller.signal })
+      .then((response) => response.ok ? response.json() as Promise<{ providers: Record<AiImageProvider, boolean> }> : null)
+      .then((data) => { if (data) setAiAvailable(data.providers); })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, []);
   const [draftStorageWarning, setDraftStorageWarning] = useState(false);
   const [objective, setObjective] = useState("Reel vertical profesional: gancho fuerte, ritmo claro y cierre con autoridad.");
   const [options, setOptions] = useState({ captions: false, deadAir: true, transitions: true, soundEffects: true, labels: true, broll: true });
@@ -885,6 +914,120 @@ export function EditorStudio(props: {
     changeResources(segmentId, clip.visualResources.map((item) => item.id === id ? { ...item, image } : item));
   };
 
+  // —— Imágenes creadas con IA: Gemini y ChatGPT reciben el mismo encargo para poder compararlas ——
+  const setAiPrefs = (next: AiResourcePrefs) => {
+    setAiPrefsState(next);
+    try { window.localStorage.setItem(aiPrefsKey, JSON.stringify(next)); } catch { /* Preferences are a convenience. */ }
+  };
+  const aiProviders = (choice = aiPrefs.provider): AiImageProvider[] => (choice === "both" ? ["gemini", "openai"] as AiImageProvider[] : [choice])
+    .filter((provider) => aiAvailable?.[provider] !== false);
+  const aiContext = (scriptDraft.trim() || String(selectedSession?.title || "")).replace(/\s+/g, " ").slice(0, 300);
+  const requestAiImage = async (provider: AiImageProvider, brief: { keyword: string; phrase: string; layout: VisualResource["layout"] }, signal?: AbortSignal) => {
+    const response = await fetch("/api/resources/generate", {
+      method: "POST", headers: { "Content-Type": "application/json" }, signal,
+      body: JSON.stringify({ provider, style: aiPrefs.style, layout: brief.layout, keyword: brief.keyword.slice(0, 60), phrase: brief.phrase.slice(0, 300), context: aiContext }),
+    });
+    const data = await response.json().catch(() => ({})) as { image?: VisualResourceImage; error?: string; missingKey?: string };
+    if (!response.ok || !data.image) {
+      if (data.missingKey) setAiAvailable((current) => ({ gemini: current?.gemini ?? false, openai: current?.openai ?? false, [provider]: false }));
+      throw new Error(data.error || `${AI_PROVIDERS[provider].label} no pudo crear la imagen.`);
+    }
+    return data.image;
+  };
+  /** Applies generated images even while the automatic edit runs (its own step); one undo point per action. */
+  const commitResourceClip = (segmentId: string, update: (clip: TimelineClip) => Pick<TimelineClip, "visualResources" | "resourcesReviewed">, checkpoint: boolean) => {
+    const current = timelineRef.current;
+    const clip = current.find((item) => item.segmentId === segmentId);
+    if (!clip) throw new Error("La toma ya no está en el montaje.");
+    const changes = update(clip);
+    const visualResources = normalizeVisualResources(changes.visualResources, { durationSeconds: clip.duration, trimStartSeconds: clip.trimStartSeconds, trimEndSeconds: clip.trimEndSeconds });
+    const next = current.map((item) => item.segmentId === segmentId ? { ...item, ...changes, visualResources } : item);
+    validateVisualResourceBudget(next.filter((item) => item.included).flatMap((item) => item.visualResources));
+    if (checkpoint) { undoRef.current = [...undoRef.current.slice(-29), current]; redoRef.current = []; }
+    timelineRef.current = next; setTimeline(next); setHistoryVersion((value) => value + 1);
+    setJob(null); setDraftPending(true);
+    saveEditorDraft(timelineStorageKey, JSON.stringify(next)); saveEditorDraft(draftPendingKey, "1");
+  };
+
+  /** One image per key moment (the words the caption skill highlights), created by the chosen provider(s). */
+  const generateAiResources = async (signal?: AbortSignal): Promise<number> => {
+    if (aiRunRef.current) return 0;
+    const providers = aiProviders();
+    if (!providers.length) { setResourceMessage("Falta configurar la clave de Gemini o de ChatGPT en Vercel para crear imágenes."); return 0; }
+    const moments = planAiVisualMoments(timelineRef.current);
+    if (!moments.length) { setResourceMessage("No encontré momentos nuevos con palabras clave. Genera primero los subtítulos con tiempos de voz o libera espacio entre imágenes."); return 0; }
+    const controller = new AbortController();
+    aiRunRef.current = controller;
+    const abort = () => controller.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    setAiRunning(true); setResourceMessage("");
+    const queue = [...moments];
+    const problems = new Set<string>();
+    let created = 0, failed = 0, firstCommit = true;
+    const worker = async () => {
+      while (queue.length && !controller.signal.aborted) {
+        const moment = queue.shift()!;
+        setAiProgress(`Creando ${created + failed + 1} de ${moments.length} con ${providers.map((provider) => AI_PROVIDERS[provider].label).join(" y ")}: «${moment.keyword}»`);
+        const results = await Promise.allSettled(providers.map((provider) => requestAiImage(provider, moment, controller.signal)));
+        const images = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+        results.forEach((result) => { if (result.status === "rejected" && !controller.signal.aborted) problems.add(result.reason instanceof Error ? result.reason.message : String(result.reason)); });
+        if (!images.length || controller.signal.aborted) { failed++; continue; }
+        const id = `ai:${moment.segmentId.replace(/[^a-zA-Z0-9_.:-]/g, "-").slice(0, 60)}:${Math.round(moment.startSeconds * 1000)}`;
+        try {
+          commitResourceClip(moment.segmentId, (clip) => ({
+            visualResources: [...clip.visualResources.filter((item) => item.id !== id), { id, keyword: moment.keyword.slice(0, 60), startSeconds: moment.startSeconds, endSeconds: moment.endSeconds, layout: moment.layout, image: images[0] }]
+              .sort((a, b) => a.startSeconds - b.startSeconds),
+            resourcesReviewed: true,
+          }), firstCommit);
+          firstCommit = false; created++;
+          if (images.length > 1) setAiAlternatives((current) => ({ ...current, [id]: images.slice(1) }));
+        } catch (reason) { failed++; problems.add(reason instanceof Error ? reason.message : "La imagen no cabe en el montaje."); }
+      }
+    };
+    try { await Promise.all([worker(), worker()]); }
+    finally {
+      signal?.removeEventListener("abort", abort);
+      aiRunRef.current = null; setAiRunning(false); setAiProgress("");
+      if (created) setOptions((current) => ({ ...current, broll: true }));
+      setResourceMessage(controller.signal.aborted ? `Se detuvo la creación. Se conservan ${created} imágenes.`
+        : `${created} ${created === 1 ? "imagen creada" : "imágenes creadas"} con IA en los momentos clave${failed ? ` · ${failed} sin imagen` : ""}.${problems.size ? ` ${[...problems].slice(0, 2).join(" ")}` : ""}`);
+    }
+    return created;
+  };
+
+  const regenerateAiResource = async (segmentId: string, id: string, provider: AiImageProvider) => {
+    const clip = timelineRef.current.find((item) => item.segmentId === segmentId);
+    const resource = clip?.visualResources.find((item) => item.id === id);
+    if (!clip || !resource || aiRunRef.current || busy || automaticRunning) return;
+    const controller = new AbortController();
+    aiRunRef.current = controller;
+    setAiRunning(true); setResourceMessage(""); setAiProgress(`Creando otra versión de «${resource.keyword}» con ${AI_PROVIDERS[provider].label}…`);
+    try {
+      const image = await requestAiImage(provider, { keyword: resource.keyword, phrase: phraseAt(clip.captionCues, resource.startSeconds + .05) || resource.keyword, layout: resource.layout }, controller.signal);
+      let previous: VisualResourceImage | null = null;
+      commitResourceClip(segmentId, (current) => ({
+        visualResources: current.visualResources.map((item) => { if (item.id !== id) return item; previous = item.image; return { ...item, image }; }),
+        resourcesReviewed: true,
+      }), true);
+      if (previous) { const kept: VisualResourceImage = previous; setAiAlternatives((current) => ({ ...current, [id]: [kept, ...(current[id] ?? [])].slice(0, 4) })); }
+      setResourceMessage(`Nueva versión de «${resource.keyword}» con ${AI_PROVIDERS[provider].label}. La anterior queda abajo para volver a ella.`);
+    } catch (reason) {
+      setResourceMessage(reason instanceof Error ? reason.message : "No se pudo crear la otra versión.");
+    } finally { aiRunRef.current = null; setAiRunning(false); setAiProgress(""); }
+  };
+
+  const chooseAiAlternative = (segmentId: string, id: string, image: VisualResourceImage) => {
+    if (aiRunRef.current || busy || automaticRunning) return;
+    try {
+      let previous: VisualResourceImage | null = null;
+      commitResourceClip(segmentId, (current) => ({
+        visualResources: current.visualResources.map((item) => { if (item.id !== id) return item; previous = item.image; return { ...item, image }; }),
+        resourcesReviewed: true,
+      }), true);
+      setAiAlternatives((current) => ({ ...current, [id]: [...(previous ? [previous] : []), ...(current[id] ?? []).filter((item) => item !== image)].slice(0, 4) }));
+    } catch (reason) { setResourceMessage(reason instanceof Error ? reason.message : "No se pudo cambiar la imagen."); }
+  };
+
   const seekVisualResource = (segmentId: string, time: number) => {
     videoRef.current?.pause();
     captionPreviewSeekRef.current = { segmentId, seconds: time };
@@ -1015,7 +1158,11 @@ export function EditorStudio(props: {
       await runAutomaticEdit({
         signal: controller.signal,
         transcribe: () => transcribeMissingTakes("missing", controller.signal),
-        addResources: automaticOptions.broll ? () => applyVisualRecommendations(true) : undefined,
+        // With «IA en la edición automática», Gemini/ChatGPT create the images; the library is the fallback.
+        addResources: automaticOptions.broll ? async () => {
+          if (aiPrefs.automatic && aiProviders().length && await generateAiResources(controller.signal) > 0) return;
+          applyVisualRecommendations(true);
+        } : undefined,
         captureDraft: () => timelineRef.current,
         prepare: (draft) => plan(draft, automaticOptions, controller.signal, true),
         render: (preparedJob) => render(preparedJob, controller.signal),
@@ -1149,7 +1296,10 @@ export function EditorStudio(props: {
       </nav>
 
       <aside className="order-3 max-h-[430px] overflow-y-auto border-t border-white/8 bg-[#0c0f17] p-4 xl:order-none xl:max-h-none xl:border-r xl:border-t-0"><fieldset disabled={Boolean(busy || automaticRunning) && tool !== "text"} className="contents">
-        {tool === "resources" && <VisualResourcesPanel key={sessionId} clips={timeline} selectedClip={selectedClip} enabled={options.broll} disabled={Boolean(busy || automaticRunning)} message={resourceMessage} onToggle={() => changeOptions({ broll: !options.broll })} onRecommend={() => applyVisualRecommendations()} onAdd={addVisualResource} onReplace={replaceVisualResource} onChange={changeResources} onSeek={seekVisualResource} />}
+        {tool === "resources" && <VisualResourcesPanel key={sessionId} clips={timeline} selectedClip={selectedClip} enabled={options.broll} disabled={Boolean(busy || automaticRunning)} message={resourceMessage} onToggle={() => changeOptions({ broll: !options.broll })} onRecommend={() => applyVisualRecommendations()} onAdd={addVisualResource} onReplace={replaceVisualResource} onChange={changeResources} onSeek={seekVisualResource}
+          ai={{ available: aiAvailable, prefs: aiPrefs, running: aiRunning, progress: aiProgress, plannedCount: planAiVisualMoments(timeline).length, alternatives: aiAlternatives,
+            onPrefs: setAiPrefs, onGenerate: () => void generateAiResources(), onStop: () => aiRunRef.current?.abort(),
+            onRegenerate: (segmentId, id, provider) => void regenerateAiResource(segmentId, id, provider), onChooseAlternative: chooseAiAlternative }} />}
         {tool === "media" && <><PanelTitle icon={Layers3} title="Tus escenas" text={`${approvedTakes.length} clips listos`} /><button onClick={() => props.onAddToCurrent(sessionId)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-violet-400/25 bg-violet-400/5 px-3 py-3 text-xs text-violet-200"><Plus size={15} />Añadir a este proyecto</button><div className="mt-4 grid grid-cols-2 gap-2">{approvedTakes.map((take, index) => <button key={take.id} onClick={() => { setSelectedTakeId(timeline.find((clip) => clip.takeId === take.id)?.segmentId || ""); setPreviewMode("original"); setOverlayEditor(null); }} className={`overflow-hidden rounded-xl border text-left ${selectedTake?.id === take.id ? "border-violet-400" : "border-white/8"}`}><div className="relative aspect-[9/12] bg-black"><video src={`/api/media/${take.id}`} muted preload="metadata" className="h-full w-full object-cover" /><span className="absolute bottom-1 right-1 rounded bg-black/75 px-1.5 py-0.5 text-[8px]">{seconds(take.durationMs)}</span></div><p className="truncate px-2 py-2 text-[9px] text-zinc-400">{approvedScenes[index]?.title || `Clip ${index + 1}`}</p></button>)}</div></>}
         {tool === "video" && <><PanelTitle icon={SlidersHorizontal} title="Video y color" text={selectedClip ? `Ajustes de ${selectedClip.title}` : "Selecciona una toma"} />{selectedClip && <div className="mt-5 space-y-5"><p className="text-[10px] leading-4 text-zinc-500">Cada control se aplica a esta toma al renderizar. La vista previa del color es aproximada.</p><Range label="Velocidad" value={selectedClip.playbackSpeed} min={.5} max={2} step={.05} suffix="×" onChange={(value) => updateClip(selectedClip.segmentId, { playbackSpeed: value })} /><Range label="Brillo" value={Math.round(selectedClip.brightness * 100)} min={-20} max={20} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { brightness: value / 100 })} /><Range label="Contraste" value={Math.round(selectedClip.contrast * 100)} min={80} max={130} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { contrast: value / 100 })} /><Range label="Saturación" value={Math.round(selectedClip.saturation * 100)} min={50} max={150} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { saturation: value / 100 })} /><button onClick={() => updateClip(selectedClip.segmentId, { playbackSpeed: 1, brightness: 0, contrast: 1, saturation: 1 })} className="w-full rounded-xl border border-white/10 px-3 py-2 text-xs text-zinc-300">Restablecer ajustes</button></div>}</>}
         {tool === "styles" && <>
