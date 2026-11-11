@@ -23,6 +23,10 @@ type Props = {
   onSplit: (id: string, seconds: number) => void;
   onDuplicate: (id: string) => void;
   onToggle: (id: string) => void;
+  /** Canción que suena bajo la voz en todo el video (null = solo la voz). */
+  music?: { name: string; volume: number } | null;
+  /** Abre el panel Audio para elegir o ajustar la canción. */
+  onOpenMusic?: () => void;
 };
 
 type Drag =
@@ -40,7 +44,7 @@ const TEXT_H = 28;
 const AUDIO_H = 28;
 const HEADER_W = 52;
 
-export function EditorTimeline({ items, selectedId, playhead, busy, onSeek, onTrim, onReorder, onSplit, onDuplicate, onToggle }: Props) {
+export function EditorTimeline({ items, selectedId, playhead, busy, onSeek, onTrim, onReorder, onSplit, onDuplicate, onToggle, music = null, onOpenMusic }: Props) {
   const [pxPerSecond, setPxPerSecond] = useState(44);
   // El arrastre se pinta desde el estado. Los manejadores de eventos leen la referencia, que siempre tiene
   // el valor más reciente aunque React todavía no haya repintado.
@@ -280,9 +284,17 @@ export function EditorTimeline({ items, selectedId, playhead, busy, onSeek, onTr
               })}
             </div>
 
-            {/* Carril de audio: la voz original de cada toma */}
-            <div className="relative flex items-center border-t border-white/10 px-2 text-[9px] text-zinc-500" style={{ height: AUDIO_H }}>
-              {shown.some((view) => view.included) ? "Voz original de cada toma · volumen en el panel Audio" : "Sin tomas incluidas"}
+            {/* Carril de audio: la canción ocupa todo el video; la voz de cada toma va en su bloque */}
+            <div className="relative flex items-center border-t border-white/10 px-1 text-[9px] text-zinc-500" style={{ height: AUDIO_H }}>
+              {music ? (
+                <button type="button" onClick={onOpenMusic} disabled={busy} aria-label={`Música: ${music.name}. Abrir el panel Audio`} className="absolute inset-y-0.5 left-0 flex items-center gap-1 truncate rounded-md bg-emerald-400/80 px-2 text-left text-[9px] font-semibold text-black disabled:opacity-60" style={{ width: Math.max(total, 120) }}>
+                  <Music2 size={11} className="shrink-0" /><span className="truncate">{music.name} · {Math.round(music.volume * 100)} %</span>
+                </button>
+              ) : (
+                <button type="button" onClick={onOpenMusic} disabled={busy || !onOpenMusic} className="flex items-center gap-1 rounded-md border border-dashed border-emerald-300/40 px-2 py-1 text-[9px] font-semibold text-emerald-200 disabled:opacity-40">
+                  <Music2 size={11} />Agregar música
+                </button>
+              )}
             </div>
 
             {guideLeft !== null && <div className="pointer-events-none absolute z-20 w-1 rounded bg-emerald-300" style={{ left: guideLeft, top: RULER_H, bottom: 0 }} />}

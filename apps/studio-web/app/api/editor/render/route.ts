@@ -62,6 +62,12 @@ async function executeRender(request: Request, onProgress: (progress: number, st
     if (signed.error) throw signed.error;
     const signedUrls = (signed.data || []).map((item) => item.signedUrl).filter((url): url is string => Boolean(url));
     if (signedUrls.length !== objectKeys.length) throw new Error("No pudimos abrir todas las tomas del proyecto.");
+    let musicUrl: string | undefined;
+    if (contract.music) {
+      const song = await supabase.storage.from("kiko-videos").createSignedUrl(contract.music.object_key, 3600);
+      if (song.error || !song.data?.signedUrl) throw new Error("No pudimos abrir la canción elegida. Vuelve a subirla en el panel Audio.");
+      musicUrl = song.data.signedUrl;
+    }
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) return unauthorized();
     const update = async (progress: number, stage: string) => {
@@ -78,6 +84,7 @@ async function executeRender(request: Request, onProgress: (progress: number, st
     const evidence = await renderSequentialCloudEdit({
       contract,
       signedUrls,
+      musicUrl,
       outputObjectKey,
       accessToken: session.access_token,
       projectUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,

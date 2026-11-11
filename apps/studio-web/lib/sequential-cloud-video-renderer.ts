@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -11,6 +11,7 @@ import { renderTextOverlay } from "./video-text-overlay";
 import { renderVisualResourceImage } from "./visual-resource-image";
 import { VISUAL_RESOURCE_LAYOUTS, type VisualResource } from "./visual-resources";
 import { mapCaptionCues, type CaptionCue } from "./caption-cues";
+import { buildMusicMixArgs, type MusicTrack } from "./music-bed";
 import { MAX_RENDER_PREVIEW_BYTES, type RenderPreview } from "./render-preview";
 import { measureVoiceActivity, planCuts, snapWordsToSilences, type CutPlan } from "./skills/cortes-pausas";
 import { buildKineticLayer, kineticInputArgs, kineticOverlayFilter, planKineticCaptions, type KineticLayer, type KineticZone } from "./skills/subtitulos-cineticos";
@@ -41,6 +42,7 @@ type EditContract = {
   dead_air: { remove: boolean; threshold_ms: number; noise_db?: number; mode?: "natural" | "compacto" };
   effects: { transitions: boolean; sound_effects: boolean; labels: boolean; images_or_broll?: boolean };
   quality_gates?: { effects?: boolean; timed_captions?: boolean; images?: boolean };
+  music?: MusicTrack | null;
 };
 /** `silences` are the measured silent intervals in source seconds (used by the cut skill). */
 type Analysis = { duration: number; ranges: Range[]; removed: number; hasAudio: boolean; silences?: Range[] };
@@ -48,6 +50,8 @@ type Progress = (progress: number, stage: string) => Promise<void>;
 type RenderInput = {
   contract: EditContract;
   signedUrls: string[];
+  /** Enlace firmado de la canción (solo cuando el contrato trae música). */
+  musicUrl?: string;
   outputObjectKey: string;
   accessToken: string;
   projectUrl: string;
@@ -565,7 +569,15 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
     const list = join(directory, "concat.txt");
     await writeFile(list, clips.map((path) => `file '${path.replaceAll("'", "'\\''")}'`).join("\n"));
     const output = join(directory, "final.mp4");
-    await ffmpegFile(command, ["-y", "-hide_banner", "-nostdin", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", "-movflags", "+faststart", output], [], deadline);
+    const assembled = join(directory, "assembled.mp4");
+    await ffmpegFile(command, ["-y", "-hide_banner", "-nostdin", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", "-movflags", "+faststart", assembled], [], deadline);
+    const music = input.contract.music && input.musicUrl ? input.contract.music : null;
+    if (music && input.musicUrl) {
+      await input.onProgress(80, "Mezclando la música bajo la voz");
+      await ffmpegFile(command, buildMusicMixArgs({ video: assembled, musicUrl: input.musicUrl, output, videoSeconds: totalDuration, music }), [], deadline);
+    } else {
+      await rename(assembled, output);
+    }
     const bytes = await readFile(output);
     if (bytes.length > MAX_RENDER_BYTES) throw new Error("El MP4 supera el límite de 48 MB. Divide el proyecto.");
     await input.onProgress(82, "Subiendo el MP4 en partes seguras");
@@ -587,6 +599,8 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
       // Delivery loudness per take: what was measured and the gain applied to reach the target.
       audio_loudness: { target_lufs: LOUDNESS_TARGET_LUFS, clips: loudness },
       silent_source_clips: analyses.filter((item) => !item.hasAudio).length,
+      // Pista de música mezclada (null cuando el video va solo con la voz).
+      music: music ? { name: music.name, volume: music.volume, ducking: music.ducking, fade_out_seconds: music.fade_out_seconds } : null,
       style_applied: true, style_id: (input.contract.style_snapshot as { id?: string }).id || null,
       subtitle_position: input.contract.style_snapshot.subtitle.position || "bottom",
       zoom_percent: Math.max(0, Math.min(10, Number(input.contract.style_snapshot.execution?.zoomPercent || 0))),

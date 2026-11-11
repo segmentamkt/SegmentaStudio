@@ -183,6 +183,12 @@ export async function DELETE(request: Request) {
     const owned = await supabase.from("kiko_takes").select("object_key").eq("owner_id", user.userId).eq("session_id", sessionId);
     if (owned.error) throw owned.error;
     const keys = (owned.data || []).map((item) => item.object_key);
+    // Canciones subidas para la pista de música de esta producción.
+    if (sessionId) {
+      const songs = await supabase.storage.from("kiko-videos").list(`${user.userId}/${sessionId}/music`, { limit: 100 });
+      if (songs.error) throw songs.error;
+      keys.push(...(songs.data || []).filter((item) => item.id).map((item) => `${user.userId}/${sessionId}/music/${item.name}`));
+    }
     if (keys.length) {
       const removed = await supabase.storage.from("kiko-videos").remove(keys);
       if (removed.error) throw removed.error;

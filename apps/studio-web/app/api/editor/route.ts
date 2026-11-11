@@ -8,6 +8,7 @@ import { MAX_WORDS_PER_CUE, sanitizeCueWords, type CaptionCue } from "../../../l
 import { MediaReviewError, requireCurrentMediaReview } from "../../../lib/media-review";
 import { readMediaReview } from "../../../lib/media-review-server";
 import { normalizeVisualResources, validateVisualResourceBudget, type VisualResource } from "../../../lib/visual-resources";
+import { normalizeMusicTrack, type MusicTrack } from "../../../lib/music-bed";
 
 type EditOptions = {
   captions?: boolean;
@@ -126,6 +127,9 @@ export async function POST(request: Request) {
     const timeline = requestedTimeline === null ? null : (requestedTimeline as TimelineItem[]).filter((item) => item.included !== false);
     const byTakeId = new Map(source.map((item) => [item.take!.id, item]));
     if (timeline?.some((item) => !byTakeId.has(item.takeId))) return Response.json({ error: "La línea de tiempo contiene una toma no aprobada." }, { status: 400 });
+    let music: MusicTrack | null;
+    try { music = normalizeMusicTrack(payload.music, user.userId, sessionId); }
+    catch (reason) { return Response.json({ error: reason instanceof Error ? reason.message : "La música no es válida." }, { status: 400 }); }
     const ordered = timeline ? timeline.map((item) => ({ ...byTakeId.get(item.takeId)!, edit: item })) : source.map((item) => ({ ...item, edit: null as TimelineItem | null }));
     if (!ordered.length) return Response.json({ error: "Aprueba al menos una toma antes de planificar la edición." }, { status: 400 });
     if (ordered.length > 12) return Response.json({ error: "Este render cloud admite hasta 12 tomas aprobadas por edición." }, { status: 400 });
@@ -236,8 +240,9 @@ export async function POST(request: Request) {
         sound_effects: normalizedOptions.soundEffects,
         labels: normalizedOptions.labels,
         images_or_broll: normalizedOptions.broll,
-        music: false,
+        music: Boolean(music),
       },
+      music,
       quality_gates: { portrait: true, audio: true, captions: normalizedOptions.captions, timed_captions: normalizedOptions.captions, images: normalizedOptions.broll && visualResources.some((resources) => resources.length > 0), effects: normalizedOptions.transitions || normalizedOptions.labels },
       editorial_plan: planFromScript(String(session.data.script), ordered.map(({ scene, take, edit }) => ({ id: take.id, title: String(scene.title || ""), transcript: String(edit?.transcript ?? scene.script ?? "") }))),
     };

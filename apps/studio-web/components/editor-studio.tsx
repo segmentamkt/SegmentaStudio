@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Captions, Check, ChevronLeft, Download, Film, ImageIcon, Layers3,
-  LoaderCircle, Music2, Pause, Play, Plus, Settings2, Sparkles,
+  LoaderCircle, Pause, Play, Plus, Settings2, Sparkles,
   Type, UploadCloud, Volume2, WandSparkles, Zap, SlidersHorizontal, ListOrdered, X, Undo2, Redo2,
 } from "lucide-react";
 import { EDITOR_STYLES, type EditorStyleId } from "../lib/editor-presets";
@@ -32,6 +32,8 @@ import { parseRenderPreview, type RenderPreview } from "../lib/render-preview";
 import { EditingProgress } from "./editing-progress";
 import { SalaEdicion, type SalaClip } from "./sala/sala-edicion";
 import { EditorTimeline } from "./editor-timeline";
+import { MusicPanel } from "./music-panel";
+import type { MusicTrack } from "../lib/music-bed";
 import { decodeSpeechWav, SPEECH_SAMPLE_RATE } from "../lib/transcription-core";
 import { VisualResourcesPanel } from "./visual-resources-panel";
 import { VISUAL_RESOURCE_CATALOG, VISUAL_RESOURCE_LAYOUTS, normalizeVisualResources, recommendVisualResources, resourceImageSrc, validateVisualResourceBudget, type VisualResource, type VisualResourceImage } from "../lib/visual-resources";
@@ -164,6 +166,21 @@ function seconds(milliseconds: unknown) {
   return `${Math.floor(value / 60)}:${String(Math.floor(value % 60)).padStart(2, "0")}`;
 }
 
+/** Canción guardada en el borrador o en el último plan; el servidor la vuelve a validar al exportar. */
+function restoredMusic(value: unknown): MusicTrack | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Row;
+  if (typeof raw.object_key !== "string" || !raw.object_key.includes("/music/")) return null;
+  return {
+    object_key: raw.object_key,
+    name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim().slice(0, 120) : "Canción",
+    volume: draftNumber(raw.volume, .2, 0, 1),
+    ducking: raw.ducking !== false,
+    fade_out_seconds: draftNumber(raw.fade_out_seconds, 2, 0, 6),
+    start_seconds: draftNumber(raw.start_seconds, 0, 0, 600),
+  };
+}
+
 function draftNumber(value: unknown, fallback: number, min: number, max: number) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;
@@ -270,6 +287,7 @@ export function EditorStudio(props: {
   const [options, setOptions] = useState({ captions: false, deadAir: true, transitions: true, soundEffects: true, labels: true, broll: true });
   const initialStyle = EDITOR_STYLES[0];
   const [settings, setSettings] = useState({ subtitleSize: initialStyle.subtitle.size, subtitlePosition: initialStyle.subtitle.position, silenceThresholdMs: initialStyle.execution.silenceThresholdMs, silenceNoiseDb: -30, noiseReduction: "off" as "off" | "light" | "medium", transition: initialStyle.transition, soundEffectVolume: initialStyle.execution.soundEffectVolume, soundPreset: "auto" as "auto" | "none" | "soft" | "kinetic" | "cinematic" | "pop" });
+  const [music, setMusic] = useState<MusicTrack | null>(null);
   const [localJob, setJob] = useState<Row | null | undefined>(undefined);
   const [selectedResultId, setSelectedResultId] = useState(props.initialResultId || "");
   useEffect(() => { setSelectedResultId(props.initialResultId || ""); }, [props.initialResultId]);
@@ -415,6 +433,7 @@ export function EditorStudio(props: {
     catch { /* Restore the saved render settings if this local draft is corrupt. */ }
     const contract = latestJob?.contract;
     const source = saved || contract;
+    setMusic(restoredMusic(saved ? saved.music : contract?.music));
     if (source) {
       const nextStyle = String(source.style || "");
       if (EDITOR_STYLES.some((item) => item.id === nextStyle)) setStyle(nextStyle as EditorStyleId);
@@ -451,9 +470,9 @@ export function EditorStudio(props: {
 
   useEffect(() => {
     if (preferencesReadyKey === preferencesStorageKey) {
-      saveEditorDraft(preferencesStorageKey, JSON.stringify({ style, objective, options, settings, resourceFeatureVersion: 1 }));
+      saveEditorDraft(preferencesStorageKey, JSON.stringify({ style, objective, options, settings, music, resourceFeatureVersion: 1 }));
     }
-  }, [preferencesReadyKey, preferencesStorageKey, style, objective, options, settings]);
+  }, [preferencesReadyKey, preferencesStorageKey, style, objective, options, settings, music]);
 
   useEffect(() => {
     if (timelineReadyKey === timelineStorageKey) setDraftStorageWarning(!saveEditorDraft(timelineStorageKey, JSON.stringify(timeline)));
@@ -1141,7 +1160,7 @@ export function EditorStudio(props: {
         ? { ...profile, enabled: effectiveSkills[profile.id] ?? preproduction.skills.includes(profile.id) }
         : profile).map((profile) => profile.id === "generador" ? { ...profile, enabled: planOptions.broll } : profile).map((profile) => automaticCaptions && profile.id === "subtitulos"
           ? { ...profile, enabled: true, settings: { ...profile.settings, enabled: true } } : profile);
-      const result = await request<{ job: Row }>("/api/editor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, style, objective, options: planOptions, settings, timeline: plannedTimeline.filter((clip) => clip.included), skillProfiles }), signal });
+      const result = await request<{ job: Row }>("/api/editor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, style, objective, options: planOptions, settings, timeline: plannedTimeline.filter((clip) => clip.included), skillProfiles, music }), signal });
       signal?.throwIfAborted();
       if (plannedTimeline !== timelineRef.current) {
         undoRef.current = [...undoRef.current.slice(-29), timelineRef.current];
@@ -1379,7 +1398,7 @@ export function EditorStudio(props: {
           </div>
         </>}
         {tool === "effects" && <><PanelTitle icon={Zap} title="Efectos" text="Movimiento sin complicaciones" /><div className="mt-4 space-y-3"><Toggle enabled={options.deadAir} label="Cortar silencios" detail="Elimina pausas largas" onChange={() => changeOptions({ deadAir: !options.deadAir })} />{options.deadAir && <Range label="Pausa máxima" value={settings.silenceThresholdMs} min={350} max={1500} step={50} suffix=" ms" onChange={(value) => changeSettings({ silenceThresholdMs: value })} />}{options.deadAir && <Select label="Sensibilidad al ruido" value={String(settings.silenceNoiseDb)} onChange={(value) => changeSettings({ silenceNoiseDb: Number(value) })} options={[["-35","Conservadora"],["-30","Normal"],["-25","Alta · para ruido de fondo"]]} />}<Toggle enabled={options.transitions} label="Transiciones" detail="Entre escenas" onChange={() => changeOptions({ transitions: !options.transitions })} />{options.transitions && <Select label="Tipo" value={settings.transition} onChange={(value) => changeSettings({ transition: value as typeof settings.transition })} options={[['cut','Corte'],['fade','Fundido'],['dissolve','Fundido a negro']]} />}<button type="button" onClick={() => showTool("resources")} className="w-full rounded-xl border border-cyan-300/20 bg-cyan-300/5 p-3 text-left"><span className="flex items-center gap-2 text-xs text-cyan-100"><ImageIcon size={14} />Imágenes por palabras</span><small className="mt-1 block text-[10px] text-zinc-400">Detectar, añadir y ajustar apoyos visuales →</small></button></div></>}
-        {tool === "audio" && <><PanelTitle icon={Volume2} title="Audio" text="Voz clara y golpes precisos" /><div className="mt-4 space-y-4">{selectedClip && <><Range label={`Volumen de ${selectedClip.title}`} value={Math.round(selectedClip.audioVolume * 100)} min={0} max={200} step={5} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { audioVolume: value / 100 })} /><button onClick={() => updateClip(selectedClip.segmentId, { audioVolume: selectedClip.audioVolume === 0 ? 1 : 0 })} className="w-full rounded-xl border border-white/10 px-3 py-2 text-xs text-zinc-300">{selectedClip.audioVolume === 0 ? "Activar voz" : "Silenciar toma"}</button></>}<Select label="Reducción de ruido de voz" value={settings.noiseReduction} onChange={(value) => changeSettings({ noiseReduction: value as typeof settings.noiseReduction })} options={[["off","Apagada"],["light","Suave"],["medium","Media"]]} /><Toggle enabled={options.soundEffects} label="Efectos sonoros" detail="En cambios importantes" onChange={() => changeOptions({ soundEffects: !options.soundEffects })} />{options.soundEffects && <Range label="Intensidad" value={Math.round(settings.soundEffectVolume * 100)} min={0} max={100} suffix="%" onChange={(value) => changeSettings({ soundEffectVolume: value / 100 })} />}{options.soundEffects && <Select label="Sonido de los cortes" value={settings.soundPreset} onChange={(value) => changeSettings({ soundPreset: value as typeof settings.soundPreset })} options={[["auto","Según el estilo"],["soft","Suave"],["kinetic","Golpe cinético"],["cinematic","Cinematográfico"],["pop","Marca pop"],["none","Sin sonido"]]} />}<div className="rounded-xl border border-dashed border-white/8 p-3 opacity-60"><p className="flex items-center gap-2 text-xs"><Music2 size={14} />Música</p><small className="mt-1 block text-[9px] text-zinc-600">Pendiente de pistas con licencia.</small></div></div></>}
+        {tool === "audio" && <><PanelTitle icon={Volume2} title="Audio" text="Voz clara y golpes precisos" /><div className="mt-4 space-y-4">{selectedClip && <><Range label={`Volumen de ${selectedClip.title}`} value={Math.round(selectedClip.audioVolume * 100)} min={0} max={200} step={5} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { audioVolume: value / 100 })} /><button onClick={() => updateClip(selectedClip.segmentId, { audioVolume: selectedClip.audioVolume === 0 ? 1 : 0 })} className="w-full rounded-xl border border-white/10 px-3 py-2 text-xs text-zinc-300">{selectedClip.audioVolume === 0 ? "Activar voz" : "Silenciar toma"}</button></>}<Select label="Reducción de ruido de voz" value={settings.noiseReduction} onChange={(value) => changeSettings({ noiseReduction: value as typeof settings.noiseReduction })} options={[["off","Apagada"],["light","Suave"],["medium","Media"]]} /><Toggle enabled={options.soundEffects} label="Efectos sonoros" detail="En cambios importantes" onChange={() => changeOptions({ soundEffects: !options.soundEffects })} />{options.soundEffects && <Range label="Intensidad" value={Math.round(settings.soundEffectVolume * 100)} min={0} max={100} suffix="%" onChange={(value) => changeSettings({ soundEffectVolume: value / 100 })} />}{options.soundEffects && <Select label="Sonido de los cortes" value={settings.soundPreset} onChange={(value) => changeSettings({ soundPreset: value as typeof settings.soundPreset })} options={[["auto","Según el estilo"],["soft","Suave"],["kinetic","Golpe cinético"],["cinematic","Cinematográfico"],["pop","Marca pop"],["none","Sin sonido"]]} />}<MusicPanel sessionId={sessionId} music={music} busy={Boolean(busy || automaticRunning)} onChange={setMusic} /></div></>}
         {tool === "catalog" && <><PanelTitle icon={Layers3} title="Mapa de herramientas" text="Guía completa · 15 categorías" /><p className="mt-3 text-[10px] leading-4 text-zinc-400">Disponible: la función descrita modifica el MP4. Parcial: existe una versión limitada. En desarrollo: aún no está conectada al render.</p><input type="search" value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} placeholder="Buscar herramienta…" className="mt-4 w-full rounded-xl border border-white/10 bg-[#151822] p-2.5 text-xs text-white outline-none" /><div className="mt-4 space-y-2">{EDITOR_TOOL_CATALOG.map((category) => { const matches = category.tools.filter((item) => `${item.name} ${item.section} ${item.description}`.toLocaleLowerCase("es").includes(catalogSearch.toLocaleLowerCase("es"))); if (!matches.length) return null; return <details key={category.id} open={Boolean(catalogSearch)} className="rounded-xl border border-white/10 bg-white/[.02] p-2"><summary className="cursor-pointer text-xs font-medium">{category.id}. {category.name} <span className="text-zinc-500">({matches.length})</span></summary><div className="mt-2 space-y-2">{matches.map((item, index) => <div key={`${item.section}-${item.name}-${index}`} className="rounded-lg bg-black/20 p-2"><p className="text-[11px] text-zinc-200">{item.name}</p><p className="mt-1 text-[9px] leading-4 text-zinc-500">{item.description}</p><span className={`mt-1 inline-block text-[9px] ${item.status === "ready" ? "text-emerald-300" : item.status === "partial" ? "text-cyan-300" : "text-amber-200"}`}>{item.status === "ready" ? "Disponible" : item.status === "partial" ? "Parcial" : "En desarrollo"}</span></div>)}</div></details>; })}</div></>}
       </fieldset></aside>
 
@@ -1427,6 +1446,8 @@ export function EditorStudio(props: {
             onSplit={(id, seconds) => { const clip = timelineRef.current.find((item) => item.segmentId === id); if (clip) splitClipAt(clip, seconds); }}
             onDuplicate={duplicateClipById}
             onToggle={(id) => updateClip(id, { included: !timeline.find((clip) => clip.segmentId === id)?.included })}
+            music={music ? { name: music.name, volume: music.volume } : null}
+            onOpenMusic={() => showTool("audio")}
           />
           {selectedClip && <div className="mt-3 grid gap-3 rounded-xl border border-white/10 bg-black/20 p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)]">
             <div><p className="text-xs font-semibold">Editar {selectedClip.title}</p><p className="mt-1 text-[10px] text-zinc-500">Los cambios se guardan en este navegador y se aplican al próximo MP4.</p><div className="mt-3 grid grid-cols-2 gap-2">

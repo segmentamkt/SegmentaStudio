@@ -1,5 +1,6 @@
 import { sanitizeCueWords } from "./caption-cues";
 import { getEditorStyle, type EditorStyle, type PauseMode, type SubtitleMode, type SubtitlePosition } from "./editor-presets";
+import { normalizeMusicTrack } from "./music-bed";
 import { applySkillProfilesToContract } from "./studio-skills";
 import { normalizeVisualResources, validateVisualResourceBudget } from "./visual-resources";
 
@@ -218,8 +219,10 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
   const soundEffects = flag(requestedEffects.sound_effects, true, "Los efectos sonoros");
   const labels = flag(requestedEffects.labels, true, "Los títulos");
   const imagesOrBroll = flag(requestedEffects.images_or_broll, false, "Los recursos visuales");
-  if (flag(requestedEffects.music, false, "La música")) {
-    throw new Error("Este motor todavía no admite música en el render.");
+  // Música propia del usuario: solo una ruta dentro de la carpeta de música de esta producción.
+  const music = normalizeMusicTrack(contract.music, ownerId, sessionId);
+  if (flag(requestedEffects.music, false, "La música") && !music) {
+    throw new Error("Elige una canción en el panel Audio antes de exportar con música.");
   }
   const baseContract = {
     schema: "kiko.edit-contract.v1" as const,
@@ -236,7 +239,8 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
     target_duration_seconds: null,
     captions: { enabled: captionsEnabled, language: "es" as const, max_words_per_card: maxWords, emphasis: true },
     dead_air: { remove: removeDeadAir, threshold_ms: silenceThresholdMs, noise_db: noiseDb, mode: pauseMode },
-    effects: { transitions, sound_effects: soundEffects, labels, images_or_broll: imagesOrBroll, music: false },
+    effects: { transitions, sound_effects: soundEffects, labels, images_or_broll: imagesOrBroll, music: Boolean(music) },
+    music,
     quality_gates: {
       portrait: true,
       audio: true,

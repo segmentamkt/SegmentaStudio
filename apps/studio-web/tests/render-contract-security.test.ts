@@ -370,10 +370,11 @@ test("rejects aggregate uploaded image bytes and oversized individual images", (
   assert.throws(() => normalizeRenderContract(oversized.raw, oversized.session, oversized.scenes, oversized.takes), /hasta 200 KB/);
 });
 
-test("music remains unsupported independently of the image effect", () => {
+test("music without a chosen song is refused independently of the image effect", () => {
   const input = fixture();
   input.raw.effects.music = true;
-  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /no admite música/);
+  input.raw.effects.images_or_broll = true;
+  assert.throws(() => normalizeRenderContract(input.raw, input.session, input.scenes, input.takes), /Elige una canción/);
 });
 
 
@@ -429,4 +430,27 @@ test("the Segmenta style uses natural pauses and the scene script comes from the
   const invalid = fixture();
   Object.assign(invalid.raw.dead_air, { mode: "agresivo" });
   assert.throws(() => normalizeRenderContract(invalid.raw, invalid.session, invalid.scenes, invalid.takes), /modo de pausas/);
+});
+
+test("a song from this production's music folder rides along; foreign songs or music without a song are refused", () => {
+  const plain = fixture();
+  const withoutMusic = normalizeRenderContract(plain.raw, plain.session, plain.scenes, plain.takes);
+  assert.equal(withoutMusic.music, null);
+  assert.equal(withoutMusic.effects.music, false);
+
+  const input = fixture();
+  const song = `${ownerId}/${sessionId}/music/0f6c2a1e-9b7d-4c1a-8f00-123456789abc.m4a`;
+  const raw = input.raw as Record<string, unknown>;
+  raw.music = { object_key: song, name: "Tema propio", volume: .3, ducking: false };
+  const normalized = normalizeRenderContract(input.raw, input.session, input.scenes, input.takes);
+  assert.deepEqual(normalized.music, { object_key: song, name: "Tema propio", volume: .3, ducking: false, fade_out_seconds: 2, start_seconds: 0 });
+  assert.equal(normalized.effects.music, true);
+
+  const foreign = fixture();
+  (foreign.raw as Record<string, unknown>).music = { object_key: `someone-else/${sessionId}/music/0f6c2a1e-9b7d-4c1a.mp3` };
+  assert.throws(() => normalizeRenderContract(foreign.raw, foreign.session, foreign.scenes, foreign.takes), /no pertenece/);
+
+  const missing = fixture();
+  missing.raw.effects.music = true;
+  assert.throws(() => normalizeRenderContract(missing.raw, missing.session, missing.scenes, missing.takes), /Elige una canción/);
 });
