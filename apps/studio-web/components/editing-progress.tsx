@@ -19,7 +19,7 @@ export function EditingProgress({ stage, running, captionStage, tasks, resources
   const current = steps.findIndex(([key]) => key === stage);
   const completedCaptions = tasks.filter((task) => task.status === "done").length;
   const progress = Math.max(0, Math.min(100, renderProgress));
-  return <section id="editor-live-progress" aria-label="Edición automática en vivo" className="scroll-mt-24 border-y border-violet-400/20 bg-gradient-to-r from-violet-500/[.08] to-cyan-400/[.04] px-4 py-4 sm:px-6">
+  return <section id="editor-live-progress" aria-label="Edición automática en vivo" className={`scroll-mt-24 border-y border-violet-400/20 bg-gradient-to-r from-violet-500/[.08] to-cyan-400/[.04] px-4 py-4 sm:px-6 ${!running && stage === "idle" ? "hidden" : ""}`}>
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div className="min-w-0"><h3 className="flex items-center gap-2 text-sm font-semibold text-white"><Sparkles size={16} className="text-violet-300" />{running ? "Tu video se está editando" : stage === "done" ? "Tu edición está lista" : "Edición automática, a la vista"}</h3>
         <p className="mt-1 max-w-2xl text-xs leading-5 text-zinc-400">{stage === "idle" ? showResources ? "Un clic genera subtítulos, busca imágenes de apoyo, aplica tu estilo y exporta el MP4. El libreto y los ajustes son opcionales." : "Un clic genera subtítulos, aplica tu estilo y exporta el MP4. El libreto y los ajustes son opcionales." : "Los subtítulos aparecen al reconocer cada toma. Durante el render puedes reproducir muestras reales de las escenas terminadas."}</p>

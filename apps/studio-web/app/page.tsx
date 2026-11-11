@@ -22,6 +22,7 @@ import { AccountAccess } from "../components/account-access";
 import { PenguinGuide } from "../components/penguin-guide";
 import { RenderResults, type RenderOutput } from "../components/render-results";
 import { WORKSPACE_NAV, WorkspaceStudio, type WorkspaceView } from "../components/workspace-studio";
+import { StudioHome, type HomeTake } from "../components/studio-home";
 import { createClient as createSupabaseClient } from "../lib/supabase/browser";
 import type { GuideAction } from "../lib/penguin-guide";
 import { preproductionSchema, type PreproductionPlan } from "../lib/preproduction-plan";
@@ -254,6 +255,11 @@ export default function Home() {
 
   const portfolios = data?.portfolios || [];
   const sessions = useMemo(() => (data?.sessions || []).filter((item) => item.portfolioId === portfolioId), [data, portfolioId]);
+  const homeTakes = useMemo<HomeTake[]>(() => (data?.takes || [])
+    .filter((take) => sessions.some((item) => item.id === take.sessionId))
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+    .slice(0, 12)
+    .map((take) => ({ id: String(take.id), sessionId: String(take.sessionId), sessionTitle: String(sessions.find((item) => item.id === take.sessionId)?.title || "Proyecto"), durationMs: take.durationMs })), [data, sessions]);
   const activeSession = sessions.find((item) => item.id === sessionId) || sessions[0];
   const sessionScenes = useMemo(() => (data?.scenes || []).filter((item) => item.sessionId === activeSession?.id).sort((a, b) => a.position - b.position), [data, activeSession]);
   const activeScene = sessionScenes[Math.min(sceneIndex, Math.max(0, sessionScenes.length - 1))];
@@ -790,12 +796,13 @@ export default function Home() {
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-[1650px] gap-5 px-3 py-3 sm:px-7 sm:py-5 lg:grid-cols-[210px_minmax(0,1fr)]">
-        <aside className="hidden lg:block"><div className="sticky top-24 rounded-3xl border border-white/8 bg-white/[.025] p-3"><p className="px-3 pb-3 pt-2 text-[9px] font-bold uppercase tracking-[.2em] text-zinc-600">Segmenta Studio</p><nav className="space-y-1">{STUDIO_NAV.map((item) => <button key={item.id} onClick={() => setView(item.id)} className={`w-full rounded-xl px-3 py-2.5 text-left text-xs transition ${view === item.id ? "bg-violet-400/15 font-medium text-violet-100" : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300"}`}>{item.label}</button>)}</nav><div className="mt-4 rounded-2xl border border-amber-300/10 bg-amber-300/5 p-3"><p className="text-[10px] font-medium text-amber-200">Motor híbrido</p><p className="mt-1 text-[9px] leading-4 text-zinc-600">Nube para proyectos y dirección. Motor local para las capacidades avanzadas aún no migradas.</p></div></div></aside>
+      <div className={`mx-auto grid gap-5 px-3 py-3 sm:px-7 sm:py-5 ${view === "edit" ? "max-w-none" : "max-w-[1650px] lg:grid-cols-[210px_minmax(0,1fr)]"}`}>
+        <aside className={view === "edit" ? "hidden" : "hidden lg:block"}><div className="sticky top-24 rounded-3xl border border-white/8 bg-white/[.025] p-3"><p className="px-3 pb-3 pt-2 text-[9px] font-bold uppercase tracking-[.2em] text-zinc-600">Segmenta Studio</p><nav className="space-y-1">{STUDIO_NAV.map((item) => <button key={item.id} onClick={() => setView(item.id)} className={`w-full rounded-xl px-3 py-2.5 text-left text-xs transition ${view === item.id ? "bg-violet-400/15 font-medium text-violet-100" : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300"}`}>{item.label}</button>)}</nav><div className="mt-4 rounded-2xl border border-amber-300/10 bg-amber-300/5 p-3"><p className="text-[10px] font-medium text-amber-200">Motor híbrido</p><p className="mt-1 text-[9px] leading-4 text-zinc-600">Nube para proyectos y dirección. Motor local para las capacidades avanzadas aún no migradas.</p></div></div></aside>
         <div className="min-w-0">
-        <nav className="mb-3 flex gap-1 overflow-x-auto rounded-2xl border border-white/8 bg-white/[.025] p-1.5 lg:hidden">{STUDIO_NAV.map((item) => <button key={item.id} onClick={() => setView(item.id)} className={`shrink-0 rounded-xl px-3 py-2 text-[10px] ${view === item.id ? "bg-violet-500 text-white" : "text-zinc-500"}`}>{item.label}</button>)}</nav>
+        {view !== "summary" && <nav className={`mb-3 flex gap-1 overflow-x-auto rounded-2xl border border-white/8 bg-white/[.025] p-1.5 ${view === "edit" ? "" : "lg:hidden"}`}>{STUDIO_NAV.map((item) => <button key={item.id} onClick={() => setView(item.id)} className={`shrink-0 rounded-xl px-3 py-2 text-[10px] ${view === item.id ? "bg-violet-500 text-white" : "text-zinc-500"}`}>{item.label}</button>)}</nav>}
         {error && <div className="mb-5 flex items-start justify-between rounded-2xl border border-red-400/20 bg-red-400/8 p-4 text-sm text-red-100"><span>{error}</span><button onClick={() => setError("")}><X size={16} /></button></div>}
-        {view !== "record" && <section aria-label="Grabación directa" className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-violet-400/25 bg-violet-400/10 p-4"><div><h2 className="flex items-center gap-2 text-sm font-semibold"><Camera size={18} />Abre la cámara y empieza</h2><p className="mt-1 text-xs text-zinc-400">Graba → guarda en tu galería de Studio → recorta y divide. Sin formularios ni libreto obligatorio.</p></div><button type="button" onClick={() => void openQuickCamera()} disabled={navigationLocked || !portfolioId} className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-violet-500 px-5 py-3 text-sm font-semibold disabled:opacity-40"><Camera size={17} />Grabar ahora</button></section>}
+        {view !== "record" && view !== "summary" && <section aria-label="Grabación directa" className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-violet-400/25 bg-violet-400/10 p-4"><div><h2 className="flex items-center gap-2 text-sm font-semibold"><Camera size={18} />Abre la cámara y empieza</h2><p className="mt-1 text-xs text-zinc-400">Graba → guarda en tu galería de Studio → recorta y divide. Sin formularios ni libreto obligatorio.</p></div><button type="button" onClick={() => void openQuickCamera()} disabled={navigationLocked || !portfolioId} className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-violet-500 px-5 py-3 text-sm font-semibold disabled:opacity-40"><Camera size={17} />Grabar ahora</button></section>}
+        {view !== "summary" && <>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-cyan-400/15 bg-cyan-400/[.04] p-3 sm:mb-5 sm:p-4">
           <div className="min-w-0"><strong className="flex items-center gap-2 text-sm font-medium"><FolderOpen size={17} className="text-cyan-300" />Tus libretos, listos para grabar</strong><span className="mt-1 block text-xs text-zinc-400">Sube un archivo → separamos carpetas y escenas → graba cada toma en su lugar.</span></div>
           <button onClick={openScriptImporter} disabled={navigationLocked || !portfolioId} className="flex items-center gap-2 rounded-xl bg-cyan-300 px-4 py-3 text-xs font-semibold text-slate-950 disabled:opacity-40"><UploadCloud size={16} />Importar libretos</button>
@@ -814,6 +821,26 @@ export default function Home() {
             </div>
           </div>
         </section>
+        </>}
+
+        {view === "summary" && <StudioHome
+          portfolioName={String(currentPortfolio?.name || "Tu portafolio")}
+          niche={String(currentPortfolio?.niche || "")}
+          activeView={view}
+          takes={homeTakes}
+          views={[{ id: "edit", label: "Editor" }, { id: "library", label: "Tomas" }, ...WORKSPACE_NAV.filter((item) => item.id !== "summary").map((item) => ({ id: item.id, label: item.label }))]}
+          locked={navigationLocked}
+          recordDisabled={navigationLocked || !portfolioId}
+          uploadDisabled={navigationLocked || saving}
+          scriptsDisabled={navigationLocked || !portfolioId}
+          onRecord={() => void openQuickCamera()}
+          onUpload={() => newUploadInputRef.current?.click()}
+          onImportScripts={openScriptImporter}
+          onNewProject={() => { if (mayNavigate()) setShowNewSession(true); }}
+          onOpenTake={(take) => openTakeForSegmentation(take.sessionId, take.id)}
+          onOpenView={(id) => setView(id as StudioView)}
+          onOpenAccount={() => { if (mayNavigate()) setShowAccount(true); }}
+        />}
 
         {WORKSPACE_NAV.some((item) => item.id === view) ? <WorkspaceStudio view={view as WorkspaceView} portfolioId={portfolioId} portfolio={currentPortfolio} sessions={data?.sessions || []} scenes={data?.scenes || []} onOpenEditor={() => setView("edit")} onOpenResults={() => setView("library")} /> : view === "edit" ? <EditorStudio initialSessionId={editorSessionId} initialResultId={editorResultId} initialTakeId={editorTakeId} initialManualSegmentation={manualSegmentation} portfolioId={portfolioId} sessions={data?.sessions || []} scenes={data?.scenes || []} takes={data?.takes || []} editJobs={data?.editJobs || []} preproductionPlans={data?.preproductionPlans || []} onRefresh={refresh} onBack={() => setView(manualSegmentation ? "library" : "record")} onUpload={() => newUploadInputRef.current?.click()} onAddToCurrent={(id) => { setSessionId(id); setSceneIndex(Math.max(0, (data?.scenes || []).filter((scene) => scene.sessionId === id).length - 1)); setView("record"); }} /> : view === "record" ? (
           quickStarting ? <section role="status" className="grid min-h-[420px] place-items-center rounded-3xl border border-violet-400/20 bg-violet-400/5 p-6 text-center"><div><LoaderCircle className="mx-auto animate-spin text-violet-300" size={32} /><h2 className="mt-4 text-lg font-semibold">Abriendo tu cámara</h2><p className="mt-2 text-sm text-zinc-400">Permite cámara y micrófono. Prepararemos un lugar para guardar tu video.</p></div></section> : !sessions.length ? <section className="overflow-hidden rounded-2xl border border-white/8 bg-white/[.025] sm:rounded-3xl">
