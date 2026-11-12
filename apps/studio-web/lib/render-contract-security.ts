@@ -1,7 +1,7 @@
 import { sanitizeCueWords } from "./caption-cues";
 import { getEditorStyle, type EditorStyle, type PauseMode, type SubtitleMode, type SubtitlePosition } from "./editor-presets";
 import { normalizeMusicTrack } from "./music-bed";
-import { normalizeClipTransform, normalizeColorFilter, normalizeTextOverlays } from "./clip-look";
+import { normalizeClipTransform, normalizeColorFilter, normalizeFreezeSeconds, normalizeTextOverlays, normalizeVoiceEffect } from "./clip-look";
 import { applySkillProfilesToContract } from "./studio-skills";
 import { normalizeVisualResources, validateVisualResourceBudget } from "./visual-resources";
 
@@ -132,7 +132,8 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
     const trimEnd = bounded(requestedClip.trim_end_seconds, measuredMs / 1_000, .2, measuredMs / 1_000, "El final del recorte");
     if (trimEnd - trimStart < .2) throw new Error("Cada toma debe conservar al menos 0,2 segundos.");
     const playbackSpeed = bounded(requestedClip.playback_speed, 1, .5, 2, "La velocidad de una toma");
-    plannedDurationSeconds += (trimEnd - trimStart) / playbackSpeed;
+    const freezeEndSeconds = normalizeFreezeSeconds(requestedClip.freeze_end_seconds);
+    plannedDurationSeconds += (trimEnd - trimStart) / playbackSpeed + freezeEndSeconds;
     if (plannedDurationSeconds > 120) throw new Error("El video final supera los 120 segundos permitidos por render.");
     const rawCues = requestedClip.caption_cues ?? [];
     if (!Array.isArray(rawCues) || rawCues.length > 100) throw new Error("Hay demasiados subtítulos temporizados en una toma.");
@@ -173,6 +174,8 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
       text_overlays: normalizeTextOverlays(requestedClip.text_overlays, { durationSeconds: measuredMs / 1_000, trimStartSeconds: trimStart, trimEndSeconds: trimEnd }),
       transform: normalizeClipTransform(requestedClip.transform),
       color_filter: normalizeColorFilter(requestedClip.color_filter),
+      voice_effect: normalizeVoiceEffect(requestedClip.voice_effect),
+      freeze_end_seconds: freezeEndSeconds,
     };
   });
 

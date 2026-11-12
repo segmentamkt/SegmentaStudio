@@ -35,8 +35,8 @@ import { EditorTimeline } from "./editor-timeline";
 import { formatClock, montageDuration, montageOffset, nextIncluded } from "../lib/timeline-edit";
 import { useSignedMusicUrl } from "../lib/music-upload";
 import { MusicPanel } from "./music-panel";
-import { FilterPanel, FramingPanel, TextOverlayLayer, TextOverlayPanel } from "./clip-look-panels";
-import { CSS_COLOR, IDENTITY_TRANSFORM, cssTransform, fitTextOverlays, normalizeColorFilter, restoreClipTransform, restoreTextOverlays, type ClipTransform, type ColorFilterId, type TextOverlay } from "../lib/clip-look";
+import { FilterPanel, FramingPanel, FreezeControl, TextOverlayLayer, TextOverlayPanel, VoiceEffectPanel } from "./clip-look-panels";
+import { CSS_COLOR, IDENTITY_TRANSFORM, cssTransform, fitTextOverlays, normalizeColorFilter, normalizeFreezeSeconds, normalizeVoiceEffect, restoreClipTransform, restoreTextOverlays, type ClipTransform, type ColorFilterId, type TextOverlay, type VoiceEffectId } from "../lib/clip-look";
 import type { MusicTrack } from "../lib/music-bed";
 import { decodeSpeechWav, SPEECH_SAMPLE_RATE } from "../lib/transcription-core";
 import { VisualResourcesPanel } from "./visual-resources-panel";
@@ -54,7 +54,7 @@ function removeEditorDraft(key: string) {
   try { window.localStorage.removeItem(key); } catch { /* Server result remains available. */ }
 }
 type ToolTab = "media" | "styles" | "text" | "effects" | "audio" | "video" | "catalog" | "resources";
-type TimelineClip = { segmentId: string; takeId: string; sceneId: string; title: string; duration: number; included: boolean; trimStartSeconds: number; trimEndSeconds: number; playbackSpeed: number; audioVolume: number; brightness: number; contrast: number; saturation: number; transcript: string; label: string; captionCues: CaptionCue[]; visualResources: VisualResource[]; resourcesReviewed: boolean; texts: TextOverlay[]; transform: ClipTransform; colorFilter: ColorFilterId };
+type TimelineClip = { segmentId: string; takeId: string; sceneId: string; title: string; duration: number; included: boolean; trimStartSeconds: number; trimEndSeconds: number; playbackSpeed: number; audioVolume: number; brightness: number; contrast: number; saturation: number; transcript: string; label: string; captionCues: CaptionCue[]; visualResources: VisualResource[]; resourcesReviewed: boolean; texts: TextOverlay[]; transform: ClipTransform; colorFilter: ColorFilterId; voiceEffect: VoiceEffectId; freezeEndSeconds: number };
 
 class RenderStatusUnconfirmedError extends Error {}
 
@@ -183,6 +183,14 @@ function restoredMusic(value: unknown): MusicTrack | null {
     fade_out_seconds: draftNumber(raw.fade_out_seconds, 2, 0, 6),
     start_seconds: draftNumber(raw.start_seconds, 0, 0, 600),
   };
+}
+
+/** Descarga un archivo de texto generado en el navegador (por ejemplo, los subtítulos SRT). */
+function downloadText(name: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: "application/x-subrip;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url; link.download = name; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
 function draftNumber(value: unknown, fallback: number, min: number, max: number) {
@@ -343,6 +351,8 @@ export function EditorStudio(props: {
   const videoRef = useRef<HTMLVideoElement>(null);
   /** Tras pasar a la siguiente toma, sigue reproduciendo en cuanto cargue. */
   const continuePlaybackRef = useRef(false);
+  /** Temporizador del «congelar» al final de una toma durante la vista previa. */
+  const freezeHoldRef = useRef<number | null>(null);
   const musicAudioRef = useRef<HTMLAudioElement>(null);
   const captionPreviewSeekRef = useRef<{ segmentId: string; seconds: number } | null>(null);
 
@@ -382,7 +392,7 @@ export function EditorStudio(props: {
       return [{ segmentId: take.id, takeId: take.id, sceneId: scene.id, title: String(scene.title || "Toma"), duration, included: true,
         trimStartSeconds: 0, trimEndSeconds: duration, playbackSpeed: 1, audioVolume: 1, brightness: 0, contrast: 1, saturation: 1,
         transcript: String(scene.script || ""), label: "", captionCues: [] as CaptionCue[], visualResources: [] as VisualResource[], resourcesReviewed: false,
-        texts: [] as TextOverlay[], transform: { ...IDENTITY_TRANSFORM }, colorFilter: "none" as ColorFilterId }];
+        texts: [] as TextOverlay[], transform: { ...IDENTITY_TRANSFORM }, colorFilter: "none" as ColorFilterId, voiceEffect: "none" as VoiceEffectId, freezeEndSeconds: 0 }];
     });
     let saved: TimelineClip[] = [];
     let savedReviewId = "";
@@ -399,7 +409,7 @@ export function EditorStudio(props: {
         brightness: clip.brightness, contrast: clip.contrast, saturation: clip.saturation,
         transcript: clip.transcript, label: clip.label, captionCues: clip.caption_cues,
         visualResources: clip.visual_resources || [], resourcesReviewed: clip.visual_resources_reviewed === true || Boolean(clip.visual_resources?.length),
-        texts: clip.text_overlays || [], transform: clip.transform, colorFilter: clip.color_filter,
+        texts: clip.text_overlays || [], transform: clip.transform, colorFilter: clip.color_filter, voiceEffect: clip.voice_effect, freezeEndSeconds: clip.freeze_end_seconds,
       })) as TimelineClip[];
     }
     const byId = new Map(defaults.map((clip) => [clip.takeId, clip]));
@@ -426,6 +436,7 @@ export function EditorStudio(props: {
         trimStartSeconds, trimEndSeconds,
         texts: restoreTextOverlays(clip.texts, { durationSeconds: original.duration, trimStartSeconds, trimEndSeconds }),
         transform: restoreClipTransform(clip.transform), colorFilter: normalizeColorFilter(clip.colorFilter),
+        voiceEffect: normalizeVoiceEffect(clip.voiceEffect), freezeEndSeconds: normalizeFreezeSeconds(clip.freezeEndSeconds),
         playbackSpeed: draftNumber(clip.playbackSpeed, 1, .5, 2), audioVolume: draftNumber(clip.audioVolume, 1, 0, 2),
         brightness: draftNumber(clip.brightness, 0, -.2, .2), contrast: draftNumber(clip.contrast, 1, .8, 1.3), saturation: draftNumber(clip.saturation, 1, .5, 1.5),
         transcript: String(clip.transcript ?? original.transcript).slice(0, 1000), label: String(clip.label || "").slice(0, 120),
@@ -630,6 +641,7 @@ export function EditorStudio(props: {
 
   // Cursor de la línea de tiempo: elige la toma y la posición de origen, y deja el video listo ahí.
   const seekTimeline = (segmentId: string, seconds: number) => {
+    cancelFreezeHold();
     const clip = timelineRef.current.find((item) => item.segmentId === segmentId);
     if (!clip) return;
     const at = Math.max(clip.trimStartSeconds, Math.min(clip.trimEndSeconds - .05, seconds));
@@ -1297,14 +1309,30 @@ export function EditorStudio(props: {
     audio.volume = Math.min(1, music.volume);
     void audio.play().catch(() => undefined);
   };
-  /** Al terminar el recorte de una toma, pasa a la siguiente incluida y sigue reproduciendo. */
-  const advanceMontage = (video: HTMLVideoElement) => {
-    if (showingRendered || !selectedClip) return;
-    const next = nextIncluded(montageSpans, selectedClip.segmentId);
-    if (!next) { video.pause(); continuePlaybackRef.current = false; syncMusic(false); return; }
+  const moveToNextTake = (video: HTMLVideoElement, segmentId: string) => {
+    const next = nextIncluded(montageSpans, segmentId);
+    if (!next) { continuePlaybackRef.current = false; video.pause(); syncMusic(false); return; }
     continuePlaybackRef.current = true;
     captionPreviewSeekRef.current = { segmentId: next.id, seconds: next.start };
     setSelectedTakeId(next.id); setPreviewTime(next.start);
+  };
+  /** Al terminar el recorte de una toma, sostiene el cuadro si está congelada y pasa a la siguiente incluida. */
+  const advanceMontage = (video: HTMLVideoElement) => {
+    if (showingRendered || !selectedClip || freezeHoldRef.current !== null) return;
+    const segmentId = selectedClip.segmentId;
+    if (selectedClip.freezeEndSeconds > 0 && !video.paused) {
+      continuePlaybackRef.current = true;
+      video.pause();
+      freezeHoldRef.current = window.setTimeout(() => { freezeHoldRef.current = null; moveToNextTake(video, segmentId); }, selectedClip.freezeEndSeconds * 1000);
+      return;
+    }
+    moveToNextTake(video, segmentId);
+  };
+  const cancelFreezeHold = () => {
+    if (freezeHoldRef.current === null) return;
+    window.clearTimeout(freezeHoldRef.current);
+    freezeHoldRef.current = null;
+    continuePlaybackRef.current = false;
   };
   const seekMontageStart = () => {
     const first = montageSpans.find((span) => span.included);
@@ -1424,7 +1452,7 @@ export function EditorStudio(props: {
             onPrefs: setAiPrefs, onGenerate: () => void generateAiResources(), onStop: () => aiRunRef.current?.abort(),
             onRegenerate: (segmentId, id, provider) => void regenerateAiResource(segmentId, id, provider), onChooseAlternative: chooseAiAlternative }} />}
         {tool === "media" && <><PanelTitle icon={Layers3} title="Tus escenas" text={`${approvedTakes.length} clips listos`} /><button onClick={() => props.onAddToCurrent(sessionId)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-violet-400/25 bg-violet-400/5 px-3 py-3 text-xs text-violet-200"><Plus size={15} />Añadir a este proyecto</button><div className="mt-4 grid grid-cols-3 gap-2">{approvedTakes.map((take, index) => { const clip = timeline.find((item) => item.takeId === take.id); const selected = selectedTake?.id === take.id; return <div key={take.id} className={`relative overflow-hidden rounded-xl border ${selected ? "border-violet-400" : "border-white/8"} ${clip && !clip.included ? "opacity-50" : ""}`}><button type="button" onClick={() => { setSelectedTakeId(clip?.segmentId || ""); setPreviewMode("original"); setOverlayEditor(null); }} className="block w-full text-left" aria-label={`Ver ${approvedScenes[index]?.title || `Clip ${index + 1}`}`}><div className="relative aspect-[9/12] bg-black"><video src={takeMediaUrl(take.id)} muted preload="metadata" className="h-full w-full object-cover" /><span className="absolute bottom-1 right-1 rounded bg-black/75 px-1.5 py-0.5 text-[8px]">{seconds(take.durationMs)}</span></div><p className="truncate px-1.5 py-1.5 text-[9px] text-zinc-400">{approvedScenes[index]?.title || `Clip ${index + 1}`}</p></button>{clip && <button type="button" onClick={() => updateClip(clip.segmentId, { included: !clip.included })} aria-label={clip.included ? "Quitar de la edición" : "Incluir en la edición"} className={`absolute right-1.5 top-1.5 grid h-5 w-5 place-items-center rounded-full border-2 ${clip.included ? "border-cyan-300 bg-cyan-300 text-black" : "border-white/80 bg-black/40"}`}>{clip.included && <Check size={11} strokeWidth={3} />}</button>}</div>; })}</div></>}
-        {tool === "video" && <><PanelTitle icon={SlidersHorizontal} title="Video y color" text={selectedClip ? `Ajustes de ${selectedClip.title}` : "Selecciona una toma"} />{selectedClip && <div className="mt-5 space-y-5"><p className="text-[10px] leading-4 text-zinc-500">Cada control se aplica a esta toma al renderizar. La vista previa del color es aproximada.</p><FramingPanel transform={selectedClip.transform} disabled={Boolean(busy || automaticRunning)} onChange={(transform) => updateClip(selectedClip.segmentId, { transform })} /><FilterPanel value={selectedClip.colorFilter} disabled={Boolean(busy || automaticRunning)} onChange={(colorFilter) => updateClip(selectedClip.segmentId, { colorFilter })} /><Range label="Velocidad" value={selectedClip.playbackSpeed} min={.5} max={2} step={.05} suffix="×" onChange={(value) => updateClip(selectedClip.segmentId, { playbackSpeed: value })} /><Range label="Brillo" value={Math.round(selectedClip.brightness * 100)} min={-20} max={20} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { brightness: value / 100 })} /><Range label="Contraste" value={Math.round(selectedClip.contrast * 100)} min={80} max={130} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { contrast: value / 100 })} /><Range label="Saturación" value={Math.round(selectedClip.saturation * 100)} min={50} max={150} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { saturation: value / 100 })} /><button onClick={() => updateClip(selectedClip.segmentId, { playbackSpeed: 1, brightness: 0, contrast: 1, saturation: 1 })} className="w-full rounded-xl border border-white/10 px-3 py-2 text-xs text-zinc-300">Restablecer ajustes</button></div>}</>}
+        {tool === "video" && <><PanelTitle icon={SlidersHorizontal} title="Video y color" text={selectedClip ? `Ajustes de ${selectedClip.title}` : "Selecciona una toma"} />{selectedClip && <div className="mt-5 space-y-5"><p className="text-[10px] leading-4 text-zinc-500">Cada control se aplica a esta toma al renderizar. La vista previa del color es aproximada.</p><FramingPanel transform={selectedClip.transform} disabled={Boolean(busy || automaticRunning)} onChange={(transform) => updateClip(selectedClip.segmentId, { transform })} /><FilterPanel value={selectedClip.colorFilter} disabled={Boolean(busy || automaticRunning)} onChange={(colorFilter) => updateClip(selectedClip.segmentId, { colorFilter })} /><FreezeControl value={selectedClip.freezeEndSeconds} disabled={Boolean(busy || automaticRunning)} onChange={(freezeEndSeconds) => updateClip(selectedClip.segmentId, { freezeEndSeconds })} /><Range label="Velocidad" value={selectedClip.playbackSpeed} min={.5} max={2} step={.05} suffix="×" onChange={(value) => updateClip(selectedClip.segmentId, { playbackSpeed: value })} /><Range label="Brillo" value={Math.round(selectedClip.brightness * 100)} min={-20} max={20} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { brightness: value / 100 })} /><Range label="Contraste" value={Math.round(selectedClip.contrast * 100)} min={80} max={130} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { contrast: value / 100 })} /><Range label="Saturación" value={Math.round(selectedClip.saturation * 100)} min={50} max={150} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { saturation: value / 100 })} /><button onClick={() => updateClip(selectedClip.segmentId, { playbackSpeed: 1, brightness: 0, contrast: 1, saturation: 1 })} className="w-full rounded-xl border border-white/10 px-3 py-2 text-xs text-zinc-300">Restablecer ajustes</button></div>}</>}
         {tool === "styles" && <>
           <PanelTitle icon={WandSparkles} title="Estilos" text="Cambia toda la edición" />
           <div className="mt-4 space-y-2">{EDITOR_STYLES.map((item) => <button key={item.id} onClick={() => chooseStyle(item.id)} className={`flex w-full items-center gap-3 rounded-xl border p-2.5 text-left ${style === item.id ? "border-violet-400/40 bg-violet-400/10" : "border-white/7 bg-black/15"}`}><span className="h-12 w-9 shrink-0 rounded-lg" style={{ background: `linear-gradient(145deg,${item.palette[0]},${item.palette[1]})` }} /><span className="min-w-0"><strong className="block truncate text-xs">{item.name}</strong><small className="mt-1 block truncate text-[9px] text-zinc-600">{item.reference}</small></span>{style === item.id && <Check className="ml-auto text-violet-300" size={14} />}</button>)}</div>
@@ -1447,7 +1475,7 @@ export function EditorStudio(props: {
           </div>
         </>}
         {tool === "effects" && <><PanelTitle icon={Zap} title="Efectos" text="Movimiento sin complicaciones" /><div className="mt-4 space-y-3"><Toggle enabled={options.deadAir} label="Cortar silencios" detail="Elimina pausas largas" onChange={() => changeOptions({ deadAir: !options.deadAir })} />{options.deadAir && <Range label="Pausa máxima" value={settings.silenceThresholdMs} min={350} max={1500} step={50} suffix=" ms" onChange={(value) => changeSettings({ silenceThresholdMs: value })} />}{options.deadAir && <Select label="Sensibilidad al ruido" value={String(settings.silenceNoiseDb)} onChange={(value) => changeSettings({ silenceNoiseDb: Number(value) })} options={[["-35","Conservadora"],["-30","Normal"],["-25","Alta · para ruido de fondo"]]} />}<Toggle enabled={options.transitions} label="Transiciones" detail="Entre escenas" onChange={() => changeOptions({ transitions: !options.transitions })} />{options.transitions && <Select label="Tipo" value={settings.transition} onChange={(value) => changeSettings({ transition: value as typeof settings.transition })} options={[['cut','Corte'],['fade','Fundido'],['dissolve','Fundido a negro']]} />}<button type="button" onClick={() => showTool("resources")} className="w-full rounded-xl border border-cyan-300/20 bg-cyan-300/5 p-3 text-left"><span className="flex items-center gap-2 text-xs text-cyan-100"><ImageIcon size={14} />Imágenes por palabras</span><small className="mt-1 block text-[10px] text-zinc-400">Detectar, añadir y ajustar apoyos visuales →</small></button></div></>}
-        {tool === "audio" && <><PanelTitle icon={Volume2} title="Audio" text="Voz clara y golpes precisos" /><div className="mt-4 space-y-4">{selectedClip && <><Range label={`Volumen de ${selectedClip.title}`} value={Math.round(selectedClip.audioVolume * 100)} min={0} max={200} step={5} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { audioVolume: value / 100 })} /><button onClick={() => updateClip(selectedClip.segmentId, { audioVolume: selectedClip.audioVolume === 0 ? 1 : 0 })} className="w-full rounded-xl border border-white/10 px-3 py-2 text-xs text-zinc-300">{selectedClip.audioVolume === 0 ? "Activar voz" : "Silenciar toma"}</button></>}<Select label="Reducción de ruido de voz" value={settings.noiseReduction} onChange={(value) => changeSettings({ noiseReduction: value as typeof settings.noiseReduction })} options={[["off","Apagada"],["light","Suave"],["medium","Media"]]} /><Toggle enabled={options.soundEffects} label="Efectos sonoros" detail="En cambios importantes" onChange={() => changeOptions({ soundEffects: !options.soundEffects })} />{options.soundEffects && <Range label="Intensidad" value={Math.round(settings.soundEffectVolume * 100)} min={0} max={100} suffix="%" onChange={(value) => changeSettings({ soundEffectVolume: value / 100 })} />}{options.soundEffects && <Select label="Sonido de los cortes" value={settings.soundPreset} onChange={(value) => changeSettings({ soundPreset: value as typeof settings.soundPreset })} options={[["auto","Según el estilo"],["soft","Suave"],["kinetic","Golpe cinético"],["cinematic","Cinematográfico"],["pop","Marca pop"],["none","Sin sonido"]]} />}<MusicPanel sessionId={sessionId} music={music} busy={Boolean(busy || automaticRunning)} onChange={setMusic} /></div></>}
+        {tool === "audio" && <><PanelTitle icon={Volume2} title="Audio" text="Voz clara y golpes precisos" /><div className="mt-4 space-y-4">{selectedClip && <><Range label={`Volumen de ${selectedClip.title}`} value={Math.round(selectedClip.audioVolume * 100)} min={0} max={200} step={5} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { audioVolume: value / 100 })} /><button onClick={() => updateClip(selectedClip.segmentId, { audioVolume: selectedClip.audioVolume === 0 ? 1 : 0 })} className="w-full rounded-xl border border-white/10 px-3 py-2 text-xs text-zinc-300">{selectedClip.audioVolume === 0 ? "Activar voz" : "Silenciar toma"}</button><VoiceEffectPanel value={selectedClip.voiceEffect} disabled={Boolean(busy || automaticRunning)} onChange={(voiceEffect) => updateClip(selectedClip.segmentId, { voiceEffect })} /></>}<Select label="Reducción de ruido de voz" value={settings.noiseReduction} onChange={(value) => changeSettings({ noiseReduction: value as typeof settings.noiseReduction })} options={[["off","Apagada"],["light","Suave"],["medium","Media"]]} /><Toggle enabled={options.soundEffects} label="Efectos sonoros" detail="En cambios importantes" onChange={() => changeOptions({ soundEffects: !options.soundEffects })} />{options.soundEffects && <Range label="Intensidad" value={Math.round(settings.soundEffectVolume * 100)} min={0} max={100} suffix="%" onChange={(value) => changeSettings({ soundEffectVolume: value / 100 })} />}{options.soundEffects && <Select label="Sonido de los cortes" value={settings.soundPreset} onChange={(value) => changeSettings({ soundPreset: value as typeof settings.soundPreset })} options={[["auto","Según el estilo"],["soft","Suave"],["kinetic","Golpe cinético"],["cinematic","Cinematográfico"],["pop","Marca pop"],["none","Sin sonido"]]} />}<MusicPanel sessionId={sessionId} music={music} busy={Boolean(busy || automaticRunning)} onChange={setMusic} /></div></>}
         {tool === "catalog" && <><PanelTitle icon={Layers3} title="Mapa de herramientas" text="Guía completa · 15 categorías" /><p className="mt-3 text-[10px] leading-4 text-zinc-400">Disponible: la función descrita modifica el MP4. Parcial: existe una versión limitada. En desarrollo: aún no está conectada al render.</p><input type="search" value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} placeholder="Buscar herramienta…" className="mt-4 w-full rounded-xl border border-white/10 bg-(--c-151822) p-2.5 text-xs text-white outline-none" /><div className="mt-4 space-y-2">{EDITOR_TOOL_CATALOG.map((category) => { const matches = category.tools.filter((item) => `${item.name} ${item.section} ${item.description}`.toLocaleLowerCase("es").includes(catalogSearch.toLocaleLowerCase("es"))); if (!matches.length) return null; return <details key={category.id} open={Boolean(catalogSearch)} className="rounded-xl border border-white/10 bg-white/[.02] p-2"><summary className="cursor-pointer text-xs font-medium">{category.id}. {category.name} <span className="text-zinc-500">({matches.length})</span></summary><div className="mt-2 space-y-2">{matches.map((item, index) => <div key={`${item.section}-${item.name}-${index}`} className="rounded-lg bg-black/20 p-2"><p className="text-[11px] text-zinc-200">{item.name}</p><p className="mt-1 text-[9px] leading-4 text-zinc-500">{item.description}</p><span className={`mt-1 inline-block text-[9px] ${item.status === "ready" ? "text-emerald-300" : item.status === "partial" ? "text-cyan-300" : "text-amber-200"}`}>{item.status === "ready" ? "Disponible" : item.status === "partial" ? "Parcial" : "En desarrollo"}</span></div>)}</div></details>; })}</div></>}
       </fieldset></aside>
 
@@ -1470,7 +1498,7 @@ export function EditorStudio(props: {
               // Montaje seguido: respeta el recorte de cada toma y pasa sola a la siguiente.
               if (showingRendered || !selectedClip || video.paused) return;
               if (video.currentTime < selectedClip.trimStartSeconds - .05) video.currentTime = selectedClip.trimStartSeconds;
-              else if (video.currentTime >= selectedClip.trimEndSeconds - .04) advanceMontage(video); }} onEnded={(event) => advanceMontage(event.currentTarget)} onError={() => setMediaErrorSrc(previewSrc)} onPlay={() => { setPlaying(true); syncMusic(true); }} onPause={() => { setPlaying(false); if (!continuePlaybackRef.current) syncMusic(false); }} className="h-full w-full object-contain" style={!showingRendered && selectedClip ? { filter: `brightness(${1 + selectedClip.brightness}) contrast(${selectedClip.contrast}) saturate(${selectedClip.saturation}) ${CSS_COLOR[selectedClip.colorFilter] || ""}`, transform: cssTransform(selectedClip.transform) } : undefined} /> : <button onClick={props.onUpload} className="grid h-full w-full place-items-center bg-[radial-gradient(circle_at_50%_35%,rgba(124,58,237,.18),transparent_45%)] text-center"><span><span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-violet-400/10 text-violet-200"><UploadCloud size={24} /></span><strong className="mt-4 block text-sm text-zinc-200">Sube videos para editar</strong><small className="mt-2 block px-7 leading-4 text-zinc-600">Después podrás cortarlos, subtitularlos y aplicar estilos.</small></span></button>}
+              else if (video.currentTime >= selectedClip.trimEndSeconds - .04) advanceMontage(video); }} onEnded={(event) => advanceMontage(event.currentTarget)} onError={() => setMediaErrorSrc(previewSrc)} onPlay={() => { cancelFreezeHold(); setPlaying(true); syncMusic(true); }} onPause={() => { setPlaying(false); if (!continuePlaybackRef.current) syncMusic(false); }} className="h-full w-full object-contain" style={!showingRendered && selectedClip ? { filter: `brightness(${1 + selectedClip.brightness}) contrast(${selectedClip.contrast}) saturate(${selectedClip.saturation}) ${CSS_COLOR[selectedClip.colorFilter] || ""}`, transform: cssTransform(selectedClip.transform) } : undefined} /> : <button onClick={props.onUpload} className="grid h-full w-full place-items-center bg-[radial-gradient(circle_at_50%_35%,rgba(124,58,237,.18),transparent_45%)] text-center"><span><span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-violet-400/10 text-violet-200"><UploadCloud size={24} /></span><strong className="mt-4 block text-sm text-zinc-200">Sube videos para editar</strong><small className="mt-2 block px-7 leading-4 text-zinc-600">Después podrás cortarlos, subtitularlos y aplicar estilos.</small></span></button>}
             {previewSrc && mediaErrorSrc === previewSrc && <p className="absolute inset-x-3 bottom-12 rounded-xl bg-black/90 p-3 text-center text-[10px] leading-4 text-amber-100">{showingLive ? "Esta muestra no pudo reproducirse. La exportación completa sigue en proceso." : showingFinal ? "Este resultado no se pudo reproducir aquí. Prueba descargarlo o actualizar la biblioteca." : "Esta toma original no se reproduce en este navegador. El render final se exporta como MP4."}</p>}
             {!showingRendered && selectedClip && previewSrc && <TextOverlayLayer texts={selectedClip.texts} time={previewTime} selectedId={selectedTextId} disabled={Boolean(busy || automaticRunning)} onSelect={(id) => { setSelectedTextId(id); showTool("text"); }} onMove={(id, x, y) => updateClip(selectedClip.segmentId, { texts: selectedClip.texts.map((item) => item.id === id ? { ...item, x, y } : item) })} />}
             {!showingRendered && selectedClip && options.broll && selectedClip.visualResources.filter((item) => previewTime >= item.startSeconds && previewTime < item.endSeconds).map((item) => {
@@ -1521,6 +1549,7 @@ export function EditorStudio(props: {
       <aside id="editor-export" className={`${exportOpen ? "fixed inset-x-0 bottom-0 z-50 max-h-[80vh] overflow-y-auto rounded-t-2xl shadow-2xl" : "hidden"} scroll-mt-24 border-t border-white/10 bg-(--c-0c0f17) p-4 xl:fixed xl:inset-y-0 xl:right-0 xl:z-50 xl:h-full xl:max-h-none xl:w-[380px] xl:rounded-none xl:border-l xl:border-t-0 xl:shadow-2xl`}>
         <div className="mb-3 flex items-center justify-between"><p className="text-xs font-semibold text-zinc-300">Exportar</p><button type="button" onClick={() => setExportOpen(false)} aria-label="Cerrar exportación" className="grid h-8 w-8 place-items-center rounded-lg text-zinc-400 hover:bg-white/5"><X size={16} /></button></div>
         {ready && activeResult ? <a href={`${resultSrc}?download=1`} className="mb-2 flex w-full items-center justify-center gap-2 rounded-xl bg-cyan-400 px-4 py-3 text-sm font-semibold text-black"><Download size={16} />Descargar MP4</a> : <button type="button" onClick={() => { setExportOpen(false); void editAutomatically(); }} disabled={busy !== "" || automaticRunning || !activeTimeline.length} className="mb-2 flex w-full items-center justify-center gap-2 rounded-xl bg-cyan-400 px-4 py-3 text-sm font-semibold text-black disabled:opacity-40"><Sparkles size={16} />{automaticRunning ? "Exportando…" : "Exportar MP4"}</button>}
+        {ready && activeResult && typeof resultMetadata.srt === "string" && resultMetadata.srt.trim() && <button type="button" onClick={() => downloadText(`Segmenta-${String(selectedSession?.title || "video").replace(/[^\p{L}\p{N}]+/gu, "-").slice(0, 60)}.srt`, String(resultMetadata.srt))} className="mb-2 flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 px-4 py-2.5 text-xs font-semibold text-zinc-200"><Captions size={14} />Descargar subtítulos (.srt)</button>}
         <p className="mb-4 text-[10px] leading-4 text-zinc-500">Hace lo mismo que «Editar automáticamente»: crea los subtítulos que falten, aplica tu estilo y exporta el MP4.</p>
         <PanelTitle icon={Settings2} title="Director de edición" text="Describe el resultado" />
         <textarea value={objective} maxLength={2000} onChange={(event) => { setObjective(event.target.value); setJob(null); setDraftPending(true); saveEditorDraft(draftPendingKey, "1"); }} disabled={Boolean(busy || automaticRunning)} rows={5} className="mt-4 w-full resize-none rounded-xl border border-white/8 bg-black/20 p-3 text-xs leading-5 text-zinc-300 outline-none focus:border-violet-400/40 disabled:opacity-50" placeholder="Ej. Quiero un reel energético, directo y con pausas mínimas…" />

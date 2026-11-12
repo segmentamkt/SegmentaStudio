@@ -193,3 +193,25 @@ export function newTextOverlay(id: string, cursor: number, trimStart: number, tr
   const start = Math.max(trimStart, Math.min(cursor, trimEnd - TEXT_LIMITS.minSeconds));
   return { id, text: "Escribe aquí", startSeconds: Number(start.toFixed(3)), endSeconds: Number(Math.min(trimEnd, start + 3).toFixed(3)), x: .5, y: .22, size: 64, color: "#FFFFFF", background: "dark" };
 }
+
+/** Efectos de voz por toma (como los de CapCut). Mantienen la duración: el tono cambia, el ritmo no. */
+export const VOICE_EFFECTS = [
+  { id: "none", label: "Normal", filters: [] as string[] },
+  { id: "ardilla", label: "Ardilla", filters: ["asetrate=48000*1.35", "aresample=48000", "atempo=0.7407"] },
+  { id: "grave", label: "Grave", filters: ["asetrate=48000*0.78", "aresample=48000", "atempo=1.2821"] },
+  { id: "eco", label: "Eco", filters: ["aecho=0.8:0.85:120|240:0.35|0.2"] },
+  { id: "cueva", label: "Cueva", filters: ["aecho=0.8:0.9:500|900:0.3|0.18"] },
+  { id: "radio", label: "Radio", filters: ["highpass=f=400", "lowpass=f=3200", "acompressor=threshold=-20dB:ratio=4"] },
+  { id: "megafono", label: "Megáfono", filters: ["highpass=f=650", "lowpass=f=2400", "volume=1.6", "alimiter=limit=0.9"] },
+  { id: "robot", label: "Robot", filters: ["afftfilt=real='hypot(re\\,im)*sin(0)':imag='hypot(re\\,im)*cos(0)':win_size=512:overlap=0.75"] },
+] as const;
+export type VoiceEffectId = (typeof VOICE_EFFECTS)[number]["id"];
+export const normalizeVoiceEffect = (value: unknown): VoiceEffectId => VOICE_EFFECTS.some((item) => item.id === value) ? value as VoiceEffectId : "none";
+export const voiceEffectFilters = (id: VoiceEffectId): string[] => [...(VOICE_EFFECTS.find((item) => item.id === id)?.filters ?? [])];
+
+/** Congelar el último cuadro de la toma (segundos), como el «congelar» de CapCut. */
+export const MAX_FREEZE_SECONDS = 3;
+export function normalizeFreezeSeconds(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return 0;
+  return Number(Math.min(MAX_FREEZE_SECONDS, value).toFixed(2));
+}

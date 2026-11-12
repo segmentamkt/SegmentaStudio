@@ -3,8 +3,8 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { FlipHorizontal2, FlipVertical2, Plus, RotateCcw, RotateCw, Trash2, Type } from "lucide-react";
 import {
-  COLOR_FILTERS, CSS_COLOR, IDENTITY_TRANSFORM, TEXT_BACKGROUNDS, TEXT_COLORS, TEXT_LIMITS, TRANSFORM_LIMITS, newTextOverlay,
-  type ClipRotation, type ClipTransform, type ColorFilterId, type TextBackground, type TextOverlay,
+  COLOR_FILTERS, CSS_COLOR, IDENTITY_TRANSFORM, MAX_FREEZE_SECONDS, TEXT_BACKGROUNDS, TEXT_COLORS, TEXT_LIMITS, TRANSFORM_LIMITS, VOICE_EFFECTS, newTextOverlay,
+  type ClipRotation, type ClipTransform, type ColorFilterId, type TextBackground, type TextOverlay, type VoiceEffectId,
 } from "../lib/clip-look";
 
 const field = "mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-xs text-white outline-none focus:border-violet-300 disabled:opacity-50";
@@ -175,6 +175,29 @@ export function TextOverlayLayer(props: { texts: TextOverlay[]; time: number; se
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/** Efecto de voz de la toma. Se escucha en el MP4 exportado. */
+export function VoiceEffectPanel(props: { value: VoiceEffectId; disabled: boolean; onChange: (value: VoiceEffectId) => void }) {
+  return (
+    <div className="rounded-xl border border-white/10 p-3">
+      <p className="text-xs font-semibold">Efecto de voz</p>
+      <div className="mt-2 grid grid-cols-4 gap-1.5">
+        {VOICE_EFFECTS.map((item) => <button key={item.id} type="button" disabled={props.disabled} aria-pressed={props.value === item.id} onClick={() => props.onChange(item.id)} className={chip(props.value === item.id)}>{item.label}</button>)}
+      </div>
+      <p className="mt-2 text-[9px] leading-4 text-zinc-500">Cambia el tono sin cambiar el ritmo. Se escucha en el MP4 exportado.</p>
+    </div>
+  );
+}
+
+/** Congelar el último cuadro de la toma unos segundos. */
+export function FreezeControl(props: { value: number; disabled: boolean; onChange: (value: number) => void }) {
+  return (
+    <div className="rounded-xl border border-white/10 p-3">
+      <Slider label="Congelar el final" value={props.value} min={0} max={MAX_FREEZE_SECONDS} step={.5} suffix=" s" disabled={props.disabled} onChange={props.onChange} />
+      <p className="mt-1 text-[9px] leading-4 text-zinc-500">Sostiene el último cuadro de la toma, en silencio.</p>
     </div>
   );
 }

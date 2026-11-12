@@ -12,7 +12,8 @@ import { renderVisualResourceImage } from "./visual-resource-image";
 import { VISUAL_RESOURCE_LAYOUTS, type VisualResource } from "./visual-resources";
 import { mapCaptionCues, type CaptionCue } from "./caption-cues";
 import { buildMusicMixArgs, type MusicTrack } from "./music-bed";
-import { colorFilters, framingFilters, IDENTITY_TRANSFORM, orientationFilters, TEXT_BACKGROUNDS, textOverlayPosition, type ClipTransform, type ColorFilterId, type TextOverlay } from "./clip-look";
+import { colorFilters, framingFilters, IDENTITY_TRANSFORM, normalizeFreezeSeconds, orientationFilters, TEXT_BACKGROUNDS, textOverlayPosition, voiceEffectFilters, type ClipTransform, type ColorFilterId, type TextOverlay, type VoiceEffectId } from "./clip-look";
+import { buildSrt, type SrtCue } from "./srt";
 import { MAX_RENDER_PREVIEW_BYTES, type RenderPreview } from "./render-preview";
 import { measureVoiceActivity, planCuts, snapWordsToSilences, type CutPlan } from "./skills/cortes-pausas";
 import { buildKineticLayer, kineticInputArgs, kineticOverlayFilter, planKineticCaptions, type KineticLayer, type KineticZone } from "./skills/subtitulos-cineticos";
@@ -24,7 +25,7 @@ function kineticZone(position: string | undefined, layeredStyle: boolean): Kinet
 }
 
 type Range = { start: number; end: number };
-type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string; trim_start_seconds?: number; trim_end_seconds?: number; playback_speed?: number; audio_volume?: number; brightness?: number; contrast?: number; saturation?: number; label?: string; caption_cues?: CaptionCue[]; visual_resources?: VisualResource[]; script?: string; text_overlays?: TextOverlay[]; transform?: ClipTransform; color_filter?: ColorFilterId };
+type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string; trim_start_seconds?: number; trim_end_seconds?: number; playback_speed?: number; audio_volume?: number; brightness?: number; contrast?: number; saturation?: number; label?: string; caption_cues?: CaptionCue[]; visual_resources?: VisualResource[]; script?: string; text_overlays?: TextOverlay[]; transform?: ClipTransform; color_filter?: ColorFilterId; voice_effect?: VoiceEffectId; freeze_end_seconds?: number };
 type EditContract = {
   objective: string;
   session: { title: string; script?: string };
@@ -293,7 +294,9 @@ export async function renderSequentialClip(input: {
   const speed = Math.max(.5, Math.min(2, Number(clip.playback_speed ?? 1)));
   const volume = Math.max(0, Math.min(2, Number(clip.audio_volume ?? 1)));
   const sourceDuration = analysis.ranges.reduce((total, range) => total + range.end - range.start, 0);
-  const duration = sourceDuration / speed;
+  // «Congelar»: el último cuadro (y silencio) se sostiene unos segundos al final de la toma.
+  const freeze = normalizeFreezeSeconds(clip.freeze_end_seconds);
+  const duration = sourceDuration / speed + freeze;
   const sourceStart = analysis.ranges[0]?.start ?? NaN;
   const sourceEnd = analysis.ranges[analysis.ranges.length - 1]?.end ?? NaN;
   if (!Number.isFinite(sourceStart) || !Number.isFinite(sourceEnd) || sourceStart < 0 || sourceEnd - sourceStart < .2 || sourceEnd - sourceStart > MAX_SELECTED_SOURCE_SECONDS || duration > MAX_OUTPUT_SECONDS) {
@@ -319,7 +322,7 @@ export async function renderSequentialClip(input: {
   const transform = clip.transform ?? IDENTITY_TRANSFORM;
   const look = (steps: string[]) => steps.map((step) => `${step},`).join("");
   const filters: string[] = [
-    `[0:v]fps=30,select='${select}',setpts=N/(30*TB*${speed}),${look(orientationFilters(transform))}${scale},setsar=1,${look(framingFilters(transform))}eq=brightness=${brightness}:contrast=${contrast}:saturation=${saturation},${look(colorFilters(clip.color_filter ?? "none"))}format=yuv420p${fade}[vbase]`,
+    `[0:v]fps=30,select='${select}',setpts=N/(30*TB*${speed}),${look(orientationFilters(transform))}${scale},setsar=1,${look(framingFilters(transform))}eq=brightness=${brightness}:contrast=${contrast}:saturation=${saturation},${look(colorFilters(clip.color_filter ?? "none"))}format=yuv420p${freeze ? `,tpad=stop_mode=clone:stop_duration=${fixed(freeze)}` : ""}${fade}[vbase]`,
   ];
   const audioSource = analysis.hasAudio ? 0 : 1;
   const audioTrim = analysis.hasAudio
@@ -330,7 +333,9 @@ export async function renderSequentialClip(input: {
   const denoise = analysis.hasAudio && execution.noiseReduction !== "off" && execution.noiseReduction
     ? `,afftdn=nr=${execution.noiseReduction === "medium" ? 10 : 6}:nf=-40`
     : "";
-  const voiceFilter = `[${audioSource}:a]${audioTrim},aformat=sample_fmts=fltp:channel_layouts=stereo${denoise}${analysis.hasAudio ? ",acompressor=threshold=-18dB:ratio=2:attack=5:release=60" : ""},volume=${volume}${audioFade}[abase]`;
+  const voiceEffect = analysis.hasAudio ? voiceEffectFilters(clip.voice_effect ?? "none").map((step) => `,${step}`).join("") : "";
+  const freezePad = analysis.hasAudio && freeze ? `,apad=pad_dur=${fixed(freeze)}` : "";
+  const voiceFilter = `[${audioSource}:a]${audioTrim},aformat=sample_fmts=fltp:channel_layouts=stereo${denoise}${voiceEffect}${analysis.hasAudio ? ",acompressor=threshold=-18dB:ratio=2:attack=5:release=60" : ""},volume=${volume}${freezePad}${audioFade}[abase]`;
   filters.push(voiceFilter);
   const audioFilters = [voiceFilter];
   const overlays: Buffer[] = [];
@@ -485,7 +490,9 @@ export async function renderSequentialClip(input: {
     "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", output,
   );
   await ffmpegFile(command, args, overlays, deadline);
-  return { duration, captionCount, estimatedCaptionWords, captionMode: kineticCaptions ? "palabra" as const : "tarjeta" as const, cueCount, imageCount, textCount, loudness, labelCount: Number(showTitle) + Number(showLayeredHeader) + Number(Boolean(label && contract.effects.labels && !layeredStyle)) };
+  // Subtítulos con los tiempos de esta toma ya editada, para el archivo SRT del video final.
+  const srtCues: SrtCue[] = mapCaptionCues(clip.caption_cues ?? [], analysis.ranges).map((cue) => ({ start: cue.startSeconds / speed, end: cue.endSeconds / speed, text: cue.text }));
+  return { duration, captionCount, estimatedCaptionWords, captionMode: kineticCaptions ? "palabra" as const : "tarjeta" as const, cueCount, imageCount, textCount, srtCues, loudness, labelCount: Number(showTitle) + Number(showLayeredHeader) + Number(Boolean(label && contract.effects.labels && !layeredStyle)) };
 }
 
 /**
@@ -531,7 +538,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
     }
     await input.onProgress(14 + Math.round((index + 1) / input.contract.clips.length * 20), `Analizando toma ${index + 1} de ${input.contract.clips.length}`);
   }
-  const totalDuration = analyses.reduce((sum, item, index) => sum + item.ranges.reduce((value, range) => value + range.end - range.start, 0) / Math.max(.5, Math.min(2, Number(input.contract.clips[index].playback_speed ?? 1))), 0);
+  const totalDuration = analyses.reduce((sum, item, index) => sum + item.ranges.reduce((value, range) => value + range.end - range.start, 0) / Math.max(.5, Math.min(2, Number(input.contract.clips[index].playback_speed ?? 1))) + normalizeFreezeSeconds(input.contract.clips[index].freeze_end_seconds), 0);
   if (totalDuration > MAX_OUTPUT_SECONDS) throw new Error("Esta versión cloud procesa hasta 2 minutos por edición.");
   const transitionSeconds = input.contract.effects.transitions && input.contract.style_snapshot.transition !== "cut"
     ? Math.max(0, Math.min(.35, Number(input.contract.style_snapshot.transitionDuration ?? .18))) : 0;
@@ -546,6 +553,8 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
     let images = 0;
     let previewTimeMs = 0;
     const loudness: Array<{ clipIndex: number; measured_lufs: number | null; gain_db: number }> = [];
+    const srt: SrtCue[] = [];
+    let srtOffset = 0;
     for (const [index, analysis] of analyses.entries()) {
       const path = join(directory, `clip-${index}.mp4`);
       await input.onProgress(36 + Math.round(index / analyses.length * 42), `Editando toma ${index + 1} de ${analyses.length}`);
@@ -554,6 +563,8 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
         output: path, videoKbps: kbps, transitionSeconds, deadline,
       });
       clips.push(path);
+      srt.push(...rendered.srtCues.map((cue) => ({ ...cue, start: cue.start + srtOffset, end: cue.end + srtOffset })));
+      srtOffset += rendered.duration;
       captions += rendered.captionCount;
       estimatedCaptionWords += rendered.estimatedCaptionWords;
       if (rendered.captionCount > 0) captionedClips += 1;
@@ -620,6 +631,8 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
       silent_source_clips: analyses.filter((item) => !item.hasAudio).length,
       // Pista de música mezclada (null cuando el video va solo con la voz).
       music: music ? { name: music.name, volume: music.volume, ducking: music.ducking, fade_out_seconds: music.fade_out_seconds } : null,
+      // Subtítulos del video final en SRT (para subir a YouTube o editar en otra app).
+      srt: buildSrt(srt).slice(0, 40_000),
       style_applied: true, style_id: (input.contract.style_snapshot as { id?: string }).id || null,
       subtitle_position: input.contract.style_snapshot.subtitle.position || "bottom",
       zoom_percent: Math.max(0, Math.min(10, Number(input.contract.style_snapshot.execution?.zoomPercent || 0))),

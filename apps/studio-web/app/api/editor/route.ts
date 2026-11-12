@@ -9,7 +9,7 @@ import { MediaReviewError, requireCurrentMediaReview } from "../../../lib/media-
 import { readMediaReview } from "../../../lib/media-review-server";
 import { normalizeVisualResources, validateVisualResourceBudget, type VisualResource } from "../../../lib/visual-resources";
 import { normalizeMusicTrack, type MusicTrack } from "../../../lib/music-bed";
-import { normalizeClipTransform, normalizeColorFilter, normalizeTextOverlays, type ClipTransform, type TextOverlay } from "../../../lib/clip-look";
+import { normalizeClipTransform, normalizeColorFilter, normalizeFreezeSeconds, normalizeTextOverlays, normalizeVoiceEffect, type ClipTransform, type TextOverlay } from "../../../lib/clip-look";
 
 type EditOptions = {
   captions?: boolean;
@@ -49,6 +49,8 @@ type TimelineItem = {
   texts?: unknown;
   transform?: unknown;
   colorFilter?: unknown;
+  voiceEffect?: unknown;
+  freezeEndSeconds?: unknown;
 };
 
 function bounded(value: unknown, fallback: number, min: number, max: number) {
@@ -243,6 +245,8 @@ export async function POST(request: Request) {
         text_overlays: clipLooks[index].texts,
         transform: clipLooks[index].transform,
         color_filter: normalizeColorFilter(edit?.colorFilter),
+        voice_effect: normalizeVoiceEffect(edit?.voiceEffect),
+        freeze_end_seconds: normalizeFreezeSeconds(edit?.freezeEndSeconds),
       })),
       style: style.id,
       style_snapshot: styleSnapshot,

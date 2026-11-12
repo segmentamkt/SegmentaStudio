@@ -99,3 +99,56 @@ test("texts follow trims and splits, and damaged drafts keep the valid ones", as
   assert.deepEqual(fitTextOverlays(texts, 3, 8).map((text) => [text.id, text.startSeconds, text.endSeconds]), [["a", 3, 4], ["b", 5, 7]]);
   assert.deepEqual(restoreTextOverlays([{ text: "" }, { id: "ok", text: "bien" }], bounds).map((text) => text.id), ["ok"]);
 });
+
+test("voice effects keep the take length; freeze is bounded", async () => {
+  const { VOICE_EFFECTS, normalizeFreezeSeconds, normalizeVoiceEffect, voiceEffectFilters } = await import("../lib/clip-look");
+  assert.equal(normalizeVoiceEffect("robot"), "robot");
+  assert.equal(normalizeVoiceEffect("helio"), "none");
+  assert.equal(normalizeFreezeSeconds(9), 3);
+  assert.equal(normalizeFreezeSeconds(-1), 0);
+  assert.equal(normalizeFreezeSeconds("2"), 0);
+  for (const effect of VOICE_EFFECTS) {
+    const chain = ["aformat=sample_fmts=fltp:channel_layouts=stereo", ...voiceEffectFilters(effect.id)].join(",");
+    const result: SpawnSyncReturns<string> = spawnSync(ffmpegPath!, ["-hide_banner", "-f", "lavfi", "-i", "sine=f=300:sample_rate=48000:d=2", "-af", chain, "-f", "null", "-"], { encoding: "utf8", timeout: 30_000 });
+    assert.equal(result.status, 0, `${effect.id}: ${result.stderr.slice(-400)}`);
+    const seconds = [...result.stderr.matchAll(/time=00:00:(\d+\.\d+)/g)].map((match) => Number(match[1])).pop() ?? 0;
+    // Echo tails may run a little longer; the render cuts every take at its exact length.
+    assert.ok(seconds > 1.9 && seconds < 3.1, `${effect.id} changed the length to ${seconds}`);
+  }
+});
+
+test("a frozen ending lengthens the take; voice effect and SRT timings come out of the render", async () => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { renderSequentialClip } = await import("../lib/sequential-cloud-video-renderer");
+  const directory = await mkdtemp(join(tmpdir(), "segmenta-freeze-test-"));
+  try {
+    const source = join(directory, "take.mp4");
+    const make = spawnSync(ffmpegPath!, ["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=2",
+      "-f", "lavfi", "-i", "sine=f=300:sample_rate=48000:d=2", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", source], { encoding: "utf8" });
+    assert.equal(make.status, 0, make.stderr);
+    const contract: Parameters<typeof renderSequentialClip>[0]["contract"] = {
+      objective: "Prueba", session: { title: "Edición de 1 video" },
+      clips: [{ id: "1", name: "uno", object_key: "uno", duration_seconds: 2, transcript: "", playback_speed: 2, voice_effect: "ardilla", freeze_end_seconds: 1,
+        caption_cues: [{ startSeconds: .4, endSeconds: 1.2, text: "hola" }] }],
+      style_snapshot: { transition: "cut", subtitle: { text: "#FFFFFF", box: "#000000", size: 60, uppercase: false }, execution: { framing: "fill", titleCards: false } },
+      captions: { enabled: false, max_words_per_card: 4 },
+      dead_air: { remove: false, threshold_ms: 500 },
+      effects: { transitions: false, sound_effects: false, labels: false },
+    };
+    const output = join(directory, "out.mp4");
+    const result = await renderSequentialClip({
+      command: ffmpegPath!, contract, analysis: { duration: 2, ranges: [{ start: 0, end: 2 }], removed: 0, hasAudio: true },
+      url: source, index: 0, output, videoKbps: 2000, transitionSeconds: 0, deadline: Date.now() + 60_000,
+    });
+    assert.equal(result.duration, 2);
+    assert.deepEqual(result.srtCues, [{ start: .2, end: .6, text: "hola" }]);
+    const probe = spawnSync(ffmpegPath!, ["-hide_banner", "-i", output, "-f", "null", "-"], { encoding: "utf8" });
+    const seconds = Number(/Duration: 00:00:(\d+\.\d+)/.exec(probe.stderr)?.[1]);
+    assert.ok(Math.abs(seconds - 2) < .1, `1 s at 2x plus 1 s frozen, got ${seconds}`);
+    assert.match(probe.stderr, /Audio: aac/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
