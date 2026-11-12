@@ -1,6 +1,6 @@
 // Generates apps/studio-web/app/theme.css: light mode by mirroring Tailwind's palette and the app's dark hex tokens.
-// Uso: node scripts/theme/generate-theme.cjs "$PWD" "$(cat scripts/theme/tokens.json)"
-const fs = require("fs");
+// Uso: node scripts/theme/generate-theme.mjs "$PWD" "$(cat scripts/theme/tokens.json)"
+import fs from "node:fs";
 const root = process.argv[2];
 const themeCss = fs.readFileSync(`${root}/node_modules/tailwindcss/theme.css`, "utf8");
 const palette = {};
@@ -9,7 +9,6 @@ const mirror = { 50: 950, 100: 900, 200: 800, 300: 700, 400: 600, 500: 500, 600:
 
 // sRGB hex -> OKLCH and back, to invert the lightness of the app's own dark surfaces.
 const toLin = (c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
-const toGam = (c) => (c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055);
 function hexToOklch(hex) {
   const h = hex.replace("#", "");
   const [r, g, b] = [0, 2, 4].map((i) => toLin(parseInt(h.length === 3 ? h[i / 2].repeat(2) : h.slice(i, i + 2), 16) / 255));
