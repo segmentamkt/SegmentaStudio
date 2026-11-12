@@ -4,6 +4,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Eye, EyeOff, Film, LoaderCircle, LockKeyhole, Mail } from "lucide-react";
 import { createClient } from "../../lib/supabase/browser";
 import { accountAuthErrorMessage, validAccountPassword } from "../../lib/account-auth";
+import { ThemeToggle } from "../../components/theme-toggle";
 
 type Mode = "login" | "forgot" | "reset";
 
@@ -73,9 +74,10 @@ export default function LoginPage() {
   const changeMode = (next: Mode) => { setMode(next); setError(""); setNotice(""); setPassword(""); setRepeat(""); };
   const input = "mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3.5 text-base text-white outline-none transition focus:border-violet-400/60";
 
-  return <main className="relative grid min-h-dvh place-items-center overflow-hidden bg-[#070910] px-4 py-8 text-white">
+  return <main className="relative grid min-h-dvh place-items-center overflow-hidden bg-(--c-070910) px-4 py-8 text-white">
     <div aria-hidden="true" className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_12%,rgba(139,92,246,.22),transparent_42%)]" />
-    <section className="relative w-full max-w-md rounded-[2rem] border border-white/10 bg-[#111521]/95 p-6 shadow-2xl sm:p-9">
+    <ThemeToggle className="absolute right-4 top-4 z-10" />
+    <section className="relative w-full max-w-md rounded-[2rem] border border-white/10 bg-(--c-111521)/95 p-6 shadow-2xl sm:p-9">
       <div className="flex items-center gap-3"><span className="grid h-12 w-12 place-items-center rounded-2xl bg-gradient-to-br from-violet-500 to-cyan-400"><Film size={23} /></span><div><p className="text-lg font-semibold">Segmenta Studio</p><p className="text-[10px] uppercase tracking-[.22em] text-zinc-400">Editor cloud</p></div></div>
       <div className="mt-9"><span className="text-[10px] font-bold uppercase tracking-[.22em] text-violet-300">Acceso anfitrión</span><h1 className="mt-2 text-2xl font-semibold sm:text-3xl">{mode === "forgot" ? "Recuperar acceso" : mode === "reset" ? "Nueva contraseña" : "Entra a tu estudio"}</h1><p className="mt-2 text-sm leading-6 text-zinc-400">{mode === "login" ? "Tus proyectos, videos y ediciones están protegidos con tu cuenta." : mode === "forgot" ? "Te enviaremos un enlace al correo de tu cuenta." : "Define una contraseña nueva para volver a entrar."}</p></div>
       {error && <p role="alert" className="mt-6 rounded-xl border border-red-400/20 bg-red-400/10 p-3 text-sm text-red-200">{error}</p>}

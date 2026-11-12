@@ -81,7 +81,7 @@ export function TakeGalleryCard({ take, title, onSegment, onDelete }: {
   };
 
   return <article className="min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-black/20">
-    <div className="aspect-[9/12] bg-black">
+    <div data-theme="dark" className="aspect-[9/12] bg-black">
       <video controls playsInline src={mediaUrl} preload="metadata" aria-label={title || 'Toma grabada'} className="h-full w-full object-contain" onError={() => setVideoErrorId(take.id)} onLoadedMetadata={() => setVideoErrorId('')} />
     </div>
     <div className="space-y-3 p-3">

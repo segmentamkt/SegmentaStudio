@@ -172,7 +172,7 @@ export function SkillsStudio({ portfolioId }: { portfolioId: string }) {
           })}
         </div>
 
-        <aside className="h-fit rounded-3xl border border-white/10 bg-[#15111d] p-5 xl:sticky xl:top-5" aria-label={`Ajustes de ${selected.name}`}>
+        <aside className="h-fit rounded-3xl border border-white/10 bg-(--c-15111d) p-5 xl:sticky xl:top-5" aria-label={`Ajustes de ${selected.name}`}>
           <div className="flex items-start justify-between gap-4">
             <div className="flex min-w-0 items-center gap-3">
               <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-violet-400/10 text-2xl" aria-hidden="true">{selected.icon}</span>

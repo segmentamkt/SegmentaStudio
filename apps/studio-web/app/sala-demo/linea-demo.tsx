@@ -18,8 +18,8 @@ export function LineaDemo() {
   const update = (id: string, patch: Partial<TimelineItem>) => setItems((list) => list.map((item) => item.id === id ? { ...item, ...patch } : item));
   const selected = items.find((item) => item.id === selectedId);
   return (
-    <main className="min-h-screen bg-[#07090e] p-4 text-zinc-300 sm:p-8">
-      <div className="mx-auto max-w-4xl rounded-2xl border border-white/10 bg-[#0b0e15] p-3 sm:p-4">
+    <main className="min-h-screen bg-(--c-07090e) p-4 text-zinc-300 sm:p-8">
+      <div className="mx-auto max-w-4xl rounded-2xl border border-white/10 bg-(--c-0b0e15) p-3 sm:p-4">
         <EditorTimeline
           items={items}
           selectedId={selectedId}

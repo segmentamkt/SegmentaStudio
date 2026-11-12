@@ -195,7 +195,7 @@ export function EditorTimeline({ items, selectedId, playhead, busy, onSeek, onTr
 
       <div className="flex overflow-hidden rounded-xl border border-white/10 bg-black/35">
         {/* Cabecera de carriles: fija, no se desplaza con la pista. */}
-        <div className="shrink-0 border-r border-white/10 bg-[#0d1018]" style={{ width: HEADER_W }} aria-hidden="true">
+        <div className="shrink-0 border-r border-white/10 bg-(--c-0d1018)" style={{ width: HEADER_W }} aria-hidden="true">
           <div style={{ height: RULER_H }} className="border-b border-white/10" />
           <div style={{ height: SUBTITLE_H }} className="grid place-items-center text-orange-300"><Captions size={13} /></div>
           <div style={{ height: VIDEO_H }} className="grid place-items-center border-t border-white/10 text-violet-300"><Video size={14} /></div>

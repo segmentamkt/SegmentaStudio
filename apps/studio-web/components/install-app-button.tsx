@@ -45,7 +45,7 @@ export function InstallAppButton() {
       <Download size={14} /><span className="hidden sm:inline">Instalar app</span>
     </button>
     {showHelp && <div className="fixed inset-0 z-[80] grid place-items-center bg-black/80 p-4 backdrop-blur-sm">
-      <section role="dialog" aria-modal="true" aria-labelledby="install-title" className="w-full max-w-md rounded-3xl border border-white/10 bg-[#111521] p-6 text-white shadow-2xl">
+      <section role="dialog" aria-modal="true" aria-labelledby="install-title" className="w-full max-w-md rounded-3xl border border-white/10 bg-(--c-111521) p-6 text-white shadow-2xl">
         <div className="flex items-start justify-between gap-4"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-violet-300">Instalación</p><h2 id="install-title" className="mt-1 text-xl font-semibold">Lleva Segmenta Studio a tu pantalla</h2></div><button onClick={() => setShowHelp(false)} aria-label="Cerrar" className="grid h-9 w-9 place-items-center rounded-full bg-white/5"><X size={16} /></button></div>
         <div className="mt-6 space-y-4 text-sm leading-6 text-zinc-300">
           <div className="rounded-2xl border border-white/8 bg-black/20 p-4"><strong className="block text-white">iPhone o iPad</strong><span className="mt-1 block text-zinc-500">Abre esta página en Safari, toca <Share className="mx-1 inline" size={15} /> Compartir y elige “Agregar a pantalla de inicio”.</span></div>

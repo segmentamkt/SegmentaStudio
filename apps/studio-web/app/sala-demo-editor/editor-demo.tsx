@@ -34,7 +34,7 @@ function mockReviewApi() {
 export function EditorDemo() {
   mockReviewApi();
   return (
-    <main className="min-h-screen bg-[#070910] p-0 text-white sm:p-6">
+    <main className="min-h-screen bg-(--c-070910) p-0 text-white sm:p-6">
       <EditorStudio
         portfolioId="p1"
         sessions={SESSIONS}

@@ -536,7 +536,7 @@ export function SalaEdicion(props: Props) {
   const shownWord = typed ? null : activeWord;
   const phaseLabel = phase === "escuchando" ? "PREPARANDO" : phase === "trabajando" ? "EDITANDO" : phase === "listo" ? "LISTO" : "ERROR";
 
-  return <div ref={rootRef} className="fixed inset-0 z-[80] flex min-w-[1100px] flex-col overflow-hidden bg-[#06070b] text-zinc-200" role="dialog" aria-label="Sala de edición en vivo">
+  return <div data-theme="dark" ref={rootRef} className="fixed inset-0 z-[80] flex min-w-[1100px] flex-col overflow-hidden bg-(--c-06070b) text-zinc-200" role="dialog" aria-label="Sala de edición en vivo">
     <style>{`
       @font-face { font-family: SegmentaMontserrat; src: url(/fonts/Montserrat-ExtraBoldItalic.ttf) format("truetype"); font-weight: 800; font-style: italic; font-display: swap; }
       @font-face { font-family: SegmentaMontserrat; src: url(/fonts/Montserrat-BlackItalic.ttf) format("truetype"); font-weight: 900; font-style: italic; font-display: swap; }
@@ -549,7 +549,7 @@ export function SalaEdicion(props: Props) {
       @keyframes sala-draw { from { transform: scale(1.12); opacity: 0 } to { transform: scale(1); opacity: 1 } }
     `}</style>
 
-    <header className="flex h-12 shrink-0 items-center gap-4 border-b border-white/8 bg-[#0b0d13] px-4">
+    <header className="flex h-12 shrink-0 items-center gap-4 border-b border-white/8 bg-(--c-0b0d13) px-4">
       <div className="flex items-center gap-2"><span className="h-6 w-6 rounded-md bg-gradient-to-br from-[#FF7A00] to-violet-500" /><strong className="text-sm text-white">Segmenta Studio</strong><span className="text-xs text-zinc-500">Sala de edición</span></div>
       <div className="mx-auto text-center"><p className="text-xs font-semibold text-white">{props.projectName}</p><p className="text-[10px] text-zinc-500">{status}</p></div>
       <div className="flex items-center gap-1.5">{AGENT_ORDER.map((agent) => <span key={agent} title={`${SALA_AGENTS[agent].name}: ${working[agent] || (doneCount[agent] ? `${doneCount[agent]} acciones` : "en espera")}`}
@@ -562,7 +562,7 @@ export function SalaEdicion(props: Props) {
     </header>
 
     <div className="grid min-h-0 flex-1 grid-cols-[minmax(150px,200px)_minmax(200px,250px)_minmax(290px,1fr)_minmax(220px,260px)_minmax(220px,280px)]">
-      <section className="min-h-0 overflow-auto border-r border-white/8 bg-[#0a0c11] p-3">
+      <section className="min-h-0 overflow-auto border-r border-white/8 bg-(--c-0a0c11) p-3">
         <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Tomas · {clips.length}</h3>
         <div className="space-y-2">{clips.map((item, index) => <button key={item.id} type="button" data-target={`clip-${index}`} onClick={() => setSelected(index)}
           className={`flex w-full gap-2 rounded-lg border p-1.5 text-left ${selected === index ? "border-[#FF7A00]/60 bg-[#FF7A00]/10" : "border-white/8 bg-white/[.02]"}`}>
@@ -572,7 +572,7 @@ export function SalaEdicion(props: Props) {
         </button>)}</div>
       </section>
 
-      <section className="flex min-h-0 flex-col border-r border-white/8 bg-[#0a0c11]">
+      <section className="flex min-h-0 flex-col border-r border-white/8 bg-(--c-0a0c11)">
         <h3 className="flex items-center border-b border-white/8 px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Actividad de los agentes<span className="ml-auto font-mono normal-case tracking-normal text-zinc-600">{log.length}</span></h3>
         <ol className="min-h-0 flex-1 overflow-auto p-1.5 text-[11px] leading-4" aria-live="polite">{log.map((entry) => { const Icon = ACTION_ICON[entry.kind]; const agent = SALA_AGENTS[entry.agent]; return <li key={`${entry.id}-${entry.at}`} className="flex gap-1.5 rounded-md px-1.5 py-1 odd:bg-white/[.02]">
           <span className="w-[38px] shrink-0 pt-px font-mono text-[9px] text-zinc-600">{elapsed(entry.at)}</span>
@@ -582,7 +582,7 @@ export function SalaEdicion(props: Props) {
         </li>; })}{!log.length && <li className="px-2 py-3 text-zinc-500">{phase === "escuchando" ? "Escuchando y midiendo las tomas…" : "Esperando la primera acción…"}</li>}</ol>
       </section>
 
-      <section className="@container relative flex min-h-0 min-w-0 flex-col items-center justify-center gap-2 bg-[#050608] p-3">
+      <section className="@container relative flex min-h-0 min-w-0 flex-col items-center justify-center gap-2 bg-(--c-050608) p-3">
         <div ref={viewerRef} className="relative aspect-[9/16] h-full max-h-full overflow-hidden rounded-lg bg-black shadow-2xl ring-1 ring-white/10" style={{ ["--viewer-width" as string]: "300px" }}>
           {clip && <video key={`${clip.id}-${corsBlocked}`} ref={videoRef} src={clip.videoUrl} crossOrigin={corsBlocked ? undefined : "anonymous"} onError={() => setCorsBlocked(true)}
             muted={muted} playsInline className="h-full w-full" style={{ objectFit: framed.has(selected) ? "cover" : "contain" }} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} />}
@@ -601,8 +601,8 @@ export function SalaEdicion(props: Props) {
           <span className="absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300">{formatTime(time - (clip?.window.start ?? 0))}</span>
           <span className="absolute right-2 top-2 flex items-center gap-1 rounded bg-black/60 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-zinc-300"><span className="h-1.5 w-1.5 rounded-full" style={{ background: phase === "listo" ? "#34d399" : "#FF7A00", animation: following ? "sala-pulse 1s infinite" : undefined }} />{phase === "escuchando" && following ? "Preparando" : following ? "Agentes en el cuadro" : playing ? "Reproduciendo" : "Programa"}</span>
         </div>
-        <div className="pointer-events-none absolute bottom-14 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-full border border-white/10 bg-[#0b0d13]/90 px-2.5 py-1.5 text-[10px] text-zinc-300 shadow-2xl backdrop-blur" aria-live="polite">
-          <span className="flex -space-x-1">{AGENT_ORDER.map((agent) => <span key={agent} className="h-3.5 w-3.5 rounded-full ring-2 ring-[#0b0d13] transition-opacity" style={{ background: SALA_AGENTS[agent].color, opacity: working[agent] ? 1 : .4 }} />)}</span>
+        <div className="pointer-events-none absolute bottom-14 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-full border border-white/10 bg-(--c-0b0d13)/90 px-2.5 py-1.5 text-[10px] text-zinc-300 shadow-2xl backdrop-blur" aria-live="polite">
+          <span className="flex -space-x-1">{AGENT_ORDER.map((agent) => <span key={agent} className="h-3.5 w-3.5 rounded-full ring-2 ring-(--c-0b0d13) transition-opacity" style={{ background: SALA_AGENTS[agent].color, opacity: working[agent] ? 1 : .4 }} />)}</span>
           <strong className="text-white">{activeAgents.length ? `${activeAgents.length}/${AGENT_ORDER.length} agentes` : `${AGENT_ORDER.length} agentes`}</strong>
           <span className="font-mono text-zinc-400">{doneTotal}/{stepsTotal || "—"}<span className="hidden @[380px]:inline"> acciones</span></span>
           <span className="relative hidden h-1 w-14 overflow-hidden rounded bg-white/10 @[340px]:block"><span className="absolute inset-y-0 left-0 rounded bg-[#FF7A00] transition-[width]" style={{ width: `${stepsTotal ? doneTotal / stepsTotal * 100 : 0}%` }} /></span>
@@ -615,12 +615,12 @@ export function SalaEdicion(props: Props) {
         </div>
       </section>
 
-      <section className="min-h-0 space-y-3 overflow-auto border-l border-white/8 bg-[#0a0c11] p-3">
+      <section className="min-h-0 space-y-3 overflow-auto border-l border-white/8 bg-(--c-0a0c11) p-3">
         <div><h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Forma de onda · voz</h3><canvas ref={waveRef} width={440} height={110} className="h-[110px] w-full rounded-md ring-1 ring-white/8" /></div>
         <div className="flex gap-3">
-          <div><h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Vectorscopio</h3><canvas ref={scopeRef} width={150} height={150} className="h-[124px] w-[124px] rounded-md bg-[#0a0c12] ring-1 ring-white/8" /><canvas ref={sampleRef} width={36} height={64} className="hidden" /></div>
+          <div><h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Vectorscopio</h3><canvas ref={scopeRef} width={150} height={150} className="h-[124px] w-[124px] rounded-md bg-(--c-0a0c12) ring-1 ring-white/8" /><canvas ref={sampleRef} width={36} height={64} className="hidden" /></div>
           <div className="min-w-0 flex-1"><h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Nivel</h3>
-            <div className="flex h-[124px] items-end gap-1.5 rounded-md bg-[#0a0c12] p-2 ring-1 ring-white/8">{[0, 1].map((channel) => <div key={channel} className="relative h-full w-3 overflow-hidden rounded-sm bg-white/5"><div className="absolute bottom-0 w-full rounded-sm" style={{ height: `${level * 100}%`, background: "linear-gradient(to top,#34d399 0%,#34d399 70%,#facc15 85%,#ef4444 100%)" }} /></div>)}<span className="ml-1 self-start text-[9px] leading-3 text-zinc-500" title="El visor muestra el nivel de la toma original; la exportación la lleva a −14 LUFS">Original<br /><br />Entrega<br /><strong className="text-zinc-300">−14 LUFS</strong></span></div></div>
+            <div className="flex h-[124px] items-end gap-1.5 rounded-md bg-(--c-0a0c12) p-2 ring-1 ring-white/8">{[0, 1].map((channel) => <div key={channel} className="relative h-full w-3 overflow-hidden rounded-sm bg-white/5"><div className="absolute bottom-0 w-full rounded-sm" style={{ height: `${level * 100}%`, background: "linear-gradient(to top,#34d399 0%,#34d399 70%,#facc15 85%,#ef4444 100%)" }} /></div>)}<span className="ml-1 self-start text-[9px] leading-3 text-zinc-500" title="El visor muestra el nivel de la toma original; la exportación la lleva a −14 LUFS">Original<br /><br />Entrega<br /><strong className="text-zinc-300">−14 LUFS</strong></span></div></div>
         </div>
         <div data-target="color" className={`rounded-lg border p-2.5 transition-colors ${grade ? "border-[#60A5FA]/40 bg-[#60A5FA]/[.06]" : "border-white/8 bg-white/[.02]"}`}>
           <h3 className="mb-2 flex text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Color<span className="ml-auto normal-case tracking-normal" style={{ color: grade ? "#93c5fd" : undefined }}>{grade ? grade.neutral ? "Neutro · sin filtros" : "Ajuste del estilo" : "Sin revisar"}</span></h3>
@@ -636,7 +636,7 @@ export function SalaEdicion(props: Props) {
           <p>Revisiones: <strong className="text-emerald-300">{checks.filter((item) => item.ok).length} bien</strong>{checks.some((item) => !item.ok) && <> · <strong className="text-amber-300">{checks.filter((item) => !item.ok).length} por revisar</strong></>}</p></div>
       </section>
 
-      <section className="min-h-0 space-y-3 overflow-auto border-l border-white/8 bg-[#0b0d13] p-3">
+      <section className="min-h-0 space-y-3 overflow-auto border-l border-white/8 bg-(--c-0b0d13) p-3">
         <div><h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Agentes</h3>
           <ul className="space-y-1.5">{AGENT_ORDER.map((agent) => <li key={agent} className="rounded-lg border border-white/8 bg-white/[.02] p-2">
             <div className="flex items-center gap-2"><span className="grid h-6 w-6 place-items-center rounded-full text-[8px] font-bold text-black" style={{ background: SALA_AGENTS[agent].color }}>{SALA_AGENTS[agent].initials}</span>
@@ -650,7 +650,7 @@ export function SalaEdicion(props: Props) {
       </section>
     </div>
 
-    <section ref={timelineRef} className="relative h-[268px] shrink-0 border-t border-white/10 bg-[#0b0d13] px-3 pb-2 pt-1">
+    <section ref={timelineRef} className="relative h-[268px] shrink-0 border-t border-white/10 bg-(--c-0b0d13) px-3 pb-2 pt-1">
       <div className="ml-[92px] flex h-5 items-end text-[9px] text-zinc-500">{ticks.filter((tick) => tick <= total).map((tick) => <span key={tick} className="absolute" style={{ left: `calc(92px + 12px + (100% - 92px - 24px) * ${tick / total})` }}>{formatTime(tick).slice(1, 5)}</span>)}</div>
       {([["video", "V1  Video"], ["subtitulos", "T1  Texto"], ["voz", "A1  Voz"], ["sonido", "A2  SFX"], ["color", "C1  Color"], ["calidad", "QA  Revisión"]] as const).map(([track, name]) => <div key={track} className="flex h-[38px] items-center border-b border-white/5">
         <span className="w-[92px] shrink-0 text-[10px] font-semibold text-zinc-500">{name}</span>

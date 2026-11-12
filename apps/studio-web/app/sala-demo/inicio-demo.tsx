@@ -27,7 +27,7 @@ export function InicioDemo() {
   const [last, setLast] = useState("ninguna");
   const note = (label: string) => () => setLast(label);
   return (
-    <main className="min-h-screen bg-[#070910] p-4 pb-28 text-white sm:p-8">
+    <main className="min-h-screen bg-(--c-070910) p-4 pb-28 text-white sm:p-8">
       <div className="mx-auto max-w-[1200px]">
         <StudioHome
           portfolioName="Mi portafolio"

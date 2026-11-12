@@ -27,7 +27,7 @@ export function OrdenDemo() {
   }, []);
   if (error) return <p className="p-6 text-sm text-amber-300">{error}</p>;
   if (!state) return <p className="p-6 text-sm text-zinc-400">Leyendo la fecha de grabación de cada video…</p>;
-  return <div className="min-h-screen bg-[#06070b] p-6 text-sm text-zinc-300">
+  return <div className="min-h-screen bg-(--c-06070b) p-6 text-sm text-zinc-300">
     <p>Elegidos en este orden: {FILES.join(" · ")}</p>
     {result && <p className="mt-2 text-emerald-300" data-testid="orden-resultado">Se subirían en este orden: {result}</p>}
     {!result && <UploadOrderReview files={state.files} plan={state.plan} targets={["Escena 1: Intro", "Escena 2: Producto"]} scriptNote

@@ -113,7 +113,7 @@ export function ScriptImporter({ open, portfolioId, portfolioName, onClose, onCr
 
   if (!open) return null;
   return <div className="fixed inset-0 z-[70] grid place-items-center bg-black/80 p-2 backdrop-blur-sm sm:p-6">
-    <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={headingId} tabIndex={-1} onKeyDown={trapFocus} className="flex max-h-[94dvh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#10121c] text-white shadow-2xl outline-none">
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={headingId} tabIndex={-1} onKeyDown={trapFocus} className="flex max-h-[94dvh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl border border-white/10 bg-(--c-10121c) text-white shadow-2xl outline-none">
       <header className="flex items-start justify-between gap-3 border-b border-white/10 p-4 sm:p-6">
         <div><p className="text-[10px] font-semibold uppercase tracking-widest text-violet-300">Del libreto a la cámara</p><h2 id={headingId} className="mt-1 text-xl font-semibold">Importar libretos</h2><p className="mt-1 text-xs text-zinc-400">Cada libreto será una carpeta en {portfolioName || "tu portafolio"}, con sus escenas en orden.</p></div>
         <button onClick={close} disabled={busy} aria-label="Cerrar importación" className="rounded-xl p-2 hover:bg-white/10 disabled:opacity-30"><X size={20} /></button>

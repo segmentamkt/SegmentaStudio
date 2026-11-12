@@ -53,7 +53,7 @@ export function UploadOrderReview({ files, plan, targets, scriptNote, onCancel, 
   const Icon = plan.strategy === "fecha" ? CalendarClock : plan.strategy === "nombre" ? Hash : ListOrdered;
 
   return <div className="fixed inset-0 z-[90] grid place-items-center bg-black/75 p-3 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="upload-order-title">
-    <div className="flex max-h-[94vh] w-full max-w-5xl flex-col overflow-y-auto overflow-x-hidden rounded-3xl border border-white/10 bg-[#0b0d13] shadow-2xl">
+    <div className="flex max-h-[94vh] w-full max-w-5xl flex-col overflow-y-auto overflow-x-hidden rounded-3xl border border-white/10 bg-(--c-0b0d13) shadow-2xl">
       <header className="flex items-start gap-3 border-b border-white/8 px-5 py-4">
         <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-violet-500/15 text-violet-200"><Icon size={18} /></span>
         <div className="min-w-0 flex-1">
@@ -74,7 +74,7 @@ export function UploadOrderReview({ files, plan, targets, scriptNote, onCancel, 
             className={`relative flex w-[148px] shrink-0 cursor-grab flex-col rounded-2xl border bg-white/[.03] p-2 transition ${dragging === position ? "opacity-40" : ""} ${note?.uncertain ? "border-amber-300/40" : "border-white/10"}`}>
             {dropAt === position && dragging !== null && <span className="absolute -left-2 top-2 bottom-2 w-1 rounded-full bg-violet-400" />}
             {dropAt === position + 1 && dragging !== null && position === order.length - 1 && <span className="absolute -right-2 top-2 bottom-2 w-1 rounded-full bg-violet-400" />}
-            <div className="relative aspect-[9/16] overflow-hidden rounded-xl bg-black">
+            <div data-theme="dark" className="relative aspect-[9/16] overflow-hidden rounded-xl bg-black">
               <video src={`${urls[fileIndex]}#t=0.5`} muted playsInline preload="metadata" className="h-full w-full object-cover" />
               <span className="absolute left-1.5 top-1.5 grid h-7 min-w-7 place-items-center rounded-full bg-violet-500 px-1.5 text-sm font-bold text-white shadow">{position + 1}</span>
             </div>

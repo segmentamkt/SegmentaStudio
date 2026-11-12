@@ -55,7 +55,7 @@ export function StudioHome(props: Props) {
 
   return (
     <div className="space-y-6 pb-4">
-      <section className="relative overflow-hidden rounded-3xl border border-white/8 bg-gradient-to-br from-violet-600/30 via-indigo-600/12 to-[#0c0f18] p-5 sm:p-8">
+      <section className="relative overflow-hidden rounded-3xl border border-white/8 bg-gradient-to-br from-violet-600/30 via-indigo-600/12 to-(--c-0c0f18) p-5 sm:p-8">
         <p className="text-[10px] font-bold uppercase tracking-[.2em] text-violet-200/80">{niche || "Tu portafolio"}</p>
         <h1 className="mt-2 text-2xl font-semibold leading-tight sm:text-4xl">{portfolioName}</h1>
         <p className="mt-2 max-w-xl text-sm leading-6 text-zinc-300/80">Graba, sube y edita sin salir de aquí. Tus tomas, tus libretos y tus videos listos para exportar.</p>
@@ -101,6 +101,7 @@ export function StudioHome(props: Props) {
                 onClick={() => props.onOpenTake(take)}
                 disabled={locked}
                 aria-label={`Editar toma de ${take.sessionTitle}, ${formatDuration(take.durationMs)}`}
+                data-theme="dark"
                 className="relative aspect-[9/14] w-[38%] shrink-0 snap-start overflow-hidden rounded-2xl border border-white/8 bg-gradient-to-b from-zinc-800 to-zinc-950 text-left disabled:opacity-50 sm:w-auto"
               >
                 <video src={`/api/media/${take.id}#t=0.1`} preload="metadata" muted playsInline aria-hidden="true" className="absolute inset-0 h-full w-full object-cover" />
@@ -130,7 +131,7 @@ export function StudioHome(props: Props) {
         </div>
       </section>
 
-      <nav aria-label="Navegación principal" className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-5 border-t border-white/8 bg-[#0b0d13]/95 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur-xl lg:hidden">
+      <nav aria-label="Navegación principal" className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-5 border-t border-white/8 bg-(--c-0b0d13)/95 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur-xl lg:hidden">
         {[
           { id: "summary", label: "Inicio", icon: Home, disabled: false, onClick: () => props.onOpenView("summary") },
           { id: "record", label: "Grabar", icon: Camera, disabled: recordDisabled, onClick: props.onRecord },
