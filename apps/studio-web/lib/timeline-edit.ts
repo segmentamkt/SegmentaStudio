@@ -85,3 +85,31 @@ export function playheadX(box: TimelineBox | undefined, span: TimelineSpan, seco
 export function canSplitAt(span: TimelineSpan, cut: number) {
   return span.included && cut - span.start >= MIN_TAKE_SECONDS && span.end - cut >= MIN_TAKE_SECONDS;
 }
+
+/** Segundos del video final transcurridos al llegar a `sourceSeconds` dentro de la toma `id` (solo cuentan las incluidas). */
+export function montageOffset(spans: TimelineSpan[], id: string, sourceSeconds: number): number {
+  let total = 0;
+  for (const span of spans) {
+    if (!span.included) continue;
+    if (span.id === id) return total + Math.min(Math.max(0, sourceSeconds - span.start), span.end - span.start) / speedOf(span);
+    total += outputSeconds(span);
+  }
+  return total;
+}
+
+/** Duración del video final según la línea de tiempo (antes de quitar silencios al exportar). */
+export function montageDuration(spans: TimelineSpan[]): number {
+  return spans.reduce((total, span) => total + outputSeconds(span), 0);
+}
+
+/** Siguiente toma incluida después de `id`, para reproducir el montaje seguido. */
+export function nextIncluded<T extends TimelineSpan>(spans: T[], id: string): T | null {
+  const index = spans.findIndex((span) => span.id === id);
+  return spans.slice(index + 1).find((span) => span.included) ?? null;
+}
+
+/** «1:05» para mostrar tiempos del montaje. */
+export function formatClock(seconds: number): string {
+  const whole = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}

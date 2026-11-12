@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Upload } from "tus-js-client";
 import { createClient as createSupabaseClient } from "./supabase/browser";
 import { MUSIC_DEFAULTS, MUSIC_MAX_BYTES, musicMimeType, musicObjectKey, type MusicTrack } from "./music-bed";
@@ -41,4 +42,16 @@ export async function signedMusicUrl(objectKey: string): Promise<string | null> 
   const supabase = createSupabaseClient();
   const signed = await supabase.storage.from("kiko-videos").createSignedUrl(objectKey, 3600);
   return signed.data?.signedUrl ?? null;
+}
+
+/** Enlace firmado de la canción, renovado cuando cambia la canción elegida. */
+export function useSignedMusicUrl(objectKey: string): string {
+  const [source, setSource] = useState<{ key: string; url: string } | null>(null);
+  useEffect(() => {
+    if (!objectKey) return;
+    let cancelled = false;
+    void signedMusicUrl(objectKey).then((url) => { if (!cancelled && url) setSource({ key: objectKey, url }); }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [objectKey]);
+  return source?.key === objectKey ? source.url : "";
 }

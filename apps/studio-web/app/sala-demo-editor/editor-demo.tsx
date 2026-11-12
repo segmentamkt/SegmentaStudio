@@ -2,11 +2,11 @@
 
 import { EditorStudio } from "../../components/editor-studio";
 
-/** Tres tomas aprobadas de prueba. Los videos no existen: la vista previa muestra su estado de error, lo demás funciona. */
+/** Tres tomas aprobadas de prueba con videos locales de public/_dev/sala (solo en desarrollo). */
 const TAKES = [
-  { id: "t1", sessionId: "s1", sceneId: "sc1", status: "approved", durationMs: 6400, bytes: 1000, objectKey: "demo/t1", mimeType: "video/mp4", createdAt: "2026-11-10T10:00:00Z" },
-  { id: "t2", sessionId: "s1", sceneId: "sc2", status: "approved", durationMs: 9800, bytes: 1000, objectKey: "demo/t2", mimeType: "video/mp4", createdAt: "2026-11-10T10:01:00Z" },
-  { id: "t3", sessionId: "s1", sceneId: "sc3", status: "approved", durationMs: 7200, bytes: 1000, objectKey: "demo/t3", mimeType: "video/mp4", createdAt: "2026-11-10T10:02:00Z" },
+  { id: "t1", sessionId: "s1", sceneId: "sc1", status: "approved", durationMs: 36890, bytes: 1000, objectKey: "demo/t1", mimeType: "video/mp4", createdAt: "2026-11-10T10:00:00Z" },
+  { id: "t2", sessionId: "s1", sceneId: "sc2", status: "approved", durationMs: 9810, bytes: 1000, objectKey: "demo/t2", mimeType: "video/mp4", createdAt: "2026-11-10T10:01:00Z" },
+  { id: "t3", sessionId: "s1", sceneId: "sc3", status: "approved", durationMs: 9810, bytes: 1000, objectKey: "demo/t3", mimeType: "video/mp4", createdAt: "2026-11-10T10:02:00Z" },
 ];
 const SCENES = [
   { id: "sc1", sessionId: "s1", position: 0, selectedTakeId: "t1", title: "Intro", script: "Hoy te muestro cómo se prepara" },
@@ -46,6 +46,7 @@ export function EditorDemo() {
         onBack={() => {}}
         onUpload={() => {}}
         onAddToCurrent={() => {}}
+        mediaUrl={(takeId) => ({ t1: "/_dev/sala/toma-0.mp4", t2: "/_dev/sala/toma-1.mp4", t3: "/_dev/sala/toma-h.mp4" })[takeId] ?? ""}
       />
     </main>
   );

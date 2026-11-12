@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Captions, Check, ChevronLeft, Download, Film, ImageIcon, Layers3,
-  LoaderCircle, Pause, Play, Plus, Settings2, Sparkles,
+  LoaderCircle, Pause, Play, Plus, Settings2, SkipBack, Sparkles,
   Type, UploadCloud, Volume2, WandSparkles, Zap, SlidersHorizontal, ListOrdered, X, Undo2, Redo2,
 } from "lucide-react";
 import { EDITOR_STYLES, type EditorStyleId } from "../lib/editor-presets";
@@ -32,6 +32,8 @@ import { parseRenderPreview, type RenderPreview } from "../lib/render-preview";
 import { EditingProgress } from "./editing-progress";
 import { SalaEdicion, type SalaClip } from "./sala/sala-edicion";
 import { EditorTimeline } from "./editor-timeline";
+import { formatClock, montageDuration, montageOffset, nextIncluded } from "../lib/timeline-edit";
+import { useSignedMusicUrl } from "../lib/music-upload";
 import { MusicPanel } from "./music-panel";
 import type { MusicTrack } from "../lib/music-bed";
 import { decodeSpeechWav, SPEECH_SAMPLE_RATE } from "../lib/transcription-core";
@@ -208,8 +210,11 @@ export function EditorStudio(props: {
   onRefresh: () => Promise<void>;
   onBack: () => void;
   onUpload: () => void;
+  /** Enlace del video de una toma (los bancos de prueba usan videos locales). */
+  mediaUrl?: (takeId: string) => string;
   onAddToCurrent: (sessionId: string) => void;
 }) {
+  const takeMediaUrl = (takeId: string) => props.mediaUrl?.(takeId) ?? `/api/media/${takeId}`;
   const available = useMemo(() => props.sessions.filter((session) => session.portfolioId === props.portfolioId && props.takes.some((take) => take.sessionId === session.id)), [props.sessions, props.takes, props.portfolioId]);
   const [sessionChoice, setSessionId] = useState(props.initialSessionId || available[0]?.id || "");
   const sessionId = available.some((item) => item.id === sessionChoice) ? sessionChoice : available[0]?.id || "";
@@ -288,6 +293,7 @@ export function EditorStudio(props: {
   const initialStyle = EDITOR_STYLES[0];
   const [settings, setSettings] = useState({ subtitleSize: initialStyle.subtitle.size, subtitlePosition: initialStyle.subtitle.position, silenceThresholdMs: initialStyle.execution.silenceThresholdMs, silenceNoiseDb: -30, noiseReduction: "off" as "off" | "light" | "medium", transition: initialStyle.transition, soundEffectVolume: initialStyle.execution.soundEffectVolume, soundPreset: "auto" as "auto" | "none" | "soft" | "kinetic" | "cinematic" | "pop" });
   const [music, setMusic] = useState<MusicTrack | null>(null);
+  const musicUrl = useSignedMusicUrl(music?.object_key ?? "");
   const [localJob, setJob] = useState<Row | null | undefined>(undefined);
   const [selectedResultId, setSelectedResultId] = useState(props.initialResultId || "");
   useEffect(() => { setSelectedResultId(props.initialResultId || ""); }, [props.initialResultId]);
@@ -332,6 +338,9 @@ export function EditorStudio(props: {
   const [overlayDraft, setOverlayDraft] = useState("");
   const [overlayCueIndex, setOverlayCueIndex] = useState(-1);
   const videoRef = useRef<HTMLVideoElement>(null);
+  /** Tras pasar a la siguiente toma, sigue reproduciendo en cuanto cargue. */
+  const continuePlaybackRef = useRef(false);
+  const musicAudioRef = useRef<HTMLAudioElement>(null);
   const captionPreviewSeekRef = useRef<{ segmentId: string; seconds: number } | null>(null);
 
   const approvedScenes = props.scenes.filter((scene) => scene.sessionId === sessionId && props.takes.some((take) => take.id === scene.selectedTakeId && take.status === "approved")).sort((a, b) => a.position - b.position);
@@ -696,7 +705,7 @@ export function EditorStudio(props: {
   const livePreview = livePreviews.find((item) => item.clipIndex === livePreviewIndex) || livePreviews.at(-1);
   const showingLive = Boolean(livePreview && previewMode === "live");
   const showingRendered = showingFinal || showingLive;
-  const previewSrc = showingLive ? livePreview!.videoDataUrl : showingFinal ? resultSrc : selectedTake ? `/api/media/${selectedTake.id}` : "";
+  const previewSrc = showingLive ? livePreview!.videoDataUrl : showingFinal ? resultSrc : selectedTake ? takeMediaUrl(selectedTake.id) : "";
   useEffect(() => {
     if (!videoRef.current || showingRendered || !selectedClip) return;
     videoRef.current.playbackRate = selectedClip.playbackSpeed;
@@ -1264,6 +1273,33 @@ export function EditorStudio(props: {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [automaticRequest, sessionId, review?.id, timelineReadyKey, preferencesReadyKey, timeline.length]);
 
+  const montageSpans = timeline.map((clip) => ({ id: clip.segmentId, start: clip.trimStartSeconds, end: clip.trimEndSeconds, speed: clip.playbackSpeed, included: clip.included, sourceDuration: clip.duration }));
+  const montageTotal = montageDuration(montageSpans);
+  const montageNow = selectedClip ? montageOffset(montageSpans, selectedClip.segmentId, previewTime) : 0;
+  /** La canción sigue al montaje: arranca en su segundo elegido más el tiempo ya recorrido. */
+  const syncMusic = (play: boolean) => {
+    const audio = musicAudioRef.current;
+    if (!audio) return;
+    if (!play || !music || showingRendered || !selectedClip || !videoRef.current) { audio.pause(); return; }
+    const at = music.start_seconds + montageOffset(montageSpans, selectedClip.segmentId, videoRef.current.currentTime);
+    if (Math.abs(audio.currentTime - at) > .3) audio.currentTime = at;
+    audio.volume = Math.min(1, music.volume);
+    void audio.play().catch(() => undefined);
+  };
+  /** Al terminar el recorte de una toma, pasa a la siguiente incluida y sigue reproduciendo. */
+  const advanceMontage = (video: HTMLVideoElement) => {
+    if (showingRendered || !selectedClip) return;
+    const next = nextIncluded(montageSpans, selectedClip.segmentId);
+    if (!next) { video.pause(); continuePlaybackRef.current = false; syncMusic(false); return; }
+    continuePlaybackRef.current = true;
+    captionPreviewSeekRef.current = { segmentId: next.id, seconds: next.start };
+    setSelectedTakeId(next.id); setPreviewTime(next.start);
+  };
+  const seekMontageStart = () => {
+    const first = montageSpans.find((span) => span.included);
+    if (first) seekTimeline(first.id, first.start);
+  };
+
   const togglePlayback = async () => {
     if (!videoRef.current) return;
     if (videoRef.current.paused) {
@@ -1334,7 +1370,7 @@ export function EditorStudio(props: {
         <p className="text-xs text-zinc-400">{style === "segmenta-cinetico" ? "Mira a los agentes cortar, subtitular y revisar tu video sobre la línea de tiempo, con el mismo plan que aplica el render." : "Disponible con el estilo Segmenta cinético: sus agentes usan las skills de cortes y subtítulos."}</p></div>
       {style === "segmenta-cinetico"
         ? <button type="button" disabled={Boolean(busy) && !automaticRunning} onClick={() => setSalaClips(activeTimeline.map((clip) => ({
-            id: clip.segmentId, takeId: clip.takeId, title: clip.title, videoUrl: `/api/media/${clip.takeId}`,
+            id: clip.segmentId, takeId: clip.takeId, title: clip.title, videoUrl: takeMediaUrl(clip.takeId),
             window: { start: clip.trimStartSeconds, end: clip.trimEndSeconds }, cues: clip.captionCues,
             script: String(approvedScenes.find((scene) => scene.id === clip.sceneId)?.script || ""),
           })))} className="shrink-0 rounded-xl bg-[#FF7A00] px-4 py-2 text-xs font-semibold text-black disabled:opacity-40">Abrir la sala de edición</button>
@@ -1376,7 +1412,7 @@ export function EditorStudio(props: {
           ai={{ available: aiAvailable, prefs: aiPrefs, running: aiRunning, progress: aiProgress, plannedCount: planAiVisualMoments(timeline).length, alternatives: aiAlternatives,
             onPrefs: setAiPrefs, onGenerate: () => void generateAiResources(), onStop: () => aiRunRef.current?.abort(),
             onRegenerate: (segmentId, id, provider) => void regenerateAiResource(segmentId, id, provider), onChooseAlternative: chooseAiAlternative }} />}
-        {tool === "media" && <><PanelTitle icon={Layers3} title="Tus escenas" text={`${approvedTakes.length} clips listos`} /><button onClick={() => props.onAddToCurrent(sessionId)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-violet-400/25 bg-violet-400/5 px-3 py-3 text-xs text-violet-200"><Plus size={15} />Añadir a este proyecto</button><div className="mt-4 grid grid-cols-3 gap-2">{approvedTakes.map((take, index) => { const clip = timeline.find((item) => item.takeId === take.id); const selected = selectedTake?.id === take.id; return <div key={take.id} className={`relative overflow-hidden rounded-xl border ${selected ? "border-violet-400" : "border-white/8"} ${clip && !clip.included ? "opacity-50" : ""}`}><button type="button" onClick={() => { setSelectedTakeId(clip?.segmentId || ""); setPreviewMode("original"); setOverlayEditor(null); }} className="block w-full text-left" aria-label={`Ver ${approvedScenes[index]?.title || `Clip ${index + 1}`}`}><div className="relative aspect-[9/12] bg-black"><video src={`/api/media/${take.id}`} muted preload="metadata" className="h-full w-full object-cover" /><span className="absolute bottom-1 right-1 rounded bg-black/75 px-1.5 py-0.5 text-[8px]">{seconds(take.durationMs)}</span></div><p className="truncate px-1.5 py-1.5 text-[9px] text-zinc-400">{approvedScenes[index]?.title || `Clip ${index + 1}`}</p></button>{clip && <button type="button" onClick={() => updateClip(clip.segmentId, { included: !clip.included })} aria-label={clip.included ? "Quitar de la edición" : "Incluir en la edición"} className={`absolute right-1.5 top-1.5 grid h-5 w-5 place-items-center rounded-full border-2 ${clip.included ? "border-cyan-300 bg-cyan-300 text-black" : "border-white/80 bg-black/40"}`}>{clip.included && <Check size={11} strokeWidth={3} />}</button>}</div>; })}</div></>}
+        {tool === "media" && <><PanelTitle icon={Layers3} title="Tus escenas" text={`${approvedTakes.length} clips listos`} /><button onClick={() => props.onAddToCurrent(sessionId)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-violet-400/25 bg-violet-400/5 px-3 py-3 text-xs text-violet-200"><Plus size={15} />Añadir a este proyecto</button><div className="mt-4 grid grid-cols-3 gap-2">{approvedTakes.map((take, index) => { const clip = timeline.find((item) => item.takeId === take.id); const selected = selectedTake?.id === take.id; return <div key={take.id} className={`relative overflow-hidden rounded-xl border ${selected ? "border-violet-400" : "border-white/8"} ${clip && !clip.included ? "opacity-50" : ""}`}><button type="button" onClick={() => { setSelectedTakeId(clip?.segmentId || ""); setPreviewMode("original"); setOverlayEditor(null); }} className="block w-full text-left" aria-label={`Ver ${approvedScenes[index]?.title || `Clip ${index + 1}`}`}><div className="relative aspect-[9/12] bg-black"><video src={takeMediaUrl(take.id)} muted preload="metadata" className="h-full w-full object-cover" /><span className="absolute bottom-1 right-1 rounded bg-black/75 px-1.5 py-0.5 text-[8px]">{seconds(take.durationMs)}</span></div><p className="truncate px-1.5 py-1.5 text-[9px] text-zinc-400">{approvedScenes[index]?.title || `Clip ${index + 1}`}</p></button>{clip && <button type="button" onClick={() => updateClip(clip.segmentId, { included: !clip.included })} aria-label={clip.included ? "Quitar de la edición" : "Incluir en la edición"} className={`absolute right-1.5 top-1.5 grid h-5 w-5 place-items-center rounded-full border-2 ${clip.included ? "border-cyan-300 bg-cyan-300 text-black" : "border-white/80 bg-black/40"}`}>{clip.included && <Check size={11} strokeWidth={3} />}</button>}</div>; })}</div></>}
         {tool === "video" && <><PanelTitle icon={SlidersHorizontal} title="Video y color" text={selectedClip ? `Ajustes de ${selectedClip.title}` : "Selecciona una toma"} />{selectedClip && <div className="mt-5 space-y-5"><p className="text-[10px] leading-4 text-zinc-500">Cada control se aplica a esta toma al renderizar. La vista previa del color es aproximada.</p><Range label="Velocidad" value={selectedClip.playbackSpeed} min={.5} max={2} step={.05} suffix="×" onChange={(value) => updateClip(selectedClip.segmentId, { playbackSpeed: value })} /><Range label="Brillo" value={Math.round(selectedClip.brightness * 100)} min={-20} max={20} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { brightness: value / 100 })} /><Range label="Contraste" value={Math.round(selectedClip.contrast * 100)} min={80} max={130} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { contrast: value / 100 })} /><Range label="Saturación" value={Math.round(selectedClip.saturation * 100)} min={50} max={150} suffix="%" onChange={(value) => updateClip(selectedClip.segmentId, { saturation: value / 100 })} /><button onClick={() => updateClip(selectedClip.segmentId, { playbackSpeed: 1, brightness: 0, contrast: 1, saturation: 1 })} className="w-full rounded-xl border border-white/10 px-3 py-2 text-xs text-zinc-300">Restablecer ajustes</button></div>}</>}
         {tool === "styles" && <>
           <PanelTitle icon={WandSparkles} title="Estilos" text="Cambia toda la edición" />
@@ -1416,7 +1452,12 @@ export function EditorStudio(props: {
             {previewSrc ? <video key={`${previewSrc}:${showingFinal ? "final" : selectedClip?.segmentId}`} ref={videoRef} src={previewSrc} aria-label={showingLive ? "Escena procesada durante la edición" : showingFinal ? "Resultado editado" : "Vista previa de la toma original"} autoPlay={showingLive} muted={showingLive} loop={showingLive} controls playsInline preload="metadata" onLoadedMetadata={(event) => { setMediaErrorSrc(""); if (!showingRendered && selectedClip) { const seek = captionPreviewSeekRef.current;
               const start = seek?.segmentId === selectedClip.segmentId ? seek.seconds : selectedClip.trimStartSeconds;
               event.currentTarget.currentTime = start; if (seek?.segmentId === selectedClip.segmentId) captionPreviewSeekRef.current = null;
-              event.currentTarget.playbackRate = selectedClip.playbackSpeed; event.currentTarget.volume = Math.min(1, selectedClip.audioVolume); setPreviewTime(start); } else setPreviewTime(event.currentTarget.currentTime); }} onTimeUpdate={(event) => setPreviewTime(event.currentTarget.currentTime)} onError={() => setMediaErrorSrc(previewSrc)} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} className="h-full w-full object-contain" style={!showingRendered && selectedClip ? { filter: `brightness(${1 + selectedClip.brightness}) contrast(${selectedClip.contrast}) saturate(${selectedClip.saturation})` } : undefined} /> : <button onClick={props.onUpload} className="grid h-full w-full place-items-center bg-[radial-gradient(circle_at_50%_35%,rgba(124,58,237,.18),transparent_45%)] text-center"><span><span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-violet-400/10 text-violet-200"><UploadCloud size={24} /></span><strong className="mt-4 block text-sm text-zinc-200">Sube videos para editar</strong><small className="mt-2 block px-7 leading-4 text-zinc-600">Después podrás cortarlos, subtitularlos y aplicar estilos.</small></span></button>}
+              event.currentTarget.playbackRate = selectedClip.playbackSpeed; event.currentTarget.volume = Math.min(1, selectedClip.audioVolume); setPreviewTime(start); } else setPreviewTime(event.currentTarget.currentTime);
+              if (continuePlaybackRef.current && !showingRendered) { continuePlaybackRef.current = false; void event.currentTarget.play().catch(() => undefined); } }} onTimeUpdate={(event) => { const video = event.currentTarget; setPreviewTime(video.currentTime);
+              // Montaje seguido: respeta el recorte de cada toma y pasa sola a la siguiente.
+              if (showingRendered || !selectedClip || video.paused) return;
+              if (video.currentTime < selectedClip.trimStartSeconds - .05) video.currentTime = selectedClip.trimStartSeconds;
+              else if (video.currentTime >= selectedClip.trimEndSeconds - .04) advanceMontage(video); }} onEnded={(event) => advanceMontage(event.currentTarget)} onError={() => setMediaErrorSrc(previewSrc)} onPlay={() => { setPlaying(true); syncMusic(true); }} onPause={() => { setPlaying(false); if (!continuePlaybackRef.current) syncMusic(false); }} className="h-full w-full object-contain" style={!showingRendered && selectedClip ? { filter: `brightness(${1 + selectedClip.brightness}) contrast(${selectedClip.contrast}) saturate(${selectedClip.saturation})` } : undefined} /> : <button onClick={props.onUpload} className="grid h-full w-full place-items-center bg-[radial-gradient(circle_at_50%_35%,rgba(124,58,237,.18),transparent_45%)] text-center"><span><span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-violet-400/10 text-violet-200"><UploadCloud size={24} /></span><strong className="mt-4 block text-sm text-zinc-200">Sube videos para editar</strong><small className="mt-2 block px-7 leading-4 text-zinc-600">Después podrás cortarlos, subtitularlos y aplicar estilos.</small></span></button>}
             {previewSrc && mediaErrorSrc === previewSrc && <p className="absolute inset-x-3 bottom-12 rounded-xl bg-black/90 p-3 text-center text-[10px] leading-4 text-amber-100">{showingLive ? "Esta muestra no pudo reproducirse. La exportación completa sigue en proceso." : showingFinal ? "Este resultado no se pudo reproducir aquí. Prueba descargarlo o actualizar la biblioteca." : "Esta toma original no se reproduce en este navegador. El render final se exporta como MP4."}</p>}
             {!showingRendered && selectedClip && options.broll && selectedClip.visualResources.filter((item) => previewTime >= item.startSeconds && previewTime < item.endSeconds).map((item) => {
               const geometry = VISUAL_RESOURCE_LAYOUTS[item.layout];
@@ -1432,7 +1473,7 @@ export function EditorStudio(props: {
             <span className={`pointer-events-none absolute left-3 top-3 rounded-full px-2.5 py-1 text-[8px] ${showingFinal ? "bg-emerald-400 text-black" : "bg-black/70 text-zinc-300"}`}>{showingLive ? `MUESTRA REAL · ESCENA ${livePreview!.clipIndex + 1}` : showingFinal ? resultIsPrevious ? "RESULTADO ANTERIOR" : "RESULTADO EDITADO" : "VISTA PREVIA · TEXTO EDITABLE"}</span>
           </div>
         </div>
-        <div className="flex flex-wrap items-center justify-center gap-3 border-t border-white/8 px-4 py-3">{activeResult && <div className="flex rounded-xl border border-white/10 bg-white/5 p-1 text-[10px]"><button onClick={() => setPreviewMode("final")} className={`rounded-lg px-3 py-1.5 ${showingFinal ? "bg-emerald-400 font-semibold text-black" : "text-zinc-400"}`}>Resultado editado</button><button onClick={() => setPreviewMode("original")} className={`rounded-lg px-3 py-1.5 ${!showingRendered ? "bg-white font-semibold text-black" : "text-zinc-400"}`}>Toma original</button></div>}<button onClick={togglePlayback} disabled={!previewSrc} className="grid h-9 w-9 place-items-center rounded-full bg-white text-black disabled:opacity-30">{playing ? <Pause size={15} fill="currentColor" /> : <Play size={15} fill="currentColor" />}</button><span className="text-[10px] text-zinc-400">{showingLive ? `${livePreview!.durationSeconds.toFixed(1)} s de muestra` : showingFinal ? `${Number(resultMetadata.duration_seconds || 0).toFixed(1)} s` : selectedTake ? seconds(selectedTake.durationMs) : "0:00"}</span><span className="rounded-lg bg-white/5 px-2 py-1 text-[9px] text-zinc-500">{showingFinal ? resultStyle : selectedStyle.name}</span></div>
+        <div className="flex flex-wrap items-center justify-center gap-3 border-t border-white/8 px-4 py-3">{activeResult && <div className="flex rounded-xl border border-white/10 bg-white/5 p-1 text-[10px]"><button onClick={() => setPreviewMode("final")} className={`rounded-lg px-3 py-1.5 ${showingFinal ? "bg-emerald-400 font-semibold text-black" : "text-zinc-400"}`}>Resultado editado</button><button onClick={() => setPreviewMode("original")} className={`rounded-lg px-3 py-1.5 ${!showingRendered ? "bg-white font-semibold text-black" : "text-zinc-400"}`}>Toma original</button></div>}{!showingRendered && <button type="button" onClick={seekMontageStart} disabled={!previewSrc} aria-label="Ir al inicio del montaje" className="grid h-9 w-9 place-items-center rounded-full border border-white/10 text-zinc-300 disabled:opacity-30"><SkipBack size={14} /></button>}<button onClick={togglePlayback} disabled={!previewSrc} aria-label={playing ? "Pausar" : "Reproducir el montaje"} className="grid h-9 w-9 place-items-center rounded-full bg-white text-black disabled:opacity-30">{playing ? <Pause size={15} fill="currentColor" /> : <Play size={15} fill="currentColor" />}</button><span className="text-[10px] text-zinc-400">{showingLive ? `${livePreview!.durationSeconds.toFixed(1)} s de muestra` : showingFinal ? `${Number(resultMetadata.duration_seconds || 0).toFixed(1)} s` : selectedTake ? `${formatClock(montageNow)} / ${formatClock(montageTotal)}` : "0:00"}</span>{music && musicUrl && <audio ref={musicAudioRef} src={musicUrl} preload="auto" className="hidden" />}<span className="rounded-lg bg-white/5 px-2 py-1 text-[9px] text-zinc-500">{showingFinal ? resultStyle : selectedStyle.name}</span></div>
         <div id="editor-manual-segmentation" role="region" aria-labelledby="editor-manual-segmentation-title" className="scroll-mt-24 border-t border-white/8 bg-(--c-0b0e15) p-3 sm:p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h3 id="editor-manual-segmentation-title" tabIndex={-1} className="rounded text-sm font-medium focus-visible:outline-2 focus-visible:outline-violet-300">Segmentar video</h3><p className="text-[10px] text-zinc-500">Línea de tiempo manual · recorta el inicio y final, divide en partes y ordena tus segmentos. El video original se conserva.</p></div><div className="flex flex-wrap items-center gap-2"><span className="rounded-lg bg-white/5 px-2 py-1 text-[10px] text-zinc-400">{activeTimeline.length} de {timeline.length} segmentos</span><button onClick={undoTimeline} disabled={Boolean(busy || automaticRunning) || !undoRef.current.length} className="rounded-lg border border-white/10 px-2 py-1.5 text-[10px] text-zinc-300 disabled:opacity-30">Deshacer</button><button onClick={redoTimeline} disabled={Boolean(busy || automaticRunning) || !redoRef.current.length} className="rounded-lg border border-white/10 px-2 py-1.5 text-[10px] text-zinc-300 disabled:opacity-30">Rehacer</button><button onClick={applySuggestedOrder} disabled={Boolean(busy || automaticRunning) || !editorialPlan.reliableOrder} className="rounded-lg border border-violet-400/30 px-2 py-1.5 text-[10px] text-violet-200 disabled:opacity-40">Aplicar orden del libreto</button></div></div>
           <EditorTimeline

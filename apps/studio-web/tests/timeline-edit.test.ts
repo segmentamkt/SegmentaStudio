@@ -67,3 +67,15 @@ test("a split needs at least 0.2 s on both sides", () => {
   assert.equal(canSplitAt(span, 0.5), true);
   assert.equal(canSplitAt(span, 0.85), false);
 });
+
+test("montage time skips excluded takes and divides by speed", async () => {
+  const { formatClock, montageDuration, montageOffset, nextIncluded } = await import("../lib/timeline-edit");
+  const spans = [take("a", { start: 1, end: 5 }), take("b", { included: false }), take("c", { start: 0, end: 6, speed: 2 }), take("d", { end: 2 })];
+  assert.equal(montageDuration(spans), 4 + 3 + 2);
+  assert.equal(montageOffset(spans, "a", 3), 2);
+  assert.equal(montageOffset(spans, "c", 2), 4 + 1);
+  assert.equal(montageOffset(spans, "c", 99), 4 + 3, "clamped to the trimmed end");
+  assert.equal(nextIncluded(spans, "a")?.id, "c");
+  assert.equal(nextIncluded(spans, "d"), null);
+  assert.equal(formatClock(65.9), "1:05");
+});

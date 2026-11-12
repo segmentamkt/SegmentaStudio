@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { LoaderCircle, Music2, Play, Square, Trash2, UploadCloud } from "lucide-react";
 import { MUSIC_MAX_FADE_SECONDS, MUSIC_MAX_START_SECONDS, type MusicTrack } from "../lib/music-bed";
-import { signedMusicUrl, uploadMusicTrack } from "../lib/music-upload";
+import { uploadMusicTrack, useSignedMusicUrl } from "../lib/music-upload";
 
 type Props = {
   sessionId: string;
@@ -18,17 +18,8 @@ export function MusicPanel({ sessionId, music, busy, onChange }: Props) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState("");
-  const [source, setSource] = useState<{ key: string; url: string } | null>(null);
   const [playing, setPlaying] = useState(false);
-  const objectKey = music?.object_key ?? "";
-  const url = source?.key === objectKey ? source.url : "";
-
-  useEffect(() => {
-    if (!objectKey) return;
-    let cancelled = false;
-    void signedMusicUrl(objectKey).then((signed) => { if (!cancelled && signed) setSource({ key: objectKey, url: signed }); }).catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [objectKey]);
+  const url = useSignedMusicUrl(music?.object_key ?? "");
 
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = Math.min(1, music?.volume ?? 1);
