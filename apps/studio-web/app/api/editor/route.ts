@@ -9,7 +9,7 @@ import { MediaReviewError, requireCurrentMediaReview } from "../../../lib/media-
 import { readMediaReview } from "../../../lib/media-review-server";
 import { normalizeVisualResources, validateVisualResourceBudget, type VisualResource } from "../../../lib/visual-resources";
 import { normalizeMusicTrack, type MusicTrack } from "../../../lib/music-bed";
-import { normalizeClipTransform, normalizeColorFilter, normalizeFreezeSeconds, normalizeTextOverlays, normalizeVoiceEffect, type ClipTransform, type TextOverlay } from "../../../lib/clip-look";
+import { normalizeAudioFade, normalizeClipTransform, normalizeColorFilter, normalizeFreezeSeconds, normalizeTextOverlays, normalizeVoiceEffect, type ClipTransform, type TextOverlay } from "../../../lib/clip-look";
 
 type EditOptions = {
   captions?: boolean;
@@ -51,6 +51,8 @@ type TimelineItem = {
   colorFilter?: unknown;
   voiceEffect?: unknown;
   freezeEndSeconds?: unknown;
+  audioFadeIn?: unknown;
+  audioFadeOut?: unknown;
 };
 
 function bounded(value: unknown, fallback: number, min: number, max: number) {
@@ -247,6 +249,8 @@ export async function POST(request: Request) {
         color_filter: normalizeColorFilter(edit?.colorFilter),
         voice_effect: normalizeVoiceEffect(edit?.voiceEffect),
         freeze_end_seconds: normalizeFreezeSeconds(edit?.freezeEndSeconds),
+        audio_fade_in_seconds: normalizeAudioFade(edit?.audioFadeIn),
+        audio_fade_out_seconds: normalizeAudioFade(edit?.audioFadeOut),
       })),
       style: style.id,
       style_snapshot: styleSnapshot,

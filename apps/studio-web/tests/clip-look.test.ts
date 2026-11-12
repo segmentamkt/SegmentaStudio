@@ -152,3 +152,10 @@ test("a frozen ending lengthens the take; voice effect and SRT timings come out 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("audio fades are bounded and never overlap", async () => {
+  const { audioFadeFilters } = await import("../lib/clip-look");
+  assert.deepEqual(audioFadeFilters(0, 0, 4), []);
+  assert.deepEqual(audioFadeFilters(1, 2, 10), ["afade=t=in:st=0:d=1.000", "afade=t=out:st=8.000:d=2.000"]);
+  assert.deepEqual(audioFadeFilters(3, 3, 2), ["afade=t=in:st=0:d=1.000", "afade=t=out:st=1.000:d=1.000"]);
+});

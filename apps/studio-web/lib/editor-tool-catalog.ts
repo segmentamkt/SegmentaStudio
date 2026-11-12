@@ -118,7 +118,7 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
         "name": "Congelar (Freeze)",
         "description": "Convertir un fotograma en una imagen fija con duración editable.",
         "section": "",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Invertir (Reverse)",
@@ -148,7 +148,7 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
         "name": "Zoom de línea de tiempo",
         "description": "Acercar o alejar la vista de los clips para editar con precisión.",
         "section": "",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Ajuste magnético (Snap)",
@@ -190,25 +190,25 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
         "name": "Escala",
         "description": "Aumentar o reducir el tamaño de una imagen o video.",
         "section": "Video → Básico",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Posición X",
         "description": "Mover el elemento horizontalmente.",
         "section": "Video → Básico",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Posición Y",
         "description": "Mover el elemento verticalmente.",
         "section": "Video → Básico",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Rotación",
         "description": "Girar un elemento en el encuadre.",
         "section": "Video → Básico",
-        "status": "planned"
+        "status": "partial"
       },
       {
         "name": "Opacidad",
@@ -364,7 +364,7 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
         "name": "Ajuste al lienzo",
         "description": "Encajar el contenido en el formato horizontal, vertical o cuadrado.",
         "section": "Video → Lienzo / Fondo",
-        "status": "planned"
+        "status": "ready"
       }
     ]
   },
@@ -490,7 +490,7 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
         "name": "Música",
         "description": "Buscar canciones instrumentales, música de fondo y pistas por categorías.",
         "section": "Audio → Biblioteca",
-        "status": "planned"
+        "status": "partial"
       },
       {
         "name": "Efectos de sonido",
@@ -502,7 +502,7 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
         "name": "Audio importado",
         "description": "Utilizar archivos MP3, WAV y otros formatos compatibles.",
         "section": "Audio → Biblioteca",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Audio extraído",
@@ -532,13 +532,13 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
         "name": "Fundido de entrada",
         "description": "Aumentar el volumen gradualmente al inicio.",
         "section": "Audio → Básico",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Fundido de salida",
         "description": "Disminuir progresivamente el volumen al final.",
         "section": "Audio → Básico",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Reducción de ruido",
@@ -556,7 +556,7 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
         "name": "Normalización de sonoridad",
         "description": "Equilibrar automáticamente el volumen de audio.",
         "section": "Audio → Básico",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Aislamiento vocal",
@@ -586,7 +586,7 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
         "name": "Tono (Pitch)",
         "description": "Cambiar la altura de la voz o del audio.",
         "section": "Audio → Básico",
-        "status": "planned"
+        "status": "partial"
       },
       {
         "name": "División de audio",
@@ -598,19 +598,19 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
         "name": "Filtros de voz",
         "description": "Aplicar voces agudas, graves, dulces, estilo micrófono y otros efectos disponibles.",
         "section": "Audio → Cambiador de voz",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Efectos de personaje",
         "description": "Transformar la voz con estilos de personaje, cuando estén disponibles.",
         "section": "Audio → Cambiador de voz",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Efectos de voz especiales",
         "description": "Crear sonidos robóticos, artificiales o con efectos.",
         "section": "Audio → Cambiador de voz",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Personalización de efecto",
@@ -628,7 +628,7 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
         "name": "Texto predeterminado",
         "description": "Añadir un cuadro de texto independiente al video.",
         "section": "Texto → Agregar texto",
-        "status": "partial"
+        "status": "ready"
       },
       {
         "name": "Fuente",
@@ -640,13 +640,13 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
         "name": "Tamaño",
         "description": "Modificar las dimensiones de las letras.",
         "section": "Texto → Agregar texto",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Color",
         "description": "Elegir el color del texto.",
         "section": "Texto → Agregar texto",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Negrita",
@@ -688,7 +688,7 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
         "name": "Fondo",
         "description": "Colocar un fondo detrás del texto cuando el estilo lo permita.",
         "section": "Texto → Agregar texto",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Opacidad",
@@ -700,7 +700,7 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
         "name": "Posición y rotación",
         "description": "Cambiar ubicación y orientación del texto.",
         "section": "Texto → Agregar texto",
-        "status": "planned"
+        "status": "partial"
       },
       {
         "name": "Efectos de texto",
@@ -826,7 +826,7 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
         "name": "Exportación SRT/TXT",
         "description": "Guardar subtítulos o transcripciones en formatos compatibles, según la versión.",
         "section": "",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Identificación de hablantes",
@@ -1108,19 +1108,19 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
         "name": "Mono",
         "description": "Filtros monocromáticos y blanco y negro.",
         "section": "",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Retro",
         "description": "Aspectos de fotografía y cine antiguos.",
         "section": "",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Estilo",
         "description": "Tratamientos visuales prediseñados.",
         "section": "",
-        "status": "planned"
+        "status": "partial"
       },
       {
         "name": "Comida",
@@ -1138,7 +1138,7 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
         "name": "Cinematográficos",
         "description": "Looks de cine y tratamientos de color.",
         "section": "",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Intensidad del filtro",
@@ -1546,7 +1546,7 @@ export const EDITOR_TOOL_CATALOG: EditorCatalogCategory[] = [
         "name": "Exportación de subtítulos",
         "description": "Exportar archivos de subtítulos en las versiones compatibles.",
         "section": "",
-        "status": "planned"
+        "status": "ready"
       },
       {
         "name": "Compartir en plataformas",

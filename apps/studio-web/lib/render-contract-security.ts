@@ -1,7 +1,7 @@
 import { sanitizeCueWords } from "./caption-cues";
 import { getEditorStyle, type EditorStyle, type PauseMode, type SubtitleMode, type SubtitlePosition } from "./editor-presets";
 import { normalizeMusicTrack } from "./music-bed";
-import { normalizeClipTransform, normalizeColorFilter, normalizeFreezeSeconds, normalizeTextOverlays, normalizeVoiceEffect } from "./clip-look";
+import { normalizeAudioFade, normalizeClipTransform, normalizeColorFilter, normalizeFreezeSeconds, normalizeTextOverlays, normalizeVoiceEffect } from "./clip-look";
 import { applySkillProfilesToContract } from "./studio-skills";
 import { normalizeVisualResources, validateVisualResourceBudget } from "./visual-resources";
 
@@ -176,6 +176,8 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
       color_filter: normalizeColorFilter(requestedClip.color_filter),
       voice_effect: normalizeVoiceEffect(requestedClip.voice_effect),
       freeze_end_seconds: freezeEndSeconds,
+      audio_fade_in_seconds: normalizeAudioFade(requestedClip.audio_fade_in_seconds),
+      audio_fade_out_seconds: normalizeAudioFade(requestedClip.audio_fade_out_seconds),
     };
   });
 

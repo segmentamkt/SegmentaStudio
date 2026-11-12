@@ -12,7 +12,7 @@ import { renderVisualResourceImage } from "./visual-resource-image";
 import { VISUAL_RESOURCE_LAYOUTS, type VisualResource } from "./visual-resources";
 import { mapCaptionCues, type CaptionCue } from "./caption-cues";
 import { buildMusicMixArgs, type MusicTrack } from "./music-bed";
-import { colorFilters, framingFilters, IDENTITY_TRANSFORM, normalizeFreezeSeconds, orientationFilters, TEXT_BACKGROUNDS, textOverlayPosition, voiceEffectFilters, type ClipTransform, type ColorFilterId, type TextOverlay, type VoiceEffectId } from "./clip-look";
+import { audioFadeFilters, colorFilters, framingFilters, IDENTITY_TRANSFORM, normalizeFreezeSeconds, orientationFilters, TEXT_BACKGROUNDS, textOverlayPosition, voiceEffectFilters, type ClipTransform, type ColorFilterId, type TextOverlay, type VoiceEffectId } from "./clip-look";
 import { buildSrt, type SrtCue } from "./srt";
 import { MAX_RENDER_PREVIEW_BYTES, type RenderPreview } from "./render-preview";
 import { measureVoiceActivity, planCuts, snapWordsToSilences, type CutPlan } from "./skills/cortes-pausas";
@@ -25,7 +25,7 @@ function kineticZone(position: string | undefined, layeredStyle: boolean): Kinet
 }
 
 type Range = { start: number; end: number };
-type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string; trim_start_seconds?: number; trim_end_seconds?: number; playback_speed?: number; audio_volume?: number; brightness?: number; contrast?: number; saturation?: number; label?: string; caption_cues?: CaptionCue[]; visual_resources?: VisualResource[]; script?: string; text_overlays?: TextOverlay[]; transform?: ClipTransform; color_filter?: ColorFilterId; voice_effect?: VoiceEffectId; freeze_end_seconds?: number };
+type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string; trim_start_seconds?: number; trim_end_seconds?: number; playback_speed?: number; audio_volume?: number; brightness?: number; contrast?: number; saturation?: number; label?: string; caption_cues?: CaptionCue[]; visual_resources?: VisualResource[]; script?: string; text_overlays?: TextOverlay[]; transform?: ClipTransform; color_filter?: ColorFilterId; voice_effect?: VoiceEffectId; freeze_end_seconds?: number; audio_fade_in_seconds?: number; audio_fade_out_seconds?: number };
 type EditContract = {
   objective: string;
   session: { title: string; script?: string };
@@ -335,7 +335,8 @@ export async function renderSequentialClip(input: {
     : "";
   const voiceEffect = analysis.hasAudio ? voiceEffectFilters(clip.voice_effect ?? "none").map((step) => `,${step}`).join("") : "";
   const freezePad = analysis.hasAudio && freeze ? `,apad=pad_dur=${fixed(freeze)}` : "";
-  const voiceFilter = `[${audioSource}:a]${audioTrim},aformat=sample_fmts=fltp:channel_layouts=stereo${denoise}${voiceEffect}${analysis.hasAudio ? ",acompressor=threshold=-18dB:ratio=2:attack=5:release=60" : ""},volume=${volume}${freezePad}${audioFade}[abase]`;
+  const manualFades = audioFadeFilters(Number(clip.audio_fade_in_seconds ?? 0), Number(clip.audio_fade_out_seconds ?? 0), sourceDuration / speed).map((step) => `,${step}`).join("");
+  const voiceFilter = `[${audioSource}:a]${audioTrim},aformat=sample_fmts=fltp:channel_layouts=stereo${denoise}${voiceEffect}${analysis.hasAudio ? ",acompressor=threshold=-18dB:ratio=2:attack=5:release=60" : ""},volume=${volume}${manualFades}${freezePad}${audioFade}[abase]`;
   filters.push(voiceFilter);
   const audioFilters = [voiceFilter];
   const overlays: Buffer[] = [];

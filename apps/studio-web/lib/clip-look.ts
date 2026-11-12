@@ -215,3 +215,19 @@ export function normalizeFreezeSeconds(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return 0;
   return Number(Math.min(MAX_FREEZE_SECONDS, value).toFixed(2));
 }
+
+/** Fundidos de audio por toma (entrada y salida), en segundos. */
+export const MAX_AUDIO_FADE_SECONDS = 3;
+export function normalizeAudioFade(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return 0;
+  return Number(Math.min(MAX_AUDIO_FADE_SECONDS, value).toFixed(2));
+}
+/** Filtros afade para la voz de una toma de `duration` segundos; nunca se solapan. */
+export function audioFadeFilters(fadeIn: number, fadeOut: number, duration: number): string[] {
+  const inSeconds = Math.min(normalizeAudioFade(fadeIn), duration / 2);
+  const outSeconds = Math.min(normalizeAudioFade(fadeOut), duration / 2);
+  return [
+    ...(inSeconds > 0 ? [`afade=t=in:st=0:d=${inSeconds.toFixed(3)}`] : []),
+    ...(outSeconds > 0 ? [`afade=t=out:st=${Math.max(0, duration - outSeconds).toFixed(3)}:d=${outSeconds.toFixed(3)}`] : []),
+  ];
+}
