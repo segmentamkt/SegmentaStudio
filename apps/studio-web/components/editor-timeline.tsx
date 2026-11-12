@@ -8,7 +8,10 @@ import { canSplitAt, dropEdgeLeft, layoutTimeline, outputSeconds, playheadX, reo
 export type TimelineCue = { start: number; end: number; text: string };
 
 /** Línea de tiempo de Studio, con carriles como en los editores de video: subtítulos, video, texto y audio. */
-export type TimelineItem = TimelineSpan & { title: string; cues?: TimelineCue[]; label?: string };
+/** Un texto libre sobre el video, en segundos de origen de su toma. */
+export type TimelineText = { id: string; start: number; end: number; text: string };
+
+export type TimelineItem = TimelineSpan & { title: string; cues?: TimelineCue[]; label?: string; texts?: TimelineText[] };
 
 type Props = {
   items: TimelineItem[];
@@ -27,6 +30,8 @@ type Props = {
   music?: { name: string; volume: number } | null;
   /** Abre el panel Audio para elegir o ajustar la canción. */
   onOpenMusic?: () => void;
+  /** Toca un texto del carril de texto: selecciona su toma y abre el panel Texto. */
+  onSelectText?: (itemId: string, textId: string) => void;
 };
 
 type Drag =
@@ -44,7 +49,7 @@ const TEXT_H = 28;
 const AUDIO_H = 28;
 const HEADER_W = 52;
 
-export function EditorTimeline({ items, selectedId, playhead, busy, onSeek, onTrim, onReorder, onSplit, onDuplicate, onToggle, music = null, onOpenMusic }: Props) {
+export function EditorTimeline({ items, selectedId, playhead, busy, onSeek, onTrim, onReorder, onSplit, onDuplicate, onToggle, music = null, onOpenMusic, onSelectText }: Props) {
   const [pxPerSecond, setPxPerSecond] = useState(44);
   // El arrastre se pinta desde el estado. Los manejadores de eventos leen la referencia, que siempre tiene
   // el valor más reciente aunque React todavía no haya repintado.
@@ -281,6 +286,20 @@ export function EditorTimeline({ items, selectedId, playhead, busy, onSeek, onTr
                 return (
                   <span key={`label-${view.id}`} className="pointer-events-none absolute inset-y-0.5 truncate rounded-md bg-cyan-300/80 px-1.5 text-[9px] font-semibold leading-[22px] text-black" style={{ left: box.left + 3, width: Math.max(0, box.width - 6) }}>{view.label}</span>
                 );
+              })}
+              {shown.flatMap((view, index) => {
+                const box = boxes[index];
+                if (!view.included || !box) return [];
+                const speed = Math.max(.5, Math.min(2, view.speed || 1));
+                return (view.texts ?? []).flatMap((item) => {
+                  const from = Math.max(item.start, view.start);
+                  const to = Math.min(item.end, view.end);
+                  if (to - from < .05) return [];
+                  const left = box.left + (from - view.start) / speed * pxPerSecond;
+                  return [<button key={`text-${view.id}-${item.id}`} type="button" disabled={busy || !onSelectText} onClick={() => onSelectText?.(view.id, item.id)} title={item.text}
+                    className="absolute inset-y-0.5 z-10 truncate rounded-md border border-black/20 bg-amber-300 px-1.5 text-left text-[9px] font-semibold leading-[20px] text-black disabled:opacity-60"
+                    style={{ left, width: Math.max(14, (to - from) / speed * pxPerSecond) }}>T {item.text}</button>];
+                });
               })}
             </div>
 

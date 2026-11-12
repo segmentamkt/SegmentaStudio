@@ -1,6 +1,7 @@
 import { sanitizeCueWords } from "./caption-cues";
 import { getEditorStyle, type EditorStyle, type PauseMode, type SubtitleMode, type SubtitlePosition } from "./editor-presets";
 import { normalizeMusicTrack } from "./music-bed";
+import { normalizeClipTransform, normalizeColorFilter, normalizeTextOverlays } from "./clip-look";
 import { applySkillProfilesToContract } from "./studio-skills";
 import { normalizeVisualResources, validateVisualResourceBudget } from "./visual-resources";
 
@@ -169,6 +170,9 @@ export function normalizeRenderContract(raw: unknown, session: unknown, scenes: 
         durationSeconds: measuredMs / 1_000, trimStartSeconds: trimStart, trimEndSeconds: trimEnd,
       }),
       visual_resources_reviewed: flag(requestedClip.visual_resources_reviewed, false, "La revisión de recursos visuales"),
+      text_overlays: normalizeTextOverlays(requestedClip.text_overlays, { durationSeconds: measuredMs / 1_000, trimStartSeconds: trimStart, trimEndSeconds: trimEnd }),
+      transform: normalizeClipTransform(requestedClip.transform),
+      color_filter: normalizeColorFilter(requestedClip.color_filter),
     };
   });
 

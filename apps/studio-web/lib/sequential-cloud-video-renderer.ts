@@ -12,6 +12,7 @@ import { renderVisualResourceImage } from "./visual-resource-image";
 import { VISUAL_RESOURCE_LAYOUTS, type VisualResource } from "./visual-resources";
 import { mapCaptionCues, type CaptionCue } from "./caption-cues";
 import { buildMusicMixArgs, type MusicTrack } from "./music-bed";
+import { colorFilters, framingFilters, IDENTITY_TRANSFORM, orientationFilters, TEXT_BACKGROUNDS, textOverlayPosition, type ClipTransform, type ColorFilterId, type TextOverlay } from "./clip-look";
 import { MAX_RENDER_PREVIEW_BYTES, type RenderPreview } from "./render-preview";
 import { measureVoiceActivity, planCuts, snapWordsToSilences, type CutPlan } from "./skills/cortes-pausas";
 import { buildKineticLayer, kineticInputArgs, kineticOverlayFilter, planKineticCaptions, type KineticLayer, type KineticZone } from "./skills/subtitulos-cineticos";
@@ -23,7 +24,7 @@ function kineticZone(position: string | undefined, layeredStyle: boolean): Kinet
 }
 
 type Range = { start: number; end: number };
-type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string; trim_start_seconds?: number; trim_end_seconds?: number; playback_speed?: number; audio_volume?: number; brightness?: number; contrast?: number; saturation?: number; label?: string; caption_cues?: CaptionCue[]; visual_resources?: VisualResource[]; script?: string };
+type Clip = { id: string; name: string; object_key: string; duration_seconds: number; transcript: string; trim_start_seconds?: number; trim_end_seconds?: number; playback_speed?: number; audio_volume?: number; brightness?: number; contrast?: number; saturation?: number; label?: string; caption_cues?: CaptionCue[]; visual_resources?: VisualResource[]; script?: string; text_overlays?: TextOverlay[]; transform?: ClipTransform; color_filter?: ColorFilterId };
 type EditContract = {
   objective: string;
   session: { title: string; script?: string };
@@ -314,8 +315,11 @@ export async function renderSequentialClip(input: {
   const audioFade = clipTransition > 0
     ? `,afade=t=in:st=0:d=${fixed(index > 0 ? clipTransition : 0)},afade=t=out:st=${fixed(Math.max(0, duration - clipTransition))}:d=${fixed(index < contract.clips.length - 1 ? clipTransition : 0)}`
     : "";
+  // Encuadre por toma: giro y espejo antes de llenar el cuadro; zoom/posición y filtro de color después.
+  const transform = clip.transform ?? IDENTITY_TRANSFORM;
+  const look = (steps: string[]) => steps.map((step) => `${step},`).join("");
   const filters: string[] = [
-    `[0:v]fps=30,select='${select}',setpts=N/(30*TB*${speed}),${scale},setsar=1,eq=brightness=${brightness}:contrast=${contrast}:saturation=${saturation},format=yuv420p${fade}[vbase]`,
+    `[0:v]fps=30,select='${select}',setpts=N/(30*TB*${speed}),${look(orientationFilters(transform))}${scale},setsar=1,${look(framingFilters(transform))}eq=brightness=${brightness}:contrast=${contrast}:saturation=${saturation},${look(colorFilters(clip.color_filter ?? "none"))}format=yuv420p${fade}[vbase]`,
   ];
   const audioSource = analysis.hasAudio ? 0 : 1;
   const audioTrim = analysis.hasAudio
@@ -384,6 +388,21 @@ export async function renderSequentialClip(input: {
   }
   if (label && contract.effects.labels && !layeredStyle) {
     await addOverlay(label, .15, Math.min(duration, 2.6), "H*0.07", true);
+  }
+  // Textos libres: mismo paso de tiempo de la toma al video final que las imágenes y los subtítulos.
+  let textCount = 0;
+  for (const item of clip.text_overlays ?? []) {
+    const mapped = mapVisualResourceToOutput(item, analysis.ranges, speed);
+    if (!mapped) continue;
+    if (overlays.length >= 96) throw new Error("Demasiadas superposiciones en una toma.");
+    const slot = 1 + Number(!analysis.hasAudio) + overlays.length;
+    const out = `vo${overlays.length}`;
+    const background = TEXT_BACKGROUNDS[item.background] ?? TEXT_BACKGROUNDS.dark;
+    overlays.push(await renderTextOverlay({ text: item.text, fontFile, fontSize: item.size, textColor: item.color, boxColor: background.color, boxOpacity: background.opacity }));
+    const position = textOverlayPosition(item);
+    filters.push(`[${videoLabel}][${slot}:v]overlay=x=${position.x}:y=${position.y}:enable='gte(t,${fixed(mapped.startSeconds)})*lt(t,${fixed(mapped.endSeconds)})':eof_action=repeat:shortest=0[${out}]`);
+    videoLabel = out;
+    textCount += 1;
   }
   let kineticLayer: KineticLayer | null = null;
   let estimatedCaptionWords = 0;
@@ -466,7 +485,7 @@ export async function renderSequentialClip(input: {
     "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", output,
   );
   await ffmpegFile(command, args, overlays, deadline);
-  return { duration, captionCount, estimatedCaptionWords, captionMode: kineticCaptions ? "palabra" as const : "tarjeta" as const, cueCount, imageCount, loudness, labelCount: Number(showTitle) + Number(showLayeredHeader) + Number(Boolean(label && contract.effects.labels && !layeredStyle)) };
+  return { duration, captionCount, estimatedCaptionWords, captionMode: kineticCaptions ? "palabra" as const : "tarjeta" as const, cueCount, imageCount, textCount, loudness, labelCount: Number(showTitle) + Number(showLayeredHeader) + Number(Boolean(label && contract.effects.labels && !layeredStyle)) };
 }
 
 /**
@@ -540,7 +559,7 @@ export async function renderSequentialCloudEdit(input: RenderInput) {
       if (rendered.captionCount > 0) captionedClips += 1;
       images += rendered.imageCount;
       if (rendered.loudness) loudness.push({ clipIndex: index, measured_lufs: rendered.loudness.measuredLufs, gain_db: rendered.loudness.gainDb });
-      effects += rendered.cueCount + rendered.labelCount + rendered.imageCount + (index > 0 && transitionSeconds > 0 ? 1 : 0);
+      effects += rendered.cueCount + rendered.labelCount + rendered.imageCount + rendered.textCount + (index > 0 && transitionSeconds > 0 ? 1 : 0);
       await input.onProgress(36 + Math.round((index + 1) / analyses.length * 42), `Toma ${index + 1} de ${analyses.length} editada`);
       // Samples are optional and must not take the final render's remaining budget.
       // Bound cumulative overhead to 12s and keep 15s reserved for final assembly/upload.

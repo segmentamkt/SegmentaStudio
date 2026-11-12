@@ -9,6 +9,7 @@ import { MediaReviewError, requireCurrentMediaReview } from "../../../lib/media-
 import { readMediaReview } from "../../../lib/media-review-server";
 import { normalizeVisualResources, validateVisualResourceBudget, type VisualResource } from "../../../lib/visual-resources";
 import { normalizeMusicTrack, type MusicTrack } from "../../../lib/music-bed";
+import { normalizeClipTransform, normalizeColorFilter, normalizeTextOverlays, type ClipTransform, type TextOverlay } from "../../../lib/clip-look";
 
 type EditOptions = {
   captions?: boolean;
@@ -45,6 +46,9 @@ type TimelineItem = {
   captionCues?: CaptionCue[];
   visualResources?: unknown;
   resourcesReviewed?: boolean;
+  texts?: unknown;
+  transform?: unknown;
+  colorFilter?: unknown;
 };
 
 function bounded(value: unknown, fallback: number, min: number, max: number) {
@@ -134,6 +138,7 @@ export async function POST(request: Request) {
     if (!ordered.length) return Response.json({ error: "Aprueba al menos una toma antes de planificar la edición." }, { status: 400 });
     if (ordered.length > 12) return Response.json({ error: "Este render cloud admite hasta 12 tomas aprobadas por edición." }, { status: 400 });
     const visualResources: VisualResource[][] = [];
+    const clipLooks: Array<{ texts: TextOverlay[]; transform: ClipTransform }> = [];
     for (const { take, edit } of ordered) {
       const duration = Number(take.duration_ms || 0) / 1000;
       const start = edit?.trimStartSeconds ?? 0;
@@ -162,6 +167,12 @@ export async function POST(request: Request) {
         visualResources.push(normalizeVisualResources(edit?.visualResources, { durationSeconds: duration, trimStartSeconds: start, trimEndSeconds: end }));
       } catch (error) {
         return Response.json({ error: error instanceof Error ? error.message : "Los recursos visuales de una toma no son válidos." }, { status: 400 });
+      }
+      // Textos libres y encuadre de la toma (los mismos límites que vuelve a aplicar el render).
+      try {
+        clipLooks.push({ texts: normalizeTextOverlays(edit?.texts, { durationSeconds: duration, trimStartSeconds: start, trimEndSeconds: end }), transform: normalizeClipTransform(edit?.transform) });
+      } catch (error) {
+        return Response.json({ error: error instanceof Error ? error.message : "Los textos o el encuadre de una toma no son válidos." }, { status: 400 });
       }
     }
     try {
@@ -229,6 +240,9 @@ export async function POST(request: Request) {
         }),
         visual_resources: visualResources[index],
         visual_resources_reviewed: edit?.resourcesReviewed === true,
+        text_overlays: clipLooks[index].texts,
+        transform: clipLooks[index].transform,
+        color_filter: normalizeColorFilter(edit?.colorFilter),
       })),
       style: style.id,
       style_snapshot: styleSnapshot,
